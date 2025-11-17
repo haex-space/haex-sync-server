@@ -28,6 +28,7 @@ app.get('/', (c) => {
     status: 'ok',
     env: process.env.NODE_ENV || 'development',
     supabaseUrl: process.env.SUPABASE_URL || 'not configured',
+    supabaseAnonKey: process.env.SUPABASE_ANON_KEY || 'not configured',
   })
 })
 

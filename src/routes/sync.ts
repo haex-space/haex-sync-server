@@ -1,9 +1,9 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { db, syncLogs, vaultKeys, type NewSyncLog, type NewVaultKey } from '../db'
+import { db, syncChanges, vaultKeys, type NewSyncChange, type NewVaultKey } from '../db'
 import { authMiddleware } from '../middleware/auth'
-import { eq, and, gt, desc } from 'drizzle-orm'
+import { eq, and, gt } from 'drizzle-orm'
 
 const sync = new Hono()
 
@@ -18,20 +18,19 @@ const vaultKeySchema = z.object({
   nonce: z.string(),
 })
 
-const pushLogsSchema = z.object({
-  vaultId: z.string().uuid(),
-  logs: z.array(
+const pushChangesSchema = z.object({
+  vaultId: z.string(),
+  changes: z.array(
     z.object({
       encryptedData: z.string(),
       nonce: z.string(),
-      haexTimestamp: z.string(),
     })
   ),
 })
 
-const pullLogsSchema = z.object({
-  vaultId: z.string().uuid(),
-  afterSequence: z.number().int().optional(), // Pull logs after this sequence number
+const pullChangesSchema = z.object({
+  vaultId: z.string(),
+  afterCreatedAt: z.string().optional(), // Pull changes after this timestamp (ISO 8601)
   limit: z.number().int().min(1).max(1000).default(100),
 })
 
@@ -57,7 +56,7 @@ sync.post('/vault-key', zValidator('json', vaultKeySchema), async (c) => {
     }
 
     // Insert vault key
-    const [newVaultKey] = await db
+    const insertedKeys = await db
       .insert(vaultKeys)
       .values({
         userId: user.userId,
@@ -67,6 +66,11 @@ sync.post('/vault-key', zValidator('json', vaultKeySchema), async (c) => {
         nonce,
       } as NewVaultKey)
       .returning()
+
+    const newVaultKey = insertedKeys[0]
+    if (!newVaultKey) {
+      return c.json({ error: 'Failed to insert vault key' }, 500)
+    }
 
     return c.json({
       message: 'Vault key stored successfully',
@@ -119,97 +123,85 @@ sync.get('/vault-key/:vaultId', async (c) => {
 
 /**
  * POST /sync/push
- * Push encrypted CRDT logs to server
+ * Push encrypted CRDT changes to server (Zero-Knowledge)
+ * Each change contains fully encrypted CRDT data (metadata + value)
  */
-sync.post('/push', zValidator('json', pushLogsSchema), async (c) => {
+sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
   const user = c.get('user')
-  const { vaultId, logs } = c.req.valid('json')
+  const { vaultId, changes } = c.req.valid('json')
 
   try {
-    // Get current max sequence for this user
-    const maxSeqResult = await db.query.syncLogs.findFirst({
-      where: eq(syncLogs.userId, user.userId),
-      orderBy: desc(syncLogs.sequence),
-    })
-
-    let currentSequence = maxSeqResult?.sequence || 0
-
-    // Insert logs with auto-incrementing sequence
-    const insertedLogs = await db
-      .insert(syncLogs)
+    // Insert changes
+    const insertedChanges = await db
+      .insert(syncChanges)
       .values(
-        logs.map((log) => ({
+        changes.map((change) => ({
           userId: user.userId,
           vaultId,
-          encryptedData: log.encryptedData,
-          nonce: log.nonce,
-          haexTimestamp: log.haexTimestamp,
-          sequence: ++currentSequence,
-        } as NewSyncLog))
+          encryptedData: change.encryptedData,
+          nonce: change.nonce,
+        } as NewSyncChange))
       )
       .returning({
-        id: syncLogs.id,
-        sequence: syncLogs.sequence,
-        haexTimestamp: syncLogs.haexTimestamp,
-        createdAt: syncLogs.createdAt,
+        id: syncChanges.id,
+        createdAt: syncChanges.createdAt,
       })
 
     return c.json({
-      message: 'Logs pushed successfully',
-      count: insertedLogs.length,
-      logs: insertedLogs,
+      message: 'Changes pushed successfully',
+      count: insertedChanges.length,
+      changes: insertedChanges,
     })
   } catch (error) {
-    console.error('Push logs error:', error)
+    console.error('Push changes error:', error)
     return c.json({ error: 'Internal server error' }, 500)
   }
 })
 
 /**
  * POST /sync/pull
- * Pull encrypted CRDT logs from server
+ * Pull encrypted CRDT changes from server (Zero-Knowledge)
+ * Client performs decryption and conflict resolution locally
  */
-sync.post('/pull', zValidator('json', pullLogsSchema), async (c) => {
+sync.post('/pull', zValidator('json', pullChangesSchema), async (c) => {
   const user = c.get('user')
-  const { vaultId, afterSequence, limit } = c.req.valid('json')
+  const { vaultId, afterCreatedAt, limit } = c.req.valid('json')
 
   try {
     // Build query
     const whereConditions = [
-      eq(syncLogs.userId, user.userId),
-      eq(syncLogs.vaultId, vaultId),
+      eq(syncChanges.userId, user.userId),
+      eq(syncChanges.vaultId, vaultId),
     ]
 
-    if (afterSequence !== undefined) {
-      whereConditions.push(gt(syncLogs.sequence, afterSequence))
+    if (afterCreatedAt !== undefined) {
+      whereConditions.push(gt(syncChanges.createdAt, new Date(afterCreatedAt)))
     }
 
     // Fetch limit + 1 to check if there are more records
-    const logs = await db.query.syncLogs.findMany({
+    const changes = await db.query.syncChanges.findMany({
       where: and(...whereConditions),
-      orderBy: syncLogs.sequence,
+      orderBy: syncChanges.createdAt,
       limit: limit + 1,
     })
 
     // Check if there are more records
-    const hasMore = logs.length > limit
+    const hasMore = changes.length > limit
 
     // Return only the requested limit
-    const returnLogs = logs.slice(0, limit)
+    const returnChanges = changes.slice(0, limit)
 
     return c.json({
-      logs: returnLogs.map((log) => ({
-        id: log.id,
-        encryptedData: log.encryptedData,
-        nonce: log.nonce,
-        haexTimestamp: log.haexTimestamp,
-        sequence: log.sequence,
-        createdAt: log.createdAt,
+      changes: returnChanges.map((change) => ({
+        id: change.id,
+        encryptedData: change.encryptedData,
+        nonce: change.nonce,
+        createdAt: change.createdAt,
       })),
       hasMore,
     })
   } catch (error) {
-    console.error('Pull logs error:', error)
+    console.error('Pull changes error:', error)
     return c.json({ error: 'Internal server error' }, 500)
   }
 })

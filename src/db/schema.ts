@@ -4,7 +4,6 @@ import {
   text,
   timestamp,
   uuid,
-  integer,
   index,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
@@ -45,13 +44,15 @@ export const vaultKeys = pgTable(
 );
 
 /**
- * Sync Logs Table
- * Stores encrypted CRDT log entries for synchronization
- * Each entry is encrypted end-to-end with the vault key
+ * Sync Changes Table
+ * Stores fully encrypted CRDT change entries for synchronization (Zero-Knowledge)
+ * The server only sees: userId, vaultId, encrypted blob, and server timestamps
+ * All CRDT metadata (table, row, column, operation, hlc, value) is encrypted inside encryptedData
+ * Client performs decryption and CRDT conflict resolution locally
  * References auth.users from Supabase Auth
  */
-export const syncLogs = pgTable(
-  "sync_logs",
+export const syncChanges = pgTable(
+  "sync_changes",
   {
     id: uuid("id").primaryKey().defaultRandom(),
     userId: uuid("user_id")
@@ -59,24 +60,15 @@ export const syncLogs = pgTable(
       .references(() => authUsers.id, { onDelete: "cascade" }),
     vaultId: text("vault_id").notNull(),
 
-    // Encrypted CRDT log entry (encrypted with vault key on client)
+    // Fully encrypted CRDT change (contains: tableName, rowPks, columnName, operation, hlcTimestamp, value, deviceId)
     encryptedData: text("encrypted_data").notNull(),
     nonce: text("nonce").notNull(), // IV for AES-GCM
-
-    // Metadata for sync (unencrypted for filtering/sorting)
-    haexTimestamp: text("haex_timestamp").notNull(), // HLC timestamp from client
-    sequence: integer("sequence").notNull(), // Auto-incrementing sequence per user
 
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => [
-    index("sync_logs_user_vault_idx").on(table.userId, table.vaultId),
-    index("sync_logs_user_seq_idx").on(table.userId, table.sequence),
-    index("sync_logs_timestamp_idx").on(table.haexTimestamp),
-    uniqueIndex("sync_logs_user_timestamp_idx").on(
-      table.userId,
-      table.haexTimestamp
-    ),
+    index("sync_changes_user_vault_idx").on(table.userId, table.vaultId),
+    index("sync_changes_created_idx").on(table.createdAt),
   ]
 );
 
@@ -84,5 +76,9 @@ export const syncLogs = pgTable(
 export type VaultKey = typeof vaultKeys.$inferSelect;
 export type NewVaultKey = typeof vaultKeys.$inferInsert;
 
-export type SyncLog = typeof syncLogs.$inferSelect;
-export type NewSyncLog = typeof syncLogs.$inferInsert;
+export type SyncChange = typeof syncChanges.$inferSelect;
+export type NewSyncChange = typeof syncChanges.$inferInsert;
+
+// Legacy type aliases for backward compatibility
+export type SyncLog = SyncChange;
+export type NewSyncLog = NewSyncChange;
