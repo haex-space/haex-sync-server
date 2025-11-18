@@ -6,8 +6,8 @@ ALTER TABLE sync_changes ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Users can only access their own vault keys" ON vault_keys;
 DROP POLICY IF EXISTS "Users can only insert their own vault keys" ON vault_keys;
 DROP POLICY IF EXISTS "Users can only update their own vault keys" ON vault_keys;
-DROP POLICY IF EXISTS "Users can only access their own sync logs" ON sync_changes;
-DROP POLICY IF EXISTS "Users can only insert their own sync logs" ON sync_changes;
+DROP POLICY IF EXISTS "Users can only access their own sync changes" ON sync_changes;
+DROP POLICY IF EXISTS "Users can only insert their own sync changes" ON sync_changes;
 
 -- Vault Keys Policies
 CREATE POLICY "Users can only access their own vault keys"
@@ -26,13 +26,13 @@ CREATE POLICY "Users can only update their own vault keys"
   USING (auth.uid() = user_id)
   WITH CHECK (auth.uid() = user_id);
 
--- Sync Logs Policies
-CREATE POLICY "Users can only access their own sync logs"
+-- Sync Changes Policies
+CREATE POLICY "Users can only access their own sync changes"
   ON sync_changes
   FOR SELECT
   USING (auth.uid() = user_id);
 
-CREATE POLICY "Users can only insert their own sync logs"
+CREATE POLICY "Users can only insert their own sync changes"
   ON sync_changes
   FOR INSERT
   WITH CHECK (auth.uid() = user_id);

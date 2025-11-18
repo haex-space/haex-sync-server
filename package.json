@@ -6,9 +6,10 @@
   "private": true,
   "scripts": {
     "dev": "bun run --hot index.ts",
-    "start": "bun run index.ts",
+    "start": "bun run scripts/migrate.ts && bun run index.ts",
+    "start:no-migrate": "bun run index.ts",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate",
+    "db:migrate": "bun run scripts/migrate.ts",
     "db:push": "drizzle-kit push && bun run db:rls",
     "db:rls": "bun run scripts/apply-rls.ts",
     "db:studio": "drizzle-kit studio"

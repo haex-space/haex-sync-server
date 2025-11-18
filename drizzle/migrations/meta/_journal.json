@@ -8,6 +8,13 @@
       "when": 1763408290364,
       "tag": "0000_plain_grandmaster",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1731940000000,
+      "tag": "0001_add_rls_policies",
+      "breakpoints": true
     }
   ]
 }
