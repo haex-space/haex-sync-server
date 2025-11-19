@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { db, syncChanges, vaultKeys, type NewSyncChange, type NewVaultKey } from '../db'
 import { authMiddleware } from '../middleware/auth'
-import { eq, and, gt } from 'drizzle-orm'
+import { eq, and, gt, ne } from 'drizzle-orm'
 
 const sync = new Hono()
 
@@ -22,6 +22,7 @@ const pushChangesSchema = z.object({
   vaultId: z.string(),
   changes: z.array(
     z.object({
+      deviceId: z.string().optional(),
       encryptedData: z.string(),
       nonce: z.string(),
     })
@@ -30,6 +31,7 @@ const pushChangesSchema = z.object({
 
 const pullChangesSchema = z.object({
   vaultId: z.string(),
+  excludeDeviceId: z.string().optional(), // Exclude changes from this device ID
   afterCreatedAt: z.string().optional(), // Pull changes after this timestamp (ISO 8601)
   limit: z.number().int().min(1).max(1000).default(100),
 })
@@ -138,6 +140,7 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
         changes.map((change) => ({
           userId: user.userId,
           vaultId,
+          deviceId: change.deviceId,
           encryptedData: change.encryptedData,
           nonce: change.nonce,
         } as NewSyncChange))
@@ -165,7 +168,7 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
  */
 sync.post('/pull', zValidator('json', pullChangesSchema), async (c) => {
   const user = c.get('user')
-  const { vaultId, afterCreatedAt, limit } = c.req.valid('json')
+  const { vaultId, excludeDeviceId, afterCreatedAt, limit } = c.req.valid('json')
 
   try {
     // Build query
@@ -173,6 +176,11 @@ sync.post('/pull', zValidator('json', pullChangesSchema), async (c) => {
       eq(syncChanges.userId, user.userId),
       eq(syncChanges.vaultId, vaultId),
     ]
+
+    // Exclude changes from specific device (to avoid downloading own changes)
+    if (excludeDeviceId !== undefined) {
+      whereConditions.push(ne(syncChanges.deviceId, excludeDeviceId))
+    }
 
     if (afterCreatedAt !== undefined) {
       whereConditions.push(gt(syncChanges.createdAt, new Date(afterCreatedAt)))
