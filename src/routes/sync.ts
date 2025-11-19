@@ -132,6 +132,12 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
   const user = c.get('user')
   const { vaultId, changes } = c.req.valid('json')
 
+  console.log('📤 Push request received:', {
+    vaultId,
+    changeCount: changes.length,
+    deviceIds: changes.map(c => c.deviceId),
+  })
+
   try {
     // Insert changes
     const insertedChanges = await db
