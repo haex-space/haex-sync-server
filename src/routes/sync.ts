@@ -14,8 +14,10 @@ sync.use('/*', authMiddleware)
 const vaultKeySchema = z.object({
   vaultId: z.string().uuid(),
   encryptedVaultKey: z.string(),
+  encryptedVaultName: z.string(),
   salt: z.string(),
-  nonce: z.string(),
+  vaultKeyNonce: z.string(),
+  vaultNameNonce: z.string(),
 })
 
 const pushChangesSchema = z.object({
@@ -42,7 +44,7 @@ const pullChangesSchema = z.object({
  */
 sync.post('/vault-key', zValidator('json', vaultKeySchema), async (c) => {
   const user = c.get('user')
-  const { vaultId, encryptedVaultKey, salt, nonce } = c.req.valid('json')
+  const { vaultId, encryptedVaultKey, encryptedVaultName, salt, vaultKeyNonce, vaultNameNonce } = c.req.valid('json')
 
   try {
     // Check if vault key already exists
@@ -64,8 +66,10 @@ sync.post('/vault-key', zValidator('json', vaultKeySchema), async (c) => {
         userId: user.userId,
         vaultId,
         encryptedVaultKey,
+        encryptedVaultName,
         salt,
-        nonce,
+        vaultKeyNonce,
+        vaultNameNonce,
       } as NewVaultKey)
       .returning()
 
@@ -84,6 +88,34 @@ sync.post('/vault-key', zValidator('json', vaultKeySchema), async (c) => {
     }, 201)
   } catch (error) {
     console.error('Store vault key error:', error)
+    return c.json({ error: 'Internal server error' }, 500)
+  }
+})
+
+/**
+ * GET /sync/vaults
+ * Retrieve all vaults for the authenticated user
+ */
+sync.get('/vaults', async (c) => {
+  const user = c.get('user')
+
+  try {
+    const userVaults = await db.query.vaultKeys.findMany({
+      where: eq(vaultKeys.userId, user.userId),
+      orderBy: vaultKeys.createdAt,
+    })
+
+    return c.json({
+      vaults: userVaults.map((vault) => ({
+        vaultId: vault.vaultId,
+        encryptedVaultName: vault.encryptedVaultName,
+        vaultNameNonce: vault.vaultNameNonce,
+        salt: vault.salt,
+        createdAt: vault.createdAt,
+      })),
+    })
+  } catch (error) {
+    console.error('Get vaults error:', error)
     return c.json({ error: 'Internal server error' }, 500)
   }
 })
@@ -112,8 +144,10 @@ sync.get('/vault-key/:vaultId', async (c) => {
       vaultKey: {
         vaultId: vaultKey.vaultId,
         encryptedVaultKey: vaultKey.encryptedVaultKey,
+        encryptedVaultName: vaultKey.encryptedVaultName,
         salt: vaultKey.salt,
-        nonce: vaultKey.nonce,
+        vaultKeyNonce: vaultKey.vaultKeyNonce,
+        vaultNameNonce: vaultKey.vaultNameNonce,
         createdAt: vaultKey.createdAt,
       },
     })

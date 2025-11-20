@@ -22,6 +22,20 @@
       "when": 1763508694960,
       "tag": "0002_whole_christian_walker",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1732063339000,
+      "tag": "0003_add_encrypted_vault_name",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1763597123650,
+      "tag": "0004_happy_sasquatch",
+      "breakpoints": true
     }
   ]
 }

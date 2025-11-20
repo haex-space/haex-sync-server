@@ -32,8 +32,10 @@ export const vaultKeys = pgTable(
       .references(() => authUsers.id, { onDelete: "cascade" }),
     vaultId: text("vault_id").notNull(),
     encryptedVaultKey: text("encrypted_vault_key").notNull(), // Base64 of AES-GCM encrypted key
+    encryptedVaultName: text("encrypted_vault_name").notNull(), // Base64 of AES-GCM encrypted vault name
     salt: text("salt").notNull(), // For PBKDF2 key derivation
-    nonce: text("nonce").notNull(), // For AES-GCM encryption
+    vaultKeyNonce: text("vault_key_nonce").notNull(), // For AES-GCM encryption of vault key
+    vaultNameNonce: text("vault_name_nonce").notNull(), // For AES-GCM encryption of vault name
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
