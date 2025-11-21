@@ -248,4 +248,60 @@ sync.post('/pull', zValidator('json', pullChangesSchema), async (c) => {
   }
 })
 
+/**
+ * DELETE /sync/vault/:vaultId
+ * Delete a vault and all its associated data from the server
+ * This includes:
+ * - All CRDT changes (sync_changes table)
+ * - Vault key and configuration (vault_keys table)
+ */
+sync.delete('/vault/:vaultId', async (c) => {
+  const user = c.get('user')
+  const vaultId = c.req.param('vaultId')
+
+  try {
+    // Check if vault belongs to user
+    const vaultKey = await db.query.vaultKeys.findFirst({
+      where: and(
+        eq(vaultKeys.userId, user.userId),
+        eq(vaultKeys.vaultId, vaultId)
+      ),
+    })
+
+    if (!vaultKey) {
+      return c.json({ error: 'Vault not found or access denied' }, 404)
+    }
+
+    // Delete all sync changes for this vault
+    const deletedChanges = await db
+      .delete(syncChanges)
+      .where(
+        and(
+          eq(syncChanges.userId, user.userId),
+          eq(syncChanges.vaultId, vaultId)
+        )
+      )
+      .returning({ id: syncChanges.id })
+
+    // Delete vault key
+    await db
+      .delete(vaultKeys)
+      .where(
+        and(
+          eq(vaultKeys.userId, user.userId),
+          eq(vaultKeys.vaultId, vaultId)
+        )
+      )
+
+    return c.json({
+      message: 'Vault deleted successfully',
+      deletedChangesCount: deletedChanges.length,
+      vaultId,
+    })
+  } catch (error) {
+    console.error('Delete vault error:', error)
+    return c.json({ error: 'Internal server error' }, 500)
+  }
+})
+
 export default sync
