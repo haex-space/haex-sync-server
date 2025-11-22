@@ -40,7 +40,7 @@ const pullChangesSchema = z.object({
   vaultId: z.string(),
   excludeDeviceId: z.string().optional(), // Exclude changes from this device ID
   afterUpdatedAt: z.string().optional(), // Pull changes after this server timestamp (ISO 8601)
-  limit: z.number().int().min(1).max(1000).default(100),
+  limit: z.coerce.number().int().min(1).max(1000).default(100), // Coerce string to number for query params
 })
 
 /**
@@ -219,13 +219,13 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
 })
 
 /**
- * POST /sync/pull
+ * GET /sync/pull
  * Pull CRDT changes from server with unencrypted metadata
  * Client performs conflict resolution locally based on HLC timestamps
  */
-sync.post('/pull', zValidator('json', pullChangesSchema), async (c) => {
+sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
   const user = c.get('user')
-  const { vaultId, excludeDeviceId, afterUpdatedAt, limit } = c.req.valid('json')
+  const { vaultId, excludeDeviceId, afterUpdatedAt, limit } = c.req.valid('query')
 
   try {
     // Build query
