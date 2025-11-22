@@ -43,13 +43,6 @@
       "when": 1763734800176,
       "tag": "0005_closed_blockbuster",
       "breakpoints": true
-    },
-    {
-      "idx": 6,
-      "version": "7",
-      "when": 1763851361263,
-      "tag": "0006_plain_goblin_queen",
-      "breakpoints": true
     }
   ]
 }
