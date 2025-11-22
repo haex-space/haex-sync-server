@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { db, syncChanges, vaultKeys, type NewSyncChange, type NewVaultKey } from '../db'
 import { authMiddleware } from '../middleware/auth'
-import { eq, and, gt, ne } from 'drizzle-orm'
+import { eq, and, gt, ne, sql } from 'drizzle-orm'
 
 const sync = new Hono()
 
@@ -24,9 +24,14 @@ const pushChangesSchema = z.object({
   vaultId: z.string(),
   changes: z.array(
     z.object({
+      tableName: z.string(),
+      rowPks: z.string(), // JSON string
+      columnName: z.string().nullable(),
+      operation: z.enum(['INSERT', 'UPDATE', 'DELETE']),
+      hlcTimestamp: z.string(),
       deviceId: z.string().optional(),
-      encryptedData: z.string(),
-      nonce: z.string(),
+      encryptedValue: z.string().nullable(),
+      nonce: z.string().nullable(),
     })
   ),
 })
@@ -34,7 +39,7 @@ const pushChangesSchema = z.object({
 const pullChangesSchema = z.object({
   vaultId: z.string(),
   excludeDeviceId: z.string().optional(), // Exclude changes from this device ID
-  afterCreatedAt: z.string().optional(), // Pull changes after this timestamp (ISO 8601)
+  afterUpdatedAt: z.string().optional(), // Pull changes after this server timestamp (ISO 8601)
   limit: z.number().int().min(1).max(1000).default(100),
 })
 
@@ -159,35 +164,53 @@ sync.get('/vault-key/:vaultId', async (c) => {
 
 /**
  * POST /sync/push
- * Push encrypted CRDT changes to server (Zero-Knowledge)
- * Each change contains fully encrypted CRDT data (metadata + value)
+ * Push CRDT changes to server with unencrypted metadata for deduplication
+ * Uses INSERT ... ON CONFLICT DO UPDATE to keep only latest value per cell
  */
 sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
   const user = c.get('user')
   const { vaultId, changes } = c.req.valid('json')
 
   try {
-    // Insert changes
+    // Use ON CONFLICT to update existing entries (server-side deduplication)
     const insertedChanges = await db
       .insert(syncChanges)
       .values(
         changes.map((change) => ({
           userId: user.userId,
           vaultId,
+          tableName: change.tableName,
+          rowPks: change.rowPks,
+          columnName: change.columnName,
+          operation: change.operation,
+          hlcTimestamp: change.hlcTimestamp,
           deviceId: change.deviceId,
-          encryptedData: change.encryptedData,
+          encryptedValue: change.encryptedValue,
           nonce: change.nonce,
         } as NewSyncChange))
       )
+      .onConflictDoUpdate({
+        target: [syncChanges.vaultId, syncChanges.tableName, syncChanges.rowPks, syncChanges.columnName],
+        set: {
+          operation: sql`EXCLUDED.operation`,
+          hlcTimestamp: sql`EXCLUDED.hlc_timestamp`,
+          deviceId: sql`EXCLUDED.device_id`,
+          encryptedValue: sql`EXCLUDED.encrypted_value`,
+          nonce: sql`EXCLUDED.nonce`,
+          updatedAt: sql`now()`,
+        },
+        // Only update if incoming HLC is newer
+        where: sql`EXCLUDED.hlc_timestamp > ${syncChanges.hlcTimestamp}`,
+      })
       .returning({
         id: syncChanges.id,
-        createdAt: syncChanges.createdAt,
+        hlcTimestamp: syncChanges.hlcTimestamp,
       })
 
     return c.json({
       message: 'Changes pushed successfully',
       count: insertedChanges.length,
-      changes: insertedChanges,
+      lastHlc: insertedChanges.length > 0 ? insertedChanges[insertedChanges.length - 1]?.hlcTimestamp ?? null : null,
     })
   } catch (error) {
     console.error('Push changes error:', error)
@@ -197,12 +220,12 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
 
 /**
  * POST /sync/pull
- * Pull encrypted CRDT changes from server (Zero-Knowledge)
- * Client performs decryption and conflict resolution locally
+ * Pull CRDT changes from server with unencrypted metadata
+ * Client performs conflict resolution locally based on HLC timestamps
  */
 sync.post('/pull', zValidator('json', pullChangesSchema), async (c) => {
   const user = c.get('user')
-  const { vaultId, excludeDeviceId, afterCreatedAt, limit } = c.req.valid('json')
+  const { vaultId, excludeDeviceId, afterUpdatedAt, limit } = c.req.valid('json')
 
   try {
     // Build query
@@ -216,14 +239,16 @@ sync.post('/pull', zValidator('json', pullChangesSchema), async (c) => {
       whereConditions.push(ne(syncChanges.deviceId, excludeDeviceId))
     }
 
-    if (afterCreatedAt !== undefined) {
-      whereConditions.push(gt(syncChanges.createdAt, new Date(afterCreatedAt)))
+    // Pull changes updated after the given server timestamp (NOT HLC timestamp!)
+    // updatedAt is a PostgreSQL timestamp, afterUpdatedAt is an ISO 8601 string
+    if (afterUpdatedAt !== undefined) {
+      whereConditions.push(gt(syncChanges.updatedAt, new Date(afterUpdatedAt)))
     }
 
     // Fetch limit + 1 to check if there are more records
     const changes = await db.query.syncChanges.findMany({
       where: and(...whereConditions),
-      orderBy: syncChanges.createdAt,
+      orderBy: syncChanges.updatedAt,
       limit: limit + 1,
     })
 
@@ -235,10 +260,14 @@ sync.post('/pull', zValidator('json', pullChangesSchema), async (c) => {
 
     return c.json({
       changes: returnChanges.map((change) => ({
-        id: change.id,
-        encryptedData: change.encryptedData,
+        tableName: change.tableName,
+        rowPks: change.rowPks,
+        columnName: change.columnName,
+        operation: change.operation,
+        hlcTimestamp: change.hlcTimestamp,
+        encryptedValue: change.encryptedValue,
         nonce: change.nonce,
-        createdAt: change.createdAt,
+        updatedAt: change.updatedAt.toISOString(),
       })),
       hasMore,
     })

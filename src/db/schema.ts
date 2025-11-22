@@ -47,10 +47,20 @@ export const vaultKeys = pgTable(
 
 /**
  * Sync Changes Table
- * Stores fully encrypted CRDT change entries for synchronization (Zero-Knowledge)
- * The server only sees: userId, vaultId, deviceId, encrypted blob, and server timestamps
- * All CRDT metadata (table, row, column, operation, hlc, value) is encrypted inside encryptedData
- * Client performs decryption and CRDT conflict resolution locally
+ * Stores CRDT changes with unencrypted metadata for efficient deduplication
+ *
+ * Unencrypted (for sync efficiency):
+ * - tableName, rowPks, columnName: Required for server-side deduplication
+ * - operation, hlcTimestamp: Required for conflict resolution metadata
+ * - deviceId: For filtering own changes on pull
+ *
+ * Encrypted:
+ * - encryptedValue: The actual column value (only sensitive data is encrypted)
+ *
+ * Privacy note: Metadata reveals table structure and change patterns, but not actual data.
+ * This is an acceptable trade-off for efficient CRDT sync. Server can be self-hosted.
+ *
+ * Uses composite key (vaultId, tableName, rowPks, columnName) to store only latest value per cell.
  * References auth.users from Supabase Auth
  */
 export const syncChanges = pgTable(
@@ -61,17 +71,33 @@ export const syncChanges = pgTable(
       .notNull()
       .references(() => authUsers.id, { onDelete: "cascade" }),
     vaultId: text("vault_id").notNull(),
-    deviceId: text("device_id"), // Device ID that created this change (for filtering on pull)
 
-    // Fully encrypted CRDT change (contains: tableName, rowPks, columnName, operation, hlcTimestamp, value)
-    encryptedData: text("encrypted_data").notNull(),
-    nonce: text("nonce").notNull(), // IV for AES-GCM
+    // Unencrypted CRDT metadata (required for server-side deduplication)
+    tableName: text("table_name").notNull(),
+    rowPks: text("row_pks").notNull(), // JSON string of primary key(s), e.g. '{"id": "uuid-here"}'
+    columnName: text("column_name"), // NULL for DELETE operations
+    operation: text("operation").notNull(), // 'INSERT' | 'UPDATE' | 'DELETE'
+    hlcTimestamp: text("hlc_timestamp").notNull(), // Hybrid Logical Clock timestamp
+    deviceId: text("device_id"), // Device ID that created this change
+
+    // Encrypted payload (only the actual value is encrypted)
+    encryptedValue: text("encrypted_value"), // NULL for DELETE operations
+    nonce: text("nonce"), // IV for AES-GCM, NULL for DELETE
 
     createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
   (table) => [
+    // Composite unique index to ensure only one entry per (vault, table, row, column)
+    uniqueIndex("sync_changes_unique_cell").on(
+      table.vaultId,
+      table.tableName,
+      table.rowPks,
+      table.columnName
+    ),
     index("sync_changes_user_vault_idx").on(table.userId, table.vaultId),
-    index("sync_changes_created_idx").on(table.createdAt),
+    index("sync_changes_hlc_idx").on(table.hlcTimestamp),
+    index("sync_changes_updated_idx").on(table.updatedAt),
     index("sync_changes_device_idx").on(table.deviceId),
   ]
 );
