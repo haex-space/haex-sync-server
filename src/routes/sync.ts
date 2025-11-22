@@ -27,7 +27,6 @@ const pushChangesSchema = z.object({
       tableName: z.string(),
       rowPks: z.string(), // JSON string
       columnName: z.string().nullable(),
-      operation: z.enum(['INSERT', 'UPDATE', 'DELETE']),
       hlcTimestamp: z.string(),
       deviceId: z.string().optional(),
       encryptedValue: z.string().nullable(),
@@ -182,7 +181,6 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
           tableName: change.tableName,
           rowPks: change.rowPks,
           columnName: change.columnName,
-          operation: change.operation,
           hlcTimestamp: change.hlcTimestamp,
           deviceId: change.deviceId,
           encryptedValue: change.encryptedValue,
@@ -192,7 +190,6 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
       .onConflictDoUpdate({
         target: [syncChanges.vaultId, syncChanges.tableName, syncChanges.rowPks, syncChanges.columnName],
         set: {
-          operation: sql`EXCLUDED.operation`,
           hlcTimestamp: sql`EXCLUDED.hlc_timestamp`,
           deviceId: sql`EXCLUDED.device_id`,
           encryptedValue: sql`EXCLUDED.encrypted_value`,

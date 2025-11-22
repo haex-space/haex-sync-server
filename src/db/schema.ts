@@ -75,8 +75,7 @@ export const syncChanges = pgTable(
     // Unencrypted CRDT metadata (required for server-side deduplication)
     tableName: text("table_name").notNull(),
     rowPks: text("row_pks").notNull(), // JSON string of primary key(s), e.g. '{"id": "uuid-here"}'
-    columnName: text("column_name"), // NULL for DELETE operations
-    operation: text("operation").notNull(), // 'INSERT' | 'UPDATE' | 'DELETE'
+    columnName: text("column_name"), // Column name for column-level CRDT
     hlcTimestamp: text("hlc_timestamp").notNull(), // Hybrid Logical Clock timestamp
     deviceId: text("device_id"), // Device ID that created this change
 
