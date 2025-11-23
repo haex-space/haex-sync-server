@@ -31,6 +31,9 @@ const pushChangesSchema = z.object({
       deviceId: z.string().optional(),
       encryptedValue: z.string().nullable(),
       nonce: z.string().nullable(),
+      batchId: z.string().optional(), // UUID for grouping related changes
+      batchSeq: z.number().int().positive().optional(), // 1-based sequence within batch
+      batchTotal: z.number().int().positive().optional(), // Total changes in this batch
     })
   ),
 })
@@ -165,49 +168,101 @@ sync.get('/vault-key/:vaultId', async (c) => {
  * POST /sync/push
  * Push CRDT changes to server with unencrypted metadata for deduplication
  * Uses INSERT ... ON CONFLICT DO UPDATE to keep only latest value per cell
+ * Validates batch completeness if batchId/batchSeq/batchTotal are provided
  */
 sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
   const user = c.get('user')
   const { vaultId, changes } = c.req.valid('json')
 
   try {
-    // Use ON CONFLICT to update existing entries (server-side deduplication)
-    const insertedChanges = await db
-      .insert(syncChanges)
-      .values(
-        changes.map((change) => ({
-          userId: user.userId,
-          vaultId,
-          tableName: change.tableName,
-          rowPks: change.rowPks,
-          columnName: change.columnName,
-          hlcTimestamp: change.hlcTimestamp,
-          deviceId: change.deviceId,
-          encryptedValue: change.encryptedValue,
-          nonce: change.nonce,
-        } as NewSyncChange))
-      )
-      .onConflictDoUpdate({
-        target: [syncChanges.vaultId, syncChanges.tableName, syncChanges.rowPks, syncChanges.columnName],
-        set: {
-          // Use CASE to only update if incoming HLC is newer (Last-Write-Wins)
-          hlcTimestamp: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.hlc_timestamp ELSE sync_changes.hlc_timestamp END`,
-          deviceId: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.device_id ELSE sync_changes.device_id END`,
-          encryptedValue: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.encrypted_value ELSE sync_changes.encrypted_value END`,
-          nonce: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.nonce ELSE sync_changes.nonce END`,
-          // Always update updatedAt to track when this cell was last touched
-          updatedAt: sql`now()`,
-        },
-      })
-      .returning({
-        id: syncChanges.id,
-        hlcTimestamp: syncChanges.hlcTimestamp,
-      })
+    // Validate batch completeness if batch metadata is present
+    const batchMap = new Map<string, typeof changes>()
+
+    for (const change of changes) {
+      if (change.batchId && change.batchSeq && change.batchTotal) {
+        if (!batchMap.has(change.batchId)) {
+          batchMap.set(change.batchId, [])
+        }
+        batchMap.get(change.batchId)!.push(change)
+      }
+    }
+
+    // Validate each batch is complete
+    for (const [batchId, batchChanges] of batchMap.entries()) {
+      const batchTotal = batchChanges[0]?.batchTotal
+      if (!batchTotal) continue
+
+      // Check we have all sequence numbers from 1 to batchTotal
+      const sequences = new Set(batchChanges.map(c => c.batchSeq))
+      const missingSeqs: number[] = []
+
+      for (let i = 1; i <= batchTotal; i++) {
+        if (!sequences.has(i)) {
+          missingSeqs.push(i)
+        }
+      }
+
+      if (missingSeqs.length > 0) {
+        return c.json({
+          error: 'Incomplete batch',
+          batchId,
+          missingSequences: missingSeqs,
+          expected: batchTotal,
+          received: batchChanges.length,
+        }, 400)
+      }
+
+      // Check for duplicate sequence numbers
+      if (sequences.size !== batchChanges.length) {
+        return c.json({
+          error: 'Duplicate sequence numbers in batch',
+          batchId,
+        }, 400)
+      }
+    }
+
+    // All batches are complete - apply changes atomically in a transaction
+    // This ensures either ALL changes are applied or NONE (on error/constraint violation)
+    const result = await db.transaction(async (tx) => {
+      const insertedChanges = await tx
+        .insert(syncChanges)
+        .values(
+          changes.map((change) => ({
+            userId: user.userId,
+            vaultId,
+            tableName: change.tableName,
+            rowPks: change.rowPks,
+            columnName: change.columnName,
+            hlcTimestamp: change.hlcTimestamp,
+            deviceId: change.deviceId,
+            encryptedValue: change.encryptedValue,
+            nonce: change.nonce,
+          } as NewSyncChange))
+        )
+        .onConflictDoUpdate({
+          target: [syncChanges.vaultId, syncChanges.tableName, syncChanges.rowPks, syncChanges.columnName],
+          set: {
+            // Use CASE to only update if incoming HLC is newer (Last-Write-Wins)
+            hlcTimestamp: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.hlc_timestamp ELSE sync_changes.hlc_timestamp END`,
+            deviceId: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.device_id ELSE sync_changes.device_id END`,
+            encryptedValue: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.encrypted_value ELSE sync_changes.encrypted_value END`,
+            nonce: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.nonce ELSE sync_changes.nonce END`,
+            // Always update updatedAt to track when this cell was last touched
+            updatedAt: sql`now()`,
+          },
+        })
+        .returning({
+          id: syncChanges.id,
+          hlcTimestamp: syncChanges.hlcTimestamp,
+        })
+
+      return insertedChanges
+    })
 
     return c.json({
       message: 'Changes pushed successfully',
-      count: insertedChanges.length,
-      lastHlc: insertedChanges.length > 0 ? insertedChanges[insertedChanges.length - 1]?.hlcTimestamp ?? null : null,
+      count: result.length,
+      lastHlc: result.length > 0 ? result[result.length - 1]?.hlcTimestamp ?? null : null,
     })
   } catch (error) {
     console.error('Push changes error:', error)

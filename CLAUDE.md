@@ -1,3 +1,31 @@
+# Sync Server Architecture
+
+## CRDT Sync-Mechanismus
+
+### Batch-Verarbeitung
+- **Atomare Anwendung**: Alle Änderungen werden in PostgreSQL-Transaktionen verarbeitet
+- **Batch-Validierung**: Server prüft, dass alle Batch-Sequenzen (1 bis batchTotal) vorhanden sind
+- **Keine partiellen Batches**: Bei unvollständigen Batches wird der gesamte Push abgelehnt
+- **UPSERT-Logik**: Pro `(vault_id, table_name, row_pks, column_name)` nur ein Eintrag
+- **Last-Write-Wins**: HLC-Timestamps bestimmen, welcher Wert gespeichert wird
+
+### Wichtige Felder
+- `batchId`: UUID zur Gruppierung zusammengehöriger Änderungen
+- `batchSeq`: 1-basierte Sequenznummer innerhalb des Batches
+- `batchTotal`: Gesamtanzahl der Änderungen im Batch
+
+### Datenkonsistenz
+1. Client sendet alle Änderungen eines Batches in einem Request
+2. Backend validiert Vollständigkeit (alle Sequenzen 1..N vorhanden)
+3. Bei Erfolg: Transaktionale Anwendung aller Änderungen
+4. Bei Fehler: Rollback der gesamten Transaktion
+
+## Verwandte Projekte
+
+- **Client**: /home/haex/Projekte/haex-vault
+- **SDK**: /home/haex/Projekte/haexhub-sdk
+
+# Bun Usage
 
 Default to using Bun instead of Node.js.
 
