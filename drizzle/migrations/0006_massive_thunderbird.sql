@@ -1,1 +1,1 @@
-ALTER TABLE "sync_changes" DROP COLUMN "operation";
+ALTER TABLE "sync_changes" DROP COLUMN IF EXISTS "operation";
