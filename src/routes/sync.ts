@@ -190,14 +190,14 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
       .onConflictDoUpdate({
         target: [syncChanges.vaultId, syncChanges.tableName, syncChanges.rowPks, syncChanges.columnName],
         set: {
-          hlcTimestamp: sql`EXCLUDED.hlc_timestamp`,
-          deviceId: sql`EXCLUDED.device_id`,
-          encryptedValue: sql`EXCLUDED.encrypted_value`,
-          nonce: sql`EXCLUDED.nonce`,
+          // Use CASE to only update if incoming HLC is newer (Last-Write-Wins)
+          hlcTimestamp: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.hlc_timestamp ELSE sync_changes.hlc_timestamp END`,
+          deviceId: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.device_id ELSE sync_changes.device_id END`,
+          encryptedValue: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.encrypted_value ELSE sync_changes.encrypted_value END`,
+          nonce: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.nonce ELSE sync_changes.nonce END`,
+          // Always update updatedAt to track when this cell was last touched
           updatedAt: sql`now()`,
         },
-        // Only update if incoming HLC is newer
-        where: sql`EXCLUDED.hlc_timestamp > ${syncChanges.hlcTimestamp}`,
       })
       .returning({
         id: syncChanges.id,

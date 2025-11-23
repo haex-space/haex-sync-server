@@ -51,7 +51,7 @@ export const vaultKeys = pgTable(
  *
  * Unencrypted (for sync efficiency):
  * - tableName, rowPks, columnName: Required for server-side deduplication
- * - operation, hlcTimestamp: Required for conflict resolution metadata
+ * - hlcTimestamp: Required for conflict resolution (Last-Write-Wins)
  * - deviceId: For filtering own changes on pull
  *
  * Encrypted:
@@ -60,7 +60,8 @@ export const vaultKeys = pgTable(
  * Privacy note: Metadata reveals table structure and change patterns, but not actual data.
  * This is an acceptable trade-off for efficient CRDT sync. Server can be self-hosted.
  *
- * Uses composite key (vaultId, tableName, rowPks, columnName) to store only latest value per cell.
+ * Uses composite unique index (vaultId, tableName, rowPks, columnName) to store only latest value per cell.
+ * ON CONFLICT DO UPDATE ensures updates when HLC is newer (Last-Write-Wins CRDT semantics).
  * References auth.users from Supabase Auth
  */
 export const syncChanges = pgTable(
