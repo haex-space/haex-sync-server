@@ -263,6 +263,7 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
       message: 'Changes pushed successfully',
       count: result.length,
       lastHlc: result.length > 0 ? result[result.length - 1]?.hlcTimestamp ?? null : null,
+      serverTimestamp: new Date().toISOString(),
     })
   } catch (error) {
     console.error('Push changes error:', error)
@@ -293,7 +294,7 @@ sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
 
     // Pull changes updated after the given server timestamp (NOT HLC timestamp!)
     // updatedAt is a PostgreSQL timestamp, afterUpdatedAt is an ISO 8601 string
-    if (afterUpdatedAt !== undefined) {
+    if (afterUpdatedAt) {
       whereConditions.push(gt(syncChanges.updatedAt, new Date(afterUpdatedAt)))
     }
 
@@ -322,6 +323,7 @@ sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
         updatedAt: change.updatedAt.toISOString(),
       })),
       hasMore,
+      serverTimestamp: new Date().toISOString(),
     })
   } catch (error) {
     console.error('Pull changes error:', error)
