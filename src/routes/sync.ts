@@ -275,44 +275,101 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
  * GET /sync/pull
  * Pull CRDT changes from server with unencrypted metadata
  * Client performs conflict resolution locally based on HLC timestamps
+ *
+ * IMPORTANT: When a row has at least one column updated after afterUpdatedAt,
+ * ALL columns of that row are returned. This ensures clients can insert new rows
+ * even if they missed earlier syncs (prevents NOT NULL constraint violations).
  */
 sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
   const user = c.get('user')
   const { vaultId, excludeDeviceId, afterUpdatedAt, limit } = c.req.valid('query')
 
   try {
-    // Build query
-    const whereConditions = [
-      eq(syncChanges.userId, user.userId),
-      eq(syncChanges.vaultId, vaultId),
-    ]
+    // If no afterUpdatedAt filter, just return all changes (initial sync)
+    if (!afterUpdatedAt) {
+      const whereConditions = [
+        eq(syncChanges.userId, user.userId),
+        eq(syncChanges.vaultId, vaultId),
+      ]
 
-    // Exclude changes from specific device (to avoid downloading own changes)
-    if (excludeDeviceId !== undefined) {
-      whereConditions.push(ne(syncChanges.deviceId, excludeDeviceId))
+      if (excludeDeviceId !== undefined) {
+        whereConditions.push(ne(syncChanges.deviceId, excludeDeviceId))
+      }
+
+      const changes = await db.query.syncChanges.findMany({
+        where: and(...whereConditions),
+        orderBy: syncChanges.updatedAt,
+        limit: limit + 1,
+      })
+
+      const hasMore = changes.length > limit
+      const returnChanges = changes.slice(0, limit)
+
+      return c.json({
+        changes: returnChanges.map((change) => ({
+          tableName: change.tableName,
+          rowPks: change.rowPks,
+          columnName: change.columnName,
+          hlcTimestamp: change.hlcTimestamp,
+          encryptedValue: change.encryptedValue,
+          nonce: change.nonce,
+          deviceId: change.deviceId,
+          updatedAt: change.updatedAt.toISOString(),
+        })),
+        hasMore,
+        serverTimestamp: new Date().toISOString(),
+      })
     }
 
-    // Pull changes updated after the given server timestamp (NOT HLC timestamp!)
-    // updatedAt is a PostgreSQL timestamp, afterUpdatedAt is an ISO 8601 string
-    if (afterUpdatedAt) {
-      whereConditions.push(gt(syncChanges.updatedAt, new Date(afterUpdatedAt)))
+    // Step 1: Find all (table_name, row_pks) pairs that have at least one column
+    // updated after afterUpdatedAt
+    const modifiedRowsQuery = await db
+      .selectDistinct({
+        tableName: syncChanges.tableName,
+        rowPks: syncChanges.rowPks,
+      })
+      .from(syncChanges)
+      .where(
+        and(
+          eq(syncChanges.userId, user.userId),
+          eq(syncChanges.vaultId, vaultId),
+          gt(syncChanges.updatedAt, new Date(afterUpdatedAt)),
+          excludeDeviceId !== undefined ? ne(syncChanges.deviceId, excludeDeviceId) : undefined,
+        )
+      )
+      .limit(limit) // Limit rows, not columns
+
+    if (modifiedRowsQuery.length === 0) {
+      return c.json({
+        changes: [],
+        hasMore: false,
+        serverTimestamp: new Date().toISOString(),
+      })
     }
 
-    // Fetch limit + 1 to check if there are more records
-    const changes = await db.query.syncChanges.findMany({
-      where: and(...whereConditions),
+    // Step 2: Fetch ALL columns for these rows (not just the recently modified ones)
+    // This ensures the client has all data needed to insert a new row
+    const rowConditions = modifiedRowsQuery.map(
+      (row) => and(
+        eq(syncChanges.tableName, row.tableName),
+        eq(syncChanges.rowPks, row.rowPks),
+      )
+    )
+
+    const allColumnsForRows = await db.query.syncChanges.findMany({
+      where: and(
+        eq(syncChanges.userId, user.userId),
+        eq(syncChanges.vaultId, vaultId),
+        sql`(${sql.join(rowConditions, sql` OR `)})`,
+      ),
       orderBy: syncChanges.updatedAt,
-      limit: limit + 1,
     })
 
-    // Check if there are more records
-    const hasMore = changes.length > limit
-
-    // Return only the requested limit
-    const returnChanges = changes.slice(0, limit)
+    // Check if there might be more rows (we limited the distinct rows query)
+    const hasMore = modifiedRowsQuery.length >= limit
 
     return c.json({
-      changes: returnChanges.map((change) => ({
+      changes: allColumnsForRows.map((change) => ({
         tableName: change.tableName,
         rowPks: change.rowPks,
         columnName: change.columnName,
