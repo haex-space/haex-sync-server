@@ -1,4 +1,9 @@
--- Enable Row Level Security on sync tables
+-- Enable Row Level Security on sync tables and all partitions
+-- This file is idempotent and can be re-run after schema changes or new partitions
+--
+-- For partitioned tables, RLS policies on the parent table are automatically
+-- inherited by partitions, but RLS must be explicitly enabled on each partition.
+
 ALTER TABLE vault_keys ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sync_changes ENABLE ROW LEVEL SECURITY;
 
@@ -26,7 +31,7 @@ CREATE POLICY "Users can only update their own vault keys"
   USING (auth.uid() = user_id)
   WITH CHECK (auth.uid() = user_id);
 
--- Sync Changes Policies
+-- Sync Changes Policies (on parent table - inherited by partitions)
 CREATE POLICY "Users can only access their own sync changes"
   ON sync_changes
   FOR SELECT
@@ -38,3 +43,20 @@ CREATE POLICY "Users can only insert their own sync changes"
   WITH CHECK (auth.uid() = user_id);
 
 -- Note: No UPDATE or DELETE policies for sync_changes - they are append-only
+
+-- Enable RLS on all sync_changes partitions
+DO $$
+DECLARE
+    partition_record RECORD;
+BEGIN
+    FOR partition_record IN
+        SELECT c.relname as partition_name
+        FROM pg_inherits i
+        JOIN pg_class c ON c.oid = i.inhrelid
+        JOIN pg_class p ON p.oid = i.inhparent
+        WHERE p.relname = 'sync_changes'
+    LOOP
+        EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', partition_record.partition_name);
+        RAISE NOTICE 'Enabled RLS on partition %', partition_record.partition_name;
+    END LOOP;
+END $$;

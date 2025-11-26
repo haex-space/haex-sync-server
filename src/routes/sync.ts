@@ -406,8 +406,12 @@ sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
  * DELETE /sync/vault/:vaultId
  * Delete a vault and all its associated data from the server
  * This includes:
- * - All CRDT changes (sync_changes table)
+ * - All CRDT changes (sync_changes table) - via FK CASCADE + partition drop trigger
  * - Vault key and configuration (vault_keys table)
+ *
+ * With partitioning enabled, deleting the vault_key triggers:
+ * 1. FK CASCADE deletes sync_changes (if any in default partition)
+ * 2. Trigger drops the vault's partition table (instant, no row-by-row delete)
  */
 sync.delete('/vault/:vaultId', async (c) => {
   const user = c.get('user')
@@ -426,18 +430,7 @@ sync.delete('/vault/:vaultId', async (c) => {
       return c.json({ error: 'Vault not found or access denied' }, 404)
     }
 
-    // Delete all sync changes for this vault
-    const deletedChanges = await db
-      .delete(syncChanges)
-      .where(
-        and(
-          eq(syncChanges.userId, user.userId),
-          eq(syncChanges.vaultId, vaultId)
-        )
-      )
-      .returning({ id: syncChanges.id })
-
-    // Delete vault key
+    // Delete vault key - this cascades to sync_changes and drops the partition
     await db
       .delete(vaultKeys)
       .where(
@@ -449,7 +442,6 @@ sync.delete('/vault/:vaultId', async (c) => {
 
     return c.json({
       message: 'Vault deleted successfully',
-      deletedChangesCount: deletedChanges.length,
       vaultId,
     })
   } catch (error) {

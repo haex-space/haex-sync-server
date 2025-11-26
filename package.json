@@ -13,6 +13,7 @@
     "db:push": "drizzle-kit push && bun run db:rls && bun run db:realtime",
     "db:rls": "bun run scripts/apply-rls.ts",
     "db:realtime": "bun run scripts/apply-realtime.ts",
+    "db:partitioning": "bun run scripts/apply-partitioning.ts",
     "db:studio": "drizzle-kit studio"
   },
   "devDependencies": {
