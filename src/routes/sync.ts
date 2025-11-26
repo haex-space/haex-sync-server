@@ -223,40 +223,54 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
 
     // All batches are complete - apply changes atomically in a transaction
     // This ensures either ALL changes are applied or NONE (on error/constraint violation)
-    const result = await db.transaction(async (tx) => {
-      const insertedChanges = await tx
-        .insert(syncChanges)
-        .values(
-          changes.map((change) => ({
-            userId: user.userId,
-            vaultId,
-            tableName: change.tableName,
-            rowPks: change.rowPks,
-            columnName: change.columnName,
-            hlcTimestamp: change.hlcTimestamp,
-            deviceId: change.deviceId,
-            encryptedValue: change.encryptedValue,
-            nonce: change.nonce,
-          } as NewSyncChange))
-        )
-        .onConflictDoUpdate({
-          target: [syncChanges.vaultId, syncChanges.tableName, syncChanges.rowPks, syncChanges.columnName],
-          set: {
-            // Use CASE to only update if incoming HLC is newer (Last-Write-Wins)
-            hlcTimestamp: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.hlc_timestamp ELSE sync_changes.hlc_timestamp END`,
-            deviceId: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.device_id ELSE sync_changes.device_id END`,
-            encryptedValue: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.encrypted_value ELSE sync_changes.encrypted_value END`,
-            nonce: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.nonce ELSE sync_changes.nonce END`,
-            // Only update updatedAt if data actually changed (HLC is newer)
-            updatedAt: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN now() ELSE sync_changes.updated_at END`,
-          },
-        })
-        .returning({
-          id: syncChanges.id,
-          hlcTimestamp: syncChanges.hlcTimestamp,
-        })
+    //
+    // PostgreSQL has a limit of 65534 parameters per query.
+    // Each change has ~9 parameters, so we can safely insert ~5000 changes per query.
+    const CHUNK_SIZE = 5000
 
-      return insertedChanges
+    const result = await db.transaction(async (tx) => {
+      const allInsertedChanges: { id: string; hlcTimestamp: string }[] = []
+
+      // Process changes in chunks to avoid PostgreSQL parameter limit
+      for (let i = 0; i < changes.length; i += CHUNK_SIZE) {
+        const chunk = changes.slice(i, i + CHUNK_SIZE)
+
+        const insertedChanges = await tx
+          .insert(syncChanges)
+          .values(
+            chunk.map((change) => ({
+              userId: user.userId,
+              vaultId,
+              tableName: change.tableName,
+              rowPks: change.rowPks,
+              columnName: change.columnName,
+              hlcTimestamp: change.hlcTimestamp,
+              deviceId: change.deviceId,
+              encryptedValue: change.encryptedValue,
+              nonce: change.nonce,
+            } as NewSyncChange))
+          )
+          .onConflictDoUpdate({
+            target: [syncChanges.vaultId, syncChanges.tableName, syncChanges.rowPks, syncChanges.columnName],
+            set: {
+              // Use CASE to only update if incoming HLC is newer (Last-Write-Wins)
+              hlcTimestamp: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.hlc_timestamp ELSE sync_changes.hlc_timestamp END`,
+              deviceId: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.device_id ELSE sync_changes.device_id END`,
+              encryptedValue: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.encrypted_value ELSE sync_changes.encrypted_value END`,
+              nonce: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.nonce ELSE sync_changes.nonce END`,
+              // Only update updatedAt if data actually changed (HLC is newer)
+              updatedAt: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN now() ELSE sync_changes.updated_at END`,
+            },
+          })
+          .returning({
+            id: syncChanges.id,
+            hlcTimestamp: syncChanges.hlcTimestamp,
+          })
+
+        allInsertedChanges.push(...insertedChanges)
+      }
+
+      return allInsertedChanges
     })
 
     return c.json({
