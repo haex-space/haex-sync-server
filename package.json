@@ -10,13 +10,15 @@
     "start:no-migrate": "bun run index.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "bun run scripts/migrate.ts",
-    "db:push": "drizzle-kit push && bun run db:rls",
+    "db:push": "drizzle-kit push && bun run db:rls && bun run db:realtime",
     "db:rls": "bun run scripts/apply-rls.ts",
+    "db:realtime": "bun run scripts/apply-realtime.ts",
     "db:studio": "drizzle-kit studio"
   },
   "devDependencies": {
     "@types/bun": "latest",
-    "drizzle-kit": "^0.31.6"
+    "drizzle-kit": "^0.31.6",
+    "tsx": "^4.20.6"
   },
   "peerDependencies": {
     "typescript": "^5"
