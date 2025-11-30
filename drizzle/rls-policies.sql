@@ -18,29 +18,29 @@ DROP POLICY IF EXISTS "Users can only insert their own sync changes" ON sync_cha
 CREATE POLICY "Users can only access their own vault keys"
   ON vault_keys
   FOR SELECT
-  USING (auth.uid() = user_id);
+  USING ((select auth.uid()) = user_id);
 
 CREATE POLICY "Users can only insert their own vault keys"
   ON vault_keys
   FOR INSERT
-  WITH CHECK (auth.uid() = user_id);
+  WITH CHECK ((select auth.uid()) = user_id);
 
 CREATE POLICY "Users can only update their own vault keys"
   ON vault_keys
   FOR UPDATE
-  USING (auth.uid() = user_id)
-  WITH CHECK (auth.uid() = user_id);
+  USING ((select auth.uid()) = user_id)
+  WITH CHECK ((select auth.uid()) = user_id);
 
 -- Sync Changes Policies (on parent table - inherited by partitions)
 CREATE POLICY "Users can only access their own sync changes"
   ON sync_changes
   FOR SELECT
-  USING (auth.uid() = user_id);
+  USING ((select auth.uid()) = user_id);
 
 CREATE POLICY "Users can only insert their own sync changes"
   ON sync_changes
   FOR INSERT
-  WITH CHECK (auth.uid() = user_id);
+  WITH CHECK ((select auth.uid()) = user_id);
 
 -- Note: No UPDATE or DELETE policies for sync_changes - they are append-only
 
