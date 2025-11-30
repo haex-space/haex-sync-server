@@ -15,7 +15,8 @@ const vaultKeySchema = z.object({
   vaultId: z.string().uuid(),
   encryptedVaultKey: z.string(),
   encryptedVaultName: z.string(),
-  salt: z.string(),
+  vaultKeySalt: z.string(), // Salt for vault password -> vault key encryption
+  vaultNameSalt: z.string(), // Salt for server password -> vault name encryption
   vaultKeyNonce: z.string(),
   vaultNameNonce: z.string(),
 })
@@ -56,7 +57,7 @@ const pullChangesSchema = z.object({
  */
 sync.post('/vault-key', zValidator('json', vaultKeySchema), async (c) => {
   const user = c.get('user')
-  const { vaultId, encryptedVaultKey, encryptedVaultName, salt, vaultKeyNonce, vaultNameNonce } = c.req.valid('json')
+  const { vaultId, encryptedVaultKey, encryptedVaultName, vaultKeySalt, vaultNameSalt, vaultKeyNonce, vaultNameNonce } = c.req.valid('json')
 
   try {
     // Check if vault key already exists
@@ -79,7 +80,8 @@ sync.post('/vault-key', zValidator('json', vaultKeySchema), async (c) => {
         vaultId,
         encryptedVaultKey,
         encryptedVaultName,
-        salt,
+        vaultKeySalt,
+        vaultNameSalt,
         vaultKeyNonce,
         vaultNameNonce,
       } as NewVaultKey)
@@ -122,7 +124,7 @@ sync.get('/vaults', async (c) => {
         vaultId: vault.vaultId,
         encryptedVaultName: vault.encryptedVaultName,
         vaultNameNonce: vault.vaultNameNonce,
-        salt: vault.salt,
+        vaultNameSalt: vault.vaultNameSalt, // Salt for server password decryption
         createdAt: vault.createdAt,
       })),
     })
@@ -204,7 +206,8 @@ sync.get('/vault-key/:vaultId', async (c) => {
         vaultId: vaultKey.vaultId,
         encryptedVaultKey: vaultKey.encryptedVaultKey,
         encryptedVaultName: vaultKey.encryptedVaultName,
-        salt: vaultKey.salt,
+        vaultKeySalt: vaultKey.vaultKeySalt, // Salt for vault password decryption
+        vaultNameSalt: vaultKey.vaultNameSalt, // Salt for server password decryption
         vaultKeyNonce: vaultKey.vaultKeyNonce,
         vaultNameNonce: vaultKey.vaultNameNonce,
         createdAt: vaultKey.createdAt,
