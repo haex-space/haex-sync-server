@@ -20,6 +20,11 @@ const vaultKeySchema = z.object({
   vaultNameNonce: z.string(),
 })
 
+const updateVaultNameSchema = z.object({
+  encryptedVaultName: z.string(),
+  vaultNameNonce: z.string(),
+})
+
 const pushChangesSchema = z.object({
   vaultId: z.string(),
   changes: z.array(
@@ -123,6 +128,53 @@ sync.get('/vaults', async (c) => {
     })
   } catch (error) {
     console.error('Get vaults error:', error)
+    return c.json({ error: 'Internal server error' }, 500)
+  }
+})
+
+/**
+ * PATCH /sync/vault-key/:vaultId
+ * Update encrypted vault name for a vault
+ */
+sync.patch('/vault-key/:vaultId', zValidator('json', updateVaultNameSchema), async (c) => {
+  const user = c.get('user')
+  const vaultId = c.req.param('vaultId')
+  const { encryptedVaultName, vaultNameNonce } = c.req.valid('json')
+
+  try {
+    // Check if vault key exists and belongs to user
+    const existing = await db.query.vaultKeys.findFirst({
+      where: and(
+        eq(vaultKeys.userId, user.userId),
+        eq(vaultKeys.vaultId, vaultId)
+      ),
+    })
+
+    if (!existing) {
+      return c.json({ error: 'Vault key not found' }, 404)
+    }
+
+    // Update vault name
+    await db
+      .update(vaultKeys)
+      .set({
+        encryptedVaultName,
+        vaultNameNonce,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(vaultKeys.userId, user.userId),
+          eq(vaultKeys.vaultId, vaultId)
+        )
+      )
+
+    return c.json({
+      message: 'Vault name updated successfully',
+      vaultId,
+    })
+  } catch (error) {
+    console.error('Update vault name error:', error)
     return c.json({ error: 'Internal server error' }, 500)
   }
 })
