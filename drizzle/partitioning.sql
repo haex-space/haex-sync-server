@@ -177,8 +177,18 @@ BEGIN
             NEW.vault_id
         );
 
-        -- Enable RLS on the new partition (policies are inherited from parent)
+        -- Enable RLS on the new partition
         EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', partition_name);
+
+        -- Create RLS policies on partition (policies are NOT inherited from parent!)
+        EXECUTE format(
+            'CREATE POLICY "Users can only access their own sync changes" ON %I FOR SELECT USING (auth.uid() = user_id)',
+            partition_name
+        );
+        EXECUTE format(
+            'CREATE POLICY "Users can only insert their own sync changes" ON %I FOR INSERT WITH CHECK (auth.uid() = user_id)',
+            partition_name
+        );
 
         -- Configure Realtime for the new partition
         EXECUTE format('ALTER TABLE %I REPLICA IDENTITY FULL', partition_name);
@@ -188,7 +198,7 @@ BEGIN
             EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE %I', partition_name);
         END IF;
 
-        RAISE NOTICE 'Created partition % for new vault % (with RLS and Realtime enabled)', partition_name, NEW.vault_id;
+        RAISE NOTICE 'Created partition % for new vault % (with RLS, policies, and Realtime enabled)', partition_name, NEW.vault_id;
     END IF;
 
     RETURN NEW;
