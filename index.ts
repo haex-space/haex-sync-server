@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
+import authRoutes from './src/routes/auth'
 import syncRoutes from './src/routes/sync'
 import packageJson from './package.json'
 
@@ -33,8 +34,9 @@ app.get('/', (c) => {
 })
 
 // Routes
-// Note: Auth is handled by Supabase directly from clients
-// This server only provides sync endpoints that require authentication
+// Auth routes for server-side login (bypasses Turnstile captcha for desktop/mobile apps)
+app.route('/auth', authRoutes)
+// Sync routes require authentication via JWT
 app.route('/sync', syncRoutes)
 
 // 404 handler
