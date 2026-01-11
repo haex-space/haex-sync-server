@@ -266,6 +266,28 @@ bun run db:studio
 
 ## Deployment
 
+### GitHub Actions (Automated)
+
+This project uses GitHub Actions for automated deployment. On every push to `main`, the workflow:
+
+1. Connects to the production server via SSH
+2. Pulls the latest changes from git
+3. Rebuilds and restarts the Docker container
+
+#### Required GitHub Secrets
+
+Configure these secrets in your GitHub repository settings:
+
+| Secret | Description |
+|--------|-------------|
+| `SSH_HOST` | Server hostname or IP address (e.g., `152.53.49.12`) |
+| `SSH_USERNAME` | SSH user for deployment (e.g., `haex-service`) |
+| `SSH_PRIVATE_KEY` | Private SSH key for authentication |
+
+#### Manual Deployment
+
+You can also trigger a deployment manually via the GitHub Actions UI (workflow_dispatch).
+
 ### Supabase Hosted
 
 1. Create a Supabase project at https://supabase.com

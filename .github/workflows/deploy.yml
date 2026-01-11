@@ -1,0 +1,41 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            set -e
+
+            # Navigate to app directory
+            cd ~/apps/haex-sync-server
+
+            # Pull latest changes
+            cd app
+            git fetch origin main
+            git reset --hard origin/main
+            cd ..
+
+            # Rebuild and restart container
+            docker compose build --no-cache
+            docker compose up -d --force-recreate
+
+            # Cleanup old images
+            docker image prune -f
+
+            echo "Deployment completed successfully!"
