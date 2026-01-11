@@ -270,23 +270,18 @@ bun run db:studio
 
 This project uses GitHub Actions for automated deployment. On every push to `main`, the workflow:
 
-1. Connects to the production server via SSH
-2. Pulls the latest changes from git
-3. Rebuilds and restarts the Docker container
+1. Builds the Docker image
+2. Pushes to GitHub Container Registry (ghcr.io)
+3. Watchtower on the server automatically pulls and deploys the new image
 
-#### Required GitHub Secrets
-
-Configure these secrets in your GitHub repository settings:
-
-| Secret | Description |
-|--------|-------------|
-| `SSH_HOST` | Server hostname or IP address (e.g., `152.53.49.12`) |
-| `SSH_USERNAME` | SSH user for deployment (e.g., `haex-service`) |
-| `SSH_PRIVATE_KEY` | Private SSH key for authentication |
+The Docker image is available at:
+```
+ghcr.io/haex-space/haex-sync-server:latest
+```
 
 #### Manual Deployment
 
-You can also trigger a deployment manually via the GitHub Actions UI (workflow_dispatch).
+You can also trigger a build manually via the GitHub Actions UI (workflow_dispatch).
 
 ### Supabase Hosted
 
