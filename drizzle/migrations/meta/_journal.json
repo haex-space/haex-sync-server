@@ -57,6 +57,13 @@
       "when": 1764546463426,
       "tag": "0007_grey_cammi",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1768347087265,
+      "tag": "0008_glamorous_warstar",
+      "breakpoints": true
     }
   ]
 }

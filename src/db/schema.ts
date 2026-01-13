@@ -37,8 +37,8 @@ export const vaultKeys = pgTable(
     vaultNameSalt: text("vault_name_salt").notNull(), // For PBKDF2 key derivation (server password -> vault name encryption)
     vaultKeyNonce: text("vault_key_nonce").notNull(), // For AES-GCM encryption of vault key
     vaultNameNonce: text("vault_name_nonce").notNull(), // For AES-GCM encryption of vault name
-    createdAt: timestamp("created_at").notNull().defaultNow(),
-    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     uniqueIndex("vault_keys_user_vault_idx").on(table.userId, table.vaultId),
@@ -85,8 +85,8 @@ export const syncChanges = pgTable(
     encryptedValue: text("encrypted_value"), // NULL for DELETE operations
     nonce: text("nonce"), // IV for AES-GCM, NULL for DELETE
 
-    createdAt: timestamp("created_at").notNull().defaultNow(),
-    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     // Composite unique index to ensure only one entry per (vault, table, row, column)

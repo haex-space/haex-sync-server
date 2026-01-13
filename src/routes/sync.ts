@@ -48,6 +48,8 @@ const pullChangesSchema = z.object({
   vaultId: z.string(),
   excludeDeviceId: z.string().optional(), // Exclude changes from this device ID
   afterUpdatedAt: z.string().optional(), // Pull changes after this server timestamp (ISO 8601)
+  afterTableName: z.string().optional(), // Secondary cursor for stable pagination (table name)
+  afterRowPks: z.string().optional(), // Secondary cursor for stable pagination (row primary keys)
   limit: z.coerce.number().int().min(1).max(1000).default(100), // Coerce string to number for query params
 })
 
@@ -351,73 +353,45 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
  */
 sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
   const user = c.get('user')
-  const { vaultId, excludeDeviceId, afterUpdatedAt, limit } = c.req.valid('query')
+  const { vaultId, excludeDeviceId, afterUpdatedAt, afterTableName, afterRowPks, limit } = c.req.valid('query')
 
   try {
-    // If no afterUpdatedAt filter, just return all changes (initial sync)
-    if (!afterUpdatedAt) {
-      const whereConditions = [
-        eq(syncChanges.userId, user.userId),
-        eq(syncChanges.vaultId, vaultId),
-      ]
-
-      if (excludeDeviceId !== undefined) {
-        whereConditions.push(ne(syncChanges.deviceId, excludeDeviceId))
-      }
-
-      const changes = await db.query.syncChanges.findMany({
-        where: and(...whereConditions),
-        orderBy: syncChanges.updatedAt,
-        limit: limit + 1,
-      })
-
-      const hasMore = changes.length > limit
-      const returnChanges = changes.slice(0, limit)
-
-      // Use the updatedAt of the last returned change as cursor for pagination
-      // This ensures the next page request gets changes AFTER this timestamp
-      const lastChange = returnChanges[returnChanges.length - 1]
-      const serverTimestamp = lastChange
-        ? lastChange.updatedAt.toISOString()
-        : new Date().toISOString()
-
-      return c.json({
-        changes: returnChanges.map((change) => ({
-          tableName: change.tableName,
-          rowPks: change.rowPks,
-          columnName: change.columnName,
-          hlcTimestamp: change.hlcTimestamp,
-          encryptedValue: change.encryptedValue,
-          nonce: change.nonce,
-          deviceId: change.deviceId,
-          updatedAt: change.updatedAt.toISOString(),
-        })),
-        hasMore,
-        serverTimestamp,
-      })
-    }
-
-    // Step 1: Find all (table_name, row_pks) pairs that have at least one column
-    // updated after afterUpdatedAt, using GROUP BY to get unique rows with their max updatedAt
+    // Step 1: Find rows to return using GROUP BY with HAVING for cursor-based pagination
+    // Uses (maxUpdatedAt, tableName, rowPks) for stable cursor - works even with bulk imports
     const modifiedRowsQuery = await db
       .select({
         tableName: syncChanges.tableName,
         rowPks: syncChanges.rowPks,
-        // Use MAX(updated_at) to get the latest update time per row for cursor calculation
-        maxUpdatedAt: max(syncChanges.updatedAt).as('max_updated_at'),
+        // Get max timestamp as ISO string with full microsecond precision to avoid cursor drift
+        maxUpdatedAtIso: sql<string>`to_char(max(${syncChanges.updatedAt}) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`.as('max_updated_at_iso'),
       })
       .from(syncChanges)
       .where(
         and(
           eq(syncChanges.userId, user.userId),
           eq(syncChanges.vaultId, vaultId),
-          gt(syncChanges.updatedAt, new Date(afterUpdatedAt)),
           excludeDeviceId !== undefined ? ne(syncChanges.deviceId, excludeDeviceId) : undefined,
         )
       )
       .groupBy(syncChanges.tableName, syncChanges.rowPks)
-      .orderBy(asc(max(syncChanges.updatedAt))) // Order by max updatedAt for stable pagination
-      .limit(limit) // Limit rows, not columns
+      // Use HAVING to filter based on the aggregated MAX(updated_at) for proper cursor pagination
+      // Condition: (timestamp > afterTimestamp) OR (timestamp = afterTimestamp AND (tableName, rowPks) > (afterTableName, afterRowPks))
+      // Note: Use timestamptz to handle timezone correctly when comparing ISO strings
+      .having(
+        afterUpdatedAt
+          ? afterTableName && afterRowPks
+            ? sql`(
+                max(${syncChanges.updatedAt}) > ${afterUpdatedAt}::timestamptz
+                OR (
+                  max(${syncChanges.updatedAt}) = ${afterUpdatedAt}::timestamptz
+                  AND (${syncChanges.tableName}, ${syncChanges.rowPks}) > (${afterTableName}, ${afterRowPks})
+                )
+              )`
+            : sql`max(${syncChanges.updatedAt}) > ${afterUpdatedAt}::timestamptz`
+          : undefined
+      )
+      .orderBy(asc(max(syncChanges.updatedAt)), asc(syncChanges.tableName), asc(syncChanges.rowPks))
+      .limit(limit)
 
     if (modifiedRowsQuery.length === 0) {
       return c.json({
@@ -427,8 +401,7 @@ sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
       })
     }
 
-    // Step 2: Fetch ALL columns for these rows (not just the recently modified ones)
-    // This ensures the client has all data needed to insert a new row
+    // Step 2: Fetch ALL columns for these rows
     const rowConditions = modifiedRowsQuery.map(
       (row) => and(
         eq(syncChanges.tableName, row.tableName),
@@ -445,19 +418,12 @@ sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
       orderBy: syncChanges.updatedAt,
     })
 
-    // Check if there might be more rows (we limited the distinct rows query)
+    // Check if there might be more rows
     const hasMore = modifiedRowsQuery.length >= limit
 
-    // CRITICAL: Use the max updatedAt from the MODIFIED ROWS query (step 1), not allColumnsForRows
-    // This ensures we get rows AFTER this timestamp, even if all columns have the same updatedAt
-    const lastRowMaxUpdatedAt = modifiedRowsQuery.reduce((max, row) => {
-      const rowMax = row.maxUpdatedAt
-      if (!rowMax) return max
-      return rowMax > max ? rowMax : max
-    }, new Date(0))
-    const serverTimestamp = modifiedRowsQuery.length > 0
-      ? lastRowMaxUpdatedAt.toISOString()
-      : new Date().toISOString()
+    // Get cursor values from the last row
+    const lastRow = modifiedRowsQuery[modifiedRowsQuery.length - 1]
+    const serverTimestamp = lastRow?.maxUpdatedAtIso ?? new Date().toISOString()
 
     return c.json({
       changes: allColumnsForRows.map((change) => ({
@@ -472,6 +438,9 @@ sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
       })),
       hasMore,
       serverTimestamp,
+      // Secondary cursor for stable pagination (tableName, rowPks of last row)
+      lastTableName: lastRow?.tableName,
+      lastRowPks: lastRow?.rowPks,
     })
   } catch (error) {
     console.error('Pull changes error:', error)
