@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { db, syncChanges, vaultKeys, type NewSyncChange, type NewVaultKey } from '../db'
 import { authMiddleware } from '../middleware/auth'
-import { eq, and, gt, ne, sql } from 'drizzle-orm'
+import { eq, and, gt, ne, sql, max, asc } from 'drizzle-orm'
 
 const sync = new Hono()
 
@@ -398,11 +398,13 @@ sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
     }
 
     // Step 1: Find all (table_name, row_pks) pairs that have at least one column
-    // updated after afterUpdatedAt
+    // updated after afterUpdatedAt, using GROUP BY to get unique rows with their max updatedAt
     const modifiedRowsQuery = await db
-      .selectDistinct({
+      .select({
         tableName: syncChanges.tableName,
         rowPks: syncChanges.rowPks,
+        // Use MAX(updated_at) to get the latest update time per row for cursor calculation
+        maxUpdatedAt: max(syncChanges.updatedAt).as('max_updated_at'),
       })
       .from(syncChanges)
       .where(
@@ -413,6 +415,8 @@ sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
           excludeDeviceId !== undefined ? ne(syncChanges.deviceId, excludeDeviceId) : undefined,
         )
       )
+      .groupBy(syncChanges.tableName, syncChanges.rowPks)
+      .orderBy(asc(max(syncChanges.updatedAt))) // Order by max updatedAt for stable pagination
       .limit(limit) // Limit rows, not columns
 
     if (modifiedRowsQuery.length === 0) {
@@ -444,13 +448,15 @@ sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
     // Check if there might be more rows (we limited the distinct rows query)
     const hasMore = modifiedRowsQuery.length >= limit
 
-    // Use the max updatedAt from all returned changes as cursor for pagination
-    // This ensures the next page request gets changes AFTER this timestamp
-    const maxUpdatedAt = allColumnsForRows.reduce((max, change) => {
-      return change.updatedAt > max ? change.updatedAt : max
+    // CRITICAL: Use the max updatedAt from the MODIFIED ROWS query (step 1), not allColumnsForRows
+    // This ensures we get rows AFTER this timestamp, even if all columns have the same updatedAt
+    const lastRowMaxUpdatedAt = modifiedRowsQuery.reduce((max, row) => {
+      const rowMax = row.maxUpdatedAt
+      if (!rowMax) return max
+      return rowMax > max ? rowMax : max
     }, new Date(0))
-    const serverTimestamp = allColumnsForRows.length > 0
-      ? maxUpdatedAt.toISOString()
+    const serverTimestamp = modifiedRowsQuery.length > 0
+      ? lastRowMaxUpdatedAt.toISOString()
       : new Date().toISOString()
 
     return c.json({
