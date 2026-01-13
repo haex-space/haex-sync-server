@@ -374,6 +374,13 @@ sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
       const hasMore = changes.length > limit
       const returnChanges = changes.slice(0, limit)
 
+      // Use the updatedAt of the last returned change as cursor for pagination
+      // This ensures the next page request gets changes AFTER this timestamp
+      const lastChange = returnChanges[returnChanges.length - 1]
+      const serverTimestamp = lastChange
+        ? lastChange.updatedAt.toISOString()
+        : new Date().toISOString()
+
       return c.json({
         changes: returnChanges.map((change) => ({
           tableName: change.tableName,
@@ -386,7 +393,7 @@ sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
           updatedAt: change.updatedAt.toISOString(),
         })),
         hasMore,
-        serverTimestamp: new Date().toISOString(),
+        serverTimestamp,
       })
     }
 
@@ -437,6 +444,15 @@ sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
     // Check if there might be more rows (we limited the distinct rows query)
     const hasMore = modifiedRowsQuery.length >= limit
 
+    // Use the max updatedAt from all returned changes as cursor for pagination
+    // This ensures the next page request gets changes AFTER this timestamp
+    const maxUpdatedAt = allColumnsForRows.reduce((max, change) => {
+      return change.updatedAt > max ? change.updatedAt : max
+    }, new Date(0))
+    const serverTimestamp = allColumnsForRows.length > 0
+      ? maxUpdatedAt.toISOString()
+      : new Date().toISOString()
+
     return c.json({
       changes: allColumnsForRows.map((change) => ({
         tableName: change.tableName,
@@ -449,7 +465,7 @@ sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
         updatedAt: change.updatedAt.toISOString(),
       })),
       hasMore,
-      serverTimestamp: new Date().toISOString(),
+      serverTimestamp,
     })
   } catch (error) {
     console.error('Pull changes error:', error)
