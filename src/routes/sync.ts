@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { db, syncChanges, vaultKeys, type NewSyncChange, type NewVaultKey } from '../db'
 import { authMiddleware } from '../middleware/auth'
-import { eq, and, gt, ne, sql, max, asc } from 'drizzle-orm'
+import { eq, and, ne, sql, max, asc, or, inArray } from 'drizzle-orm'
 
 const sync = new Hono()
 
@@ -51,6 +51,19 @@ const pullChangesSchema = z.object({
   afterTableName: z.string().optional(), // Secondary cursor for stable pagination (table name)
   afterRowPks: z.string().optional(), // Secondary cursor for stable pagination (row primary keys)
   limit: z.coerce.number().int().min(1).max(1000).default(100), // Coerce string to number for query params
+})
+
+const pullColumnsSchema = z.object({
+  vaultId: z.string(),
+  columns: z.array(
+    z.object({
+      tableName: z.string(),
+      columnName: z.string(),
+    })
+  ).min(1).max(100), // Limit to 100 columns per request
+  limit: z.number().int().min(1).max(10000).default(1000), // Higher limit since we're fetching specific columns
+  afterRowPks: z.string().optional(), // Cursor for pagination (rowPks of last item)
+  afterTableName: z.string().optional(), // Cursor for pagination (tableName of last item)
 })
 
 /**
@@ -492,6 +505,73 @@ sync.delete('/vault/:vaultId', async (c) => {
     })
   } catch (error) {
     console.error('Delete vault error:', error)
+    return c.json({ error: 'Internal server error' }, 500)
+  }
+})
+
+/**
+ * POST /sync/pull-columns
+ * Pull specific column data for pending columns after schema migration
+ *
+ * When a device has an older schema version and receives changes with unknown columns,
+ * it skips those columns and tracks them in haex_crdt_pending_columns_no_sync.
+ * After the app updates and migrations add those columns, this endpoint is called
+ * to fetch ALL data for those specific columns.
+ *
+ * Returns all rows that have data for the requested columns, with their PKs for
+ * correct association during insertion.
+ */
+sync.post('/pull-columns', zValidator('json', pullColumnsSchema), async (c) => {
+  const user = c.get('user')
+  const { vaultId, columns, limit, afterRowPks, afterTableName } = c.req.valid('json')
+
+  try {
+    // Build conditions for each (tableName, columnName) pair
+    const columnConditions = columns.map(
+      (col) => and(
+        eq(syncChanges.tableName, col.tableName),
+        eq(syncChanges.columnName, col.columnName),
+      )
+    )
+
+    // Query all data for these columns with cursor-based pagination
+    const changes = await db.query.syncChanges.findMany({
+      where: and(
+        eq(syncChanges.userId, user.userId),
+        eq(syncChanges.vaultId, vaultId),
+        or(...columnConditions),
+        // Cursor-based pagination using (tableName, rowPks) as compound cursor
+        afterTableName && afterRowPks
+          ? sql`(${syncChanges.tableName}, ${syncChanges.rowPks}) > (${afterTableName}, ${afterRowPks})`
+          : undefined,
+      ),
+      orderBy: [asc(syncChanges.tableName), asc(syncChanges.rowPks)],
+      limit: limit + 1, // Fetch one extra to check if there are more
+    })
+
+    const hasMore = changes.length > limit
+    const resultChanges = hasMore ? changes.slice(0, limit) : changes
+
+    // Get cursor values from the last item
+    const lastChange = resultChanges[resultChanges.length - 1]
+
+    return c.json({
+      changes: resultChanges.map((change) => ({
+        tableName: change.tableName,
+        rowPks: change.rowPks,
+        columnName: change.columnName,
+        hlcTimestamp: change.hlcTimestamp,
+        encryptedValue: change.encryptedValue,
+        nonce: change.nonce,
+        deviceId: change.deviceId,
+      })),
+      hasMore,
+      // Cursor for next page
+      lastTableName: lastChange?.tableName,
+      lastRowPks: lastChange?.rowPks,
+    })
+  } catch (error) {
+    console.error('Pull columns error:', error)
     return c.json({ error: 'Internal server error' }, 500)
   }
 })
