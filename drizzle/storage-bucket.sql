@@ -5,6 +5,36 @@
 -- for quota enforcement on uploads
 
 -- ============================================
+-- DEFAULT STORAGE TIER
+-- ============================================
+
+-- Insert default tier (only Free tier for now)
+INSERT INTO public.storage_tiers (name, slug, quota_bytes, price_monthly_euro_cents, is_default, sort_order)
+VALUES ('Free', 'free', 10737418240, NULL, TRUE, 0)  -- 10 GB
+ON CONFLICT (slug) DO NOTHING;
+
+-- ============================================
+-- RLS FOR QUOTA TABLES
+-- ============================================
+
+ALTER TABLE public.storage_tiers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.user_storage_quotas ENABLE ROW LEVEL SECURITY;
+
+-- Everyone can read tiers
+DROP POLICY IF EXISTS "public_read_tiers" ON public.storage_tiers;
+CREATE POLICY "public_read_tiers" ON public.storage_tiers
+FOR SELECT USING (true);
+
+-- Users can only read their own quota
+DROP POLICY IF EXISTS "user_read_own_quota" ON public.user_storage_quotas;
+CREATE POLICY "user_read_own_quota" ON public.user_storage_quotas
+FOR SELECT USING (auth.uid() = user_id);
+
+-- Grant permissions on quota tables
+GRANT SELECT ON public.storage_tiers TO anon, authenticated;
+GRANT SELECT ON public.user_storage_quotas TO authenticated;
+
+-- ============================================
 -- STORAGE BUCKET
 -- ============================================
 
@@ -120,6 +150,17 @@ DROP TRIGGER IF EXISTS on_auth_user_created_storage ON auth.users;
 CREATE TRIGGER on_auth_user_created_storage
   AFTER INSERT ON auth.users
   FOR EACH ROW EXECUTE FUNCTION public.create_default_storage_quota();
+
+-- Create quota for existing users who don't have one
+INSERT INTO public.user_storage_quotas (user_id, tier_id)
+SELECT u.id, st.id
+FROM auth.users u
+CROSS JOIN public.storage_tiers st
+WHERE st.is_default = TRUE
+  AND NOT EXISTS (
+    SELECT 1 FROM public.user_storage_quotas usq WHERE usq.user_id = u.id
+  )
+ON CONFLICT DO NOTHING;
 
 -- ============================================
 -- STORAGE BUCKET RLS POLICIES
