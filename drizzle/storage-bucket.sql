@@ -1,8 +1,8 @@
 -- Storage Bucket Setup for haex Cloud Storage
 -- This file is idempotent and can be re-run after changes
 --
--- Creates the user-files bucket and configures RLS policies
--- for quota enforcement on uploads
+-- Per-User Buckets: Each user gets their own bucket: storage-{user_id}
+-- This avoids naming conflicts and provides better isolation
 
 -- ============================================
 -- DEFAULT STORAGE TIER
@@ -35,25 +35,21 @@ GRANT SELECT ON public.storage_tiers TO anon, authenticated;
 GRANT SELECT ON public.user_storage_quotas TO authenticated;
 
 -- ============================================
--- STORAGE BUCKET
--- ============================================
-
--- Create bucket for user files (if not exists)
-INSERT INTO storage.buckets (id, name, public, file_size_limit)
-VALUES ('user-files', 'user-files', FALSE, 52428800)  -- 50MB per file
-ON CONFLICT (id) DO NOTHING;
-
--- ============================================
 -- HELPER FUNCTIONS
 -- ============================================
 
--- Function: Calculate used bytes from storage.objects
+-- Function: Get user's bucket name
+CREATE OR REPLACE FUNCTION public.get_user_bucket_name(p_user_id UUID)
+RETURNS TEXT AS $$
+  SELECT 'storage-' || p_user_id::text;
+$$ LANGUAGE sql IMMUTABLE;
+
+-- Function: Calculate used bytes from storage.objects (for per-user bucket)
 CREATE OR REPLACE FUNCTION public.calculate_user_storage_usage(p_user_id UUID)
 RETURNS BIGINT AS $$
   SELECT COALESCE(SUM((metadata->>'size')::BIGINT), 0)
   FROM storage.objects
-  WHERE bucket_id = 'user-files'
-    AND (storage.foldername(name))[1] = p_user_id::text;
+  WHERE bucket_id = public.get_user_bucket_name(p_user_id);
 $$ LANGUAGE sql STABLE SECURITY DEFINER;
 
 -- Function: Check if upload is allowed (for RLS policy)
@@ -130,17 +126,39 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
 
+-- Function: Create user's storage bucket
+CREATE OR REPLACE FUNCTION public.create_user_storage_bucket(p_user_id UUID)
+RETURNS TEXT AS $$
+DECLARE
+  v_bucket_name TEXT;
+BEGIN
+  v_bucket_name := public.get_user_bucket_name(p_user_id);
+
+  -- Create bucket if not exists
+  INSERT INTO storage.buckets (id, name, public, file_size_limit)
+  VALUES (v_bucket_name, v_bucket_name, FALSE, 52428800)  -- 50MB per file
+  ON CONFLICT (id) DO NOTHING;
+
+  RETURN v_bucket_name;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
 -- ============================================
 -- TRIGGERS
 -- ============================================
 
--- Trigger function: Auto-create quota for new users
+-- Trigger function: Auto-create quota AND bucket for new users
 CREATE OR REPLACE FUNCTION public.create_default_storage_quota()
 RETURNS TRIGGER AS $$
 BEGIN
+  -- Create quota entry
   INSERT INTO public.user_storage_quotas (user_id, tier_id)
   SELECT NEW.id, id FROM public.storage_tiers WHERE is_default = TRUE
   ON CONFLICT DO NOTHING;
+
+  -- Create user's storage bucket
+  PERFORM public.create_user_storage_bucket(NEW.id);
+
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
@@ -151,7 +169,7 @@ CREATE TRIGGER on_auth_user_created_storage
   AFTER INSERT ON auth.users
   FOR EACH ROW EXECUTE FUNCTION public.create_default_storage_quota();
 
--- Create quota for existing users who don't have one
+-- Create quota and bucket for existing users who don't have one
 INSERT INTO public.user_storage_quotas (user_id, tier_id)
 SELECT u.id, st.id
 FROM auth.users u
@@ -162,45 +180,51 @@ WHERE st.is_default = TRUE
   )
 ON CONFLICT DO NOTHING;
 
+-- Create buckets for existing users
+DO $$
+DECLARE
+  r RECORD;
+BEGIN
+  FOR r IN SELECT id FROM auth.users LOOP
+    PERFORM public.create_user_storage_bucket(r.id);
+  END LOOP;
+END;
+$$;
+
 -- ============================================
 -- STORAGE BUCKET RLS POLICIES
 -- ============================================
 
--- Drop existing policies first
+-- Drop old user-files policies if they exist (migration from old system)
 DROP POLICY IF EXISTS "user_upload_with_quota" ON storage.objects;
 DROP POLICY IF EXISTS "user_read" ON storage.objects;
 DROP POLICY IF EXISTS "user_delete" ON storage.objects;
 DROP POLICY IF EXISTS "user_update" ON storage.objects;
 
--- Upload: only if quota not exceeded
--- Files must be stored in user's folder: {user_id}/...
--- Note: Supabase Storage passes file size in metadata during upload
-CREATE POLICY "user_upload_with_quota" ON storage.objects
+-- Per-user bucket policies
+-- Upload: only to own bucket, check quota
+CREATE POLICY "user_upload_own_bucket" ON storage.objects
 FOR INSERT WITH CHECK (
-  bucket_id = 'user-files'
-  AND (storage.foldername(name))[1] = auth.uid()::text
+  bucket_id = public.get_user_bucket_name(auth.uid())
   AND public.check_storage_quota(auth.uid(), COALESCE((metadata->>'size')::BIGINT, 0))
 );
 
--- Read: own files only
-CREATE POLICY "user_read" ON storage.objects
+-- Read: own bucket only
+CREATE POLICY "user_read_own_bucket" ON storage.objects
 FOR SELECT USING (
-  bucket_id = 'user-files'
-  AND (storage.foldername(name))[1] = auth.uid()::text
+  bucket_id = public.get_user_bucket_name(auth.uid())
 );
 
--- Delete: own files only
-CREATE POLICY "user_delete" ON storage.objects
+-- Delete: own bucket only
+CREATE POLICY "user_delete_own_bucket" ON storage.objects
 FOR DELETE USING (
-  bucket_id = 'user-files'
-  AND (storage.foldername(name))[1] = auth.uid()::text
+  bucket_id = public.get_user_bucket_name(auth.uid())
 );
 
--- Update: own files only (for metadata updates)
-CREATE POLICY "user_update" ON storage.objects
+-- Update: own bucket only (for metadata updates)
+CREATE POLICY "user_update_own_bucket" ON storage.objects
 FOR UPDATE USING (
-  bucket_id = 'user-files'
-  AND (storage.foldername(name))[1] = auth.uid()::text
+  bucket_id = public.get_user_bucket_name(auth.uid())
 );
 
 -- ============================================
@@ -208,6 +232,8 @@ FOR UPDATE USING (
 -- ============================================
 
 -- Grant execute on functions
+GRANT EXECUTE ON FUNCTION public.get_user_bucket_name(UUID) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.calculate_user_storage_usage(UUID) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.check_storage_quota(UUID, BIGINT) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.get_user_storage_quota(UUID) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.create_user_storage_bucket(UUID) TO service_role;
