@@ -27,6 +27,20 @@ try {
   const rlsPoliciesSQL = readFileSync(join(import.meta.dir, '../drizzle/rls-policies.sql'), 'utf-8')
   await migrationClient.unsafe(rlsPoliciesSQL)
   console.log('✅ RLS policies applied successfully')
+
+  // Apply Storage Bucket configuration (if file exists)
+  const storageBucketPath = join(import.meta.dir, '../drizzle/storage-bucket.sql')
+  try {
+    const storageBucketSQL = readFileSync(storageBucketPath, 'utf-8')
+    console.log('📦 Applying Storage Bucket configuration...')
+    await migrationClient.unsafe(storageBucketSQL)
+    console.log('✅ Storage Bucket configuration applied successfully')
+  } catch (e) {
+    // File might not exist, that's okay
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw e
+    }
+  }
 } catch (error) {
   console.error('❌ Migration failed:', error)
   await migrationClient.end()
