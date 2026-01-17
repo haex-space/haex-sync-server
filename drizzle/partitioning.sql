@@ -7,6 +7,11 @@
 -- - Deleting a vault = DROP TABLE (instant, no vacuum needed)
 -- - Each partition can be backed up/restored independently
 --
+-- Security:
+-- - RLS is enabled on the parent table AND on each partition
+-- - PostgreSQL requires RLS to be enabled on each partition separately
+-- - The trigger function also enables RLS when creating new partitions
+--
 -- This script is idempotent - it checks if partitioning is already enabled
 -- It dynamically reads the table structure from Drizzle's schema (DRY principle)
 
@@ -87,6 +92,8 @@ BEGIN
 
     -- Step 5: Create default partition for safety (catches any vault_id without its own partition)
     CREATE TABLE "sync_changes_default" PARTITION OF "sync_changes" DEFAULT;
+    -- Enable RLS on default partition
+    ALTER TABLE "sync_changes_default" ENABLE ROW LEVEL SECURITY;
 
     -- Step 6: Create partitions for existing vault_ids and migrate data
     FOR v_id IN SELECT DISTINCT vault_id FROM sync_changes_old
@@ -102,6 +109,9 @@ BEGIN
             partition_name,
             v_id
         );
+
+        -- Enable RLS on the partition (required for each partition separately)
+        EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', partition_name);
 
         -- Move data to the new partition
         EXECUTE format(

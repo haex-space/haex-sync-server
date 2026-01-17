@@ -58,18 +58,24 @@ const syncChanges = pgTable(
   ]
 )
 
-// Test database connection
-const connectionString = process.env.DATABASE_URL
+// Test database connection - prefer DATABASE_URL_TEST to avoid production data pollution
+const connectionString = process.env.DATABASE_URL_TEST || process.env.DATABASE_URL
 if (!connectionString) {
-  throw new Error('DATABASE_URL environment variable is required for tests')
+  throw new Error('DATABASE_URL_TEST or DATABASE_URL environment variable is required for tests')
+}
+
+// Warn if using production database
+if (!process.env.DATABASE_URL_TEST && process.env.DATABASE_URL) {
+  console.warn('⚠️  WARNING: Using DATABASE_URL for tests. Set DATABASE_URL_TEST for isolation.')
 }
 
 const client = postgres(connectionString)
 const db = drizzle(client, { schema: { syncChanges, authUsers, vaultKeys } })
 
-// Test data
-const TEST_USER_ID = '00000000-0000-0000-0000-000000000001'
-const TEST_VAULT_ID = 'test-vault-pagination'
+// Test data - use unique identifiers to avoid collisions with production data
+const TEST_RUN_ID = Date.now().toString(36) // Unique per test run
+const TEST_USER_ID = '00000000-0000-0000-0000-000000000099' // Dedicated test user UUID
+const TEST_VAULT_ID = `__test__pagination__${TEST_RUN_ID}`
 
 /**
  * Helper: Create a test user in auth.users and vault_keys
@@ -92,10 +98,21 @@ async function createTestUserAndVault(userId: string, vaultId: string) {
 }
 
 /**
- * Helper: Delete test data
+ * Helper: Delete test data (current run)
  */
 async function cleanupTestData() {
   await db.delete(syncChanges).where(eq(syncChanges.vaultId, TEST_VAULT_ID))
+}
+
+/**
+ * Helper: Delete ALL test data (including previous runs)
+ * Cleans up any leftover data from failed test runs
+ */
+async function cleanupAllTestData() {
+  // Delete all sync_changes with test vault IDs (prefix __test__)
+  await client`DELETE FROM sync_changes WHERE vault_id LIKE '__test__%'`
+  // Delete all vault_keys with test vault IDs
+  await client`DELETE FROM vault_keys WHERE vault_id LIKE '__test__%'`
 }
 
 /**
@@ -227,11 +244,14 @@ async function pullChangesWithPagination(
 
 describe('Pagination Tests', () => {
   beforeAll(async () => {
+    // Clean up any leftover test data from previous runs
+    await cleanupAllTestData()
     await createTestUserAndVault(TEST_USER_ID, TEST_VAULT_ID)
   })
 
   afterAll(async () => {
-    await cleanupTestData()
+    // Clean up all test data (not just current run)
+    await cleanupAllTestData()
     await client.end()
   })
 
