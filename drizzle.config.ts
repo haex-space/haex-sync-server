@@ -8,5 +8,5 @@ export default defineConfig({
     url: process.env.DATABASE_URL || "",
   },
   // Only include our tables, exclude auth.users (managed by Supabase)
-  tablesFilter: ["vault_keys", "sync_changes"],
+  tablesFilter: ["vault_keys", "sync_changes", "storage_tiers", "user_storage_quotas"],
 }) satisfies Config;

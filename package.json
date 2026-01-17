@@ -10,10 +10,11 @@
     "start:no-migrate": "bun run index.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "bun run scripts/migrate.ts",
-    "db:push": "drizzle-kit push && bun run db:rls && bun run db:realtime",
+    "db:push": "drizzle-kit push && bun run db:rls && bun run db:realtime && bun run db:storage-bucket",
     "db:rls": "bun run scripts/apply-rls.ts",
     "db:realtime": "bun run scripts/apply-realtime.ts",
     "db:partitioning": "bun run scripts/apply-partitioning.ts",
+    "db:storage-bucket": "bun run scripts/apply-storage-bucket.ts",
     "db:studio": "drizzle-kit studio"
   },
   "devDependencies": {
