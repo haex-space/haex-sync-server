@@ -85,10 +85,10 @@ BEGIN
 
   -- If no record, use default tier
   IF v_quota_bytes IS NULL THEN
-    SELECT quota_bytes, name, slug
+    SELECT st.quota_bytes, st.name, st.slug
     INTO v_quota_bytes, v_tier_name, v_tier_slug
-    FROM public.storage_tiers
-    WHERE is_default = TRUE;
+    FROM public.storage_tiers st
+    WHERE st.is_default = TRUE;
   END IF;
 
   -- Return result
