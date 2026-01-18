@@ -5,19 +5,24 @@ import type {
   StorageConfig,
 } from '@haex-space/vault-sdk'
 import { supabaseAdmin } from '../utils/supabase'
+import { getOrCreateStorageCredentials } from '../services/storageCredentials'
 
 const app = new Hono()
 
 /**
  * Creates the storage config for S3 proxy access.
- * The proxy endpoint is relative to the server URL, and the client
- * uses their auth token for authentication.
+ * Includes real S3 credentials that work with any S3-compatible client.
  */
-function createStorageConfig(serverUrl: string, userId: string): StorageConfig {
+async function createStorageConfig(serverUrl: string, userId: string): Promise<StorageConfig> {
+  // Get or create S3 credentials for this user
+  const credentials = await getOrCreateStorageCredentials(userId)
+
   return {
     endpoint: `${serverUrl.replace(/\/$/, '')}/storage/s3`,
     bucket: `storage-${userId}`,
     region: 'auto',
+    accessKeyId: credentials.accessKeyId,
+    secretAccessKey: credentials.secretAccessKey,
   }
 }
 
@@ -136,7 +141,7 @@ app.post('/login', async (c) => {
         id: data.user.id,
         email: data.user.email ?? '',
       },
-      storage_config: createStorageConfig(serverUrl, data.user.id),
+      storage_config: await createStorageConfig(serverUrl, data.user.id),
     }
 
     return c.json(response)
@@ -184,7 +189,7 @@ app.post('/refresh', async (c) => {
         id: data.user.id,
         email: data.user.email ?? '',
       },
-      storage_config: createStorageConfig(serverUrl, data.user.id),
+      storage_config: await createStorageConfig(serverUrl, data.user.id),
     }
 
     return c.json(response)

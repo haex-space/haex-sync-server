@@ -170,3 +170,46 @@ export type NewStorageTier = typeof storageTiers.$inferInsert;
 
 export type UserStorageQuota = typeof userStorageQuotas.$inferSelect;
 export type NewUserStorageQuota = typeof userStorageQuotas.$inferInsert;
+
+// ============================================
+// S3 STORAGE CREDENTIALS
+// ============================================
+
+/**
+ * User Storage Credentials Table
+ * Stores S3-compatible credentials for each user
+ *
+ * These credentials allow users to access their storage via any S3-compatible client
+ * (Cyberduck, rclone, S3 Browser, AWS CLI, etc.)
+ *
+ * Security:
+ * - access_key_id: Unique identifier (format: HAEX + 16 random alphanumeric chars)
+ * - secret_access_key: Encrypted with pgcrypto pgp_sym_encrypt using STORAGE_ENCRYPTION_KEY
+ *
+ * The encryption key is set via environment variable and passed to postgres functions.
+ * This ensures secrets are encrypted at rest but can be decrypted for AWS Signature v4 verification.
+ */
+export const userStorageCredentials = pgTable(
+  "user_storage_credentials",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .unique()
+      .references(() => authUsers.id, { onDelete: "cascade" }),
+    accessKeyId: text("access_key_id").notNull().unique(), // Format: HAEX + 16 random chars
+    encryptedSecretKey: text("encrypted_secret_key").notNull(), // pgp_sym_encrypt(secret, key)
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("user_storage_credentials_access_key_idx").on(table.accessKeyId),
+  ]
+);
+
+export type UserStorageCredential = typeof userStorageCredentials.$inferSelect;
+export type NewUserStorageCredential = typeof userStorageCredentials.$inferInsert;
