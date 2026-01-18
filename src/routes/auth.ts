@@ -152,6 +152,41 @@ app.post('/login', async (c) => {
 })
 
 /**
+ * GET /auth/storage-credentials
+ *
+ * Get S3 storage credentials for the authenticated user.
+ * Uses the Bearer token from the Authorization header.
+ */
+app.get('/storage-credentials', async (c) => {
+  try {
+    const authHeader = c.req.header('Authorization')
+
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return c.json({ error: 'Authorization header required' }, 401)
+    }
+
+    const token = authHeader.substring(7)
+
+    // Verify the token and get user
+    const { data: { user }, error } = await supabaseAdmin.auth.getUser(token)
+
+    if (error || !user) {
+      return c.json({ error: 'Invalid or expired token' }, 401)
+    }
+
+    // Get server URL from request for storage config
+    const serverUrl = new URL(c.req.url).origin
+
+    const storageConfig = await createStorageConfig(serverUrl, user.id)
+
+    return c.json(storageConfig)
+  } catch (error) {
+    console.error('Storage credentials endpoint error:', error)
+    return c.json({ error: 'Internal server error' }, 500)
+  }
+})
+
+/**
  * POST /auth/refresh
  *
  * Refresh an expired access token using a refresh token.
