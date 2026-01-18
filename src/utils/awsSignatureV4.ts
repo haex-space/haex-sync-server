@@ -235,3 +235,106 @@ function parseISO8601(timestamp: string): Date | null {
 
   return null
 }
+
+/**
+ * Format date as YYYYMMDD
+ */
+function formatDate(date: Date): string {
+  return date.toISOString().slice(0, 10).replace(/-/g, '')
+}
+
+/**
+ * Format date as ISO8601 timestamp (YYYYMMDD'T'HHMMSS'Z')
+ */
+function formatTimestamp(date: Date): string {
+  return date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '')
+}
+
+/**
+ * Sign an outgoing request with AWS Signature v4
+ * Returns headers that need to be added to the request
+ */
+export function signRequest(
+  method: string,
+  url: string,
+  headers: Record<string, string>,
+  body: string | Buffer | null,
+  accessKeyId: string,
+  secretAccessKey: string,
+  region: string,
+  service: string = 's3'
+): Record<string, string> {
+  const parsedUrl = new URL(url)
+  const now = new Date()
+  const dateStamp = formatDate(now)
+  const amzDate = formatTimestamp(now)
+
+  // Calculate content hash
+  const payloadHash = body
+    ? createHash('sha256').update(body).digest('hex')
+    : 'UNSIGNED-PAYLOAD'
+
+  // Headers to sign (must include host)
+  const signedHeadersList = ['host', 'x-amz-content-sha256', 'x-amz-date']
+  const requestHeaders: Record<string, string> = {
+    ...headers,
+    host: parsedUrl.host,
+    'x-amz-date': amzDate,
+    'x-amz-content-sha256': payloadHash,
+  }
+
+  // Build canonical headers
+  const canonicalHeaders = signedHeadersList
+    .sort()
+    .map((h) => `${h}:${(requestHeaders[h] || '').trim()}\n`)
+    .join('')
+
+  const signedHeaders = signedHeadersList.sort().join(';')
+
+  // Build canonical query string
+  const queryParams = Array.from(parsedUrl.searchParams.entries())
+  queryParams.sort((a, b) => a[0].localeCompare(b[0]))
+  const canonicalQueryString = queryParams
+    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+    .join('&')
+
+  // Build canonical request
+  const canonicalRequest = [
+    method,
+    parsedUrl.pathname,
+    canonicalQueryString,
+    canonicalHeaders,
+    signedHeaders,
+    payloadHash,
+  ].join('\n')
+
+  // Build credential scope
+  const credentialScope = `${dateStamp}/${region}/${service}/aws4_request`
+
+  // Build string to sign
+  const stringToSign = [
+    'AWS4-HMAC-SHA256',
+    amzDate,
+    credentialScope,
+    createHash('sha256').update(canonicalRequest).digest('hex'),
+  ].join('\n')
+
+  // Calculate signature
+  const signingKey = getSigningKey(secretAccessKey, dateStamp, region, service)
+  const signature = createHmac('sha256', signingKey)
+    .update(stringToSign)
+    .digest('hex')
+
+  // Build authorization header
+  const authorizationHeader = [
+    `AWS4-HMAC-SHA256 Credential=${accessKeyId}/${credentialScope}`,
+    `SignedHeaders=${signedHeaders}`,
+    `Signature=${signature}`,
+  ].join(', ')
+
+  return {
+    Authorization: authorizationHeader,
+    'x-amz-date': amzDate,
+    'x-amz-content-sha256': payloadHash,
+  }
+}

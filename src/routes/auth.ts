@@ -6,6 +6,7 @@ import type {
 } from '@haex-space/vault-sdk'
 import { supabaseAdmin } from '../utils/supabase'
 import { getOrCreateStorageCredentials } from '../services/storageCredentials'
+import { getUserBucket } from '../services/minioAdmin'
 
 const app = new Hono()
 
@@ -19,7 +20,7 @@ async function createStorageConfig(serverUrl: string, userId: string): Promise<S
 
   return {
     endpoint: `${serverUrl.replace(/\/$/, '')}/storage/s3`,
-    bucket: `storage-${userId}`,
+    bucket: getUserBucket(userId),
     region: 'auto',
     accessKeyId: credentials.accessKeyId,
     secretAccessKey: credentials.secretAccessKey,

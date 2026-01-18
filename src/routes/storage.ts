@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js'
 import { type UserContext } from '../middleware/auth'
 import { extractAccessKeyId, verifySignature } from '../utils/awsSignatureV4'
 import { getCredentialsByAccessKeyId } from '../services/storageCredentials'
+import { getUserBucket, provisionUserStorage } from '../services/minioAdmin'
 
 const storage = new Hono<{
   Variables: {
@@ -10,25 +11,24 @@ const storage = new Hono<{
   }
 }>()
 
-// Supabase configuration
+// MinIO configuration
+const minioEndpoint = process.env.MINIO_ENDPOINT
+const minioRootUser = process.env.MINIO_ROOT_USER
+const minioRootPassword = process.env.MINIO_ROOT_PASSWORD
+
+if (!minioEndpoint || !minioRootUser || !minioRootPassword) {
+  throw new Error('MINIO_ENDPOINT, MINIO_ROOT_USER and MINIO_ROOT_PASSWORD must be set for storage proxy')
+}
+
+// Supabase for auth verification (Bearer token)
 const supabaseUrl = process.env.SUPABASE_URL
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY
 
 if (!supabaseUrl || !supabaseServiceKey) {
-  throw new Error('SUPABASE_URL and SUPABASE_SERVICE_KEY must be set for storage proxy')
+  throw new Error('SUPABASE_URL and SUPABASE_SERVICE_KEY must be set for auth')
 }
 
-const storageS3Endpoint = `${supabaseUrl.replace(/\/$/, '')}/storage/v1/s3`
-
-// Create Supabase client with service role for bucket operations
 const supabase = createClient(supabaseUrl, supabaseServiceKey)
-
-/**
- * Helper to get user's bucket name
- */
-function getUserBucket(userId: string): string {
-  return `storage-${userId}`
-}
 
 /**
  * Extract bucket name and key from path
@@ -155,54 +155,101 @@ async function storageAuthMiddleware(c: any, next: () => Promise<void>) {
 storage.use('/*', storageAuthMiddleware)
 
 /**
- * Forward request to Supabase Storage S3
- * Uses Service Role Key for authentication
+ * Create MinIO auth header using root credentials
  */
-async function forwardToSupabase(
-  method: string,
-  path: string,
-  userId: string,
-  body?: ReadableStream<Uint8Array> | null,
-  headers?: Headers,
+function getMinioAuthHeader(): string {
+  return 'Basic ' + Buffer.from(`${minioRootUser}:${minioRootPassword}`).toString('base64')
+}
+
+/**
+ * Upload a file to MinIO
+ */
+async function uploadToMinio(
+  bucket: string,
+  key: string,
+  body: ReadableStream<Uint8Array> | null,
+  contentType?: string,
 ): Promise<Response> {
-  const bucket = getUserBucket(userId)
+  const url = `${minioEndpoint}/${bucket}/${key}`
 
-  // Build the full Supabase S3 URL
-  // Path format: /{bucket}/{key}
-  const url = `${storageS3Endpoint}/${bucket}${path}`
-
-  // Forward relevant headers, replace auth with service key
-  const forwardHeaders = new Headers()
-
-  if (headers) {
-    // Forward content-type if present
-    const contentType = headers.get('content-type')
-    if (contentType) {
-      forwardHeaders.set('content-type', contentType)
-    }
-
-    // Forward content-length if present
-    const contentLength = headers.get('content-length')
-    if (contentLength) {
-      forwardHeaders.set('content-length', contentLength)
-    }
-
-    // Forward range header for partial downloads
-    const range = headers.get('range')
-    if (range) {
-      forwardHeaders.set('range', range)
-    }
+  const headers: Record<string, string> = {
+    'Authorization': getMinioAuthHeader(),
   }
 
-  // Use service key for Supabase auth
-  forwardHeaders.set('authorization', `Bearer ${supabaseServiceKey}`)
+  if (contentType) {
+    headers['Content-Type'] = contentType
+  }
 
   const response = await fetch(url, {
-    method,
-    headers: forwardHeaders,
+    method: 'PUT',
+    headers,
     body: body,
     duplex: body ? 'half' : undefined,
   } as RequestInit)
+
+  return response
+}
+
+/**
+ * Download a file from MinIO
+ */
+async function downloadFromMinio(
+  bucket: string,
+  key: string,
+  rangeHeader?: string,
+): Promise<Response> {
+  const url = `${minioEndpoint}/${bucket}/${key}`
+
+  const headers: Record<string, string> = {
+    'Authorization': getMinioAuthHeader(),
+  }
+
+  if (rangeHeader) {
+    headers['Range'] = rangeHeader
+  }
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers,
+  })
+
+  return response
+}
+
+/**
+ * Delete a file from MinIO
+ */
+async function deleteFromMinio(
+  bucket: string,
+  key: string,
+): Promise<Response> {
+  const url = `${minioEndpoint}/${bucket}/${key}`
+
+  const response = await fetch(url, {
+    method: 'DELETE',
+    headers: {
+      'Authorization': getMinioAuthHeader(),
+    },
+  })
+
+  return response
+}
+
+/**
+ * Get file metadata from MinIO
+ */
+async function headFromMinio(
+  bucket: string,
+  key: string,
+): Promise<Response> {
+  const url = `${minioEndpoint}/${bucket}/${key}`
+
+  const response = await fetch(url, {
+    method: 'HEAD',
+    headers: {
+      'Authorization': getMinioAuthHeader(),
+    },
+  })
 
   return response
 }
@@ -225,15 +272,30 @@ storage.put('/s3/*', async (c) => {
   }
 
   try {
-    const response = await forwardToSupabase(
-      'PUT',
-      `/${extracted.key}`,
-      user.userId,
+    // Ensure user's bucket exists (lazy provisioning)
+    await provisionUserStorage(user.userId)
+
+    const contentType = c.req.header('content-type')
+    const response = await uploadToMinio(
+      extracted.bucket,
+      extracted.key,
       c.req.raw.body,
-      c.req.raw.headers,
+      contentType,
     )
 
-    // Return the Supabase response
+    // Return S3-compatible response
+    if (response.ok) {
+      // S3 PUT returns 200 with ETag header
+      const etag = response.headers.get('ETag') || `"${Date.now()}"`
+      return new Response(null, {
+        status: 200,
+        headers: {
+          'ETag': etag,
+        },
+      })
+    }
+
+    // Forward error response
     return new Response(response.body, {
       status: response.status,
       headers: response.headers,
@@ -263,12 +325,11 @@ storage.get('/s3/*', async (c) => {
   }
 
   try {
-    const response = await forwardToSupabase(
-      'GET',
-      `/${extracted.key}`,
-      user.userId,
-      null,
-      c.req.raw.headers,
+    const rangeHeader = c.req.header('range')
+    const response = await downloadFromMinio(
+      extracted.bucket,
+      extracted.key,
+      rangeHeader,
     )
 
     return new Response(response.body, {
@@ -299,13 +360,15 @@ storage.delete('/s3/*', async (c) => {
   }
 
   try {
-    const response = await forwardToSupabase(
-      'DELETE',
-      `/${extracted.key}`,
-      user.userId,
-      null,
-      c.req.raw.headers,
+    const response = await deleteFromMinio(
+      extracted.bucket,
+      extracted.key,
     )
+
+    // S3 DELETE returns 204 No Content on success
+    if (response.ok) {
+      return new Response(null, { status: 204 })
+    }
 
     return new Response(response.body, {
       status: response.status,
@@ -335,17 +398,25 @@ storage.on('HEAD', '/s3/*', async (c) => {
   }
 
   try {
-    const response = await forwardToSupabase(
-      'HEAD',
-      `/${extracted.key}`,
-      user.userId,
-      null,
-      c.req.raw.headers,
+    const response = await headFromMinio(
+      extracted.bucket,
+      extracted.key,
     )
+
+    if (response.ok) {
+      return new Response(null, {
+        status: 200,
+        headers: {
+          'Content-Length': response.headers.get('Content-Length') || '0',
+          'Content-Type': response.headers.get('Content-Type') || 'application/octet-stream',
+          'Last-Modified': response.headers.get('Last-Modified') || new Date().toUTCString(),
+          'ETag': response.headers.get('ETag') || '',
+        },
+      })
+    }
 
     return new Response(null, {
       status: response.status,
-      headers: response.headers,
     })
   } catch (error) {
     console.error('Storage HEAD error:', error)
@@ -355,40 +426,110 @@ storage.on('HEAD', '/s3/*', async (c) => {
 
 /**
  * Handle list request for a bucket
+ * Uses MinIO S3 API and returns S3 ListObjectsV2 XML response
  */
 async function handleListRequest(c: any, userId: string): Promise<Response> {
   const prefix = c.req.query('prefix') || ''
-  const delimiter = c.req.query('delimiter') || ''
-  const maxKeys = c.req.query('max-keys') || '1000'
+  const delimiter = c.req.query('delimiter') || '/'
+  const maxKeys = parseInt(c.req.query('max-keys') || '1000', 10)
   const continuationToken = c.req.query('continuation-token') || ''
 
   try {
-    // Build query string for S3 ListObjectsV2
-    const params = new URLSearchParams()
-    params.set('list-type', '2') // Use ListObjectsV2
-    if (prefix) params.set('prefix', prefix)
-    if (delimiter) params.set('delimiter', delimiter)
-    if (maxKeys) params.set('max-keys', maxKeys)
-    if (continuationToken) params.set('continuation-token', continuationToken)
-
     const bucket = getUserBucket(userId)
-    const url = `${storageS3Endpoint}/${bucket}?${params.toString()}`
+
+    // Build MinIO S3 list URL with query params
+    const params = new URLSearchParams({
+      'list-type': '2', // ListObjectsV2
+      'max-keys': String(maxKeys),
+    })
+
+    if (prefix) {
+      params.set('prefix', prefix)
+    }
+    if (delimiter) {
+      params.set('delimiter', delimiter)
+    }
+    if (continuationToken) {
+      params.set('continuation-token', continuationToken)
+    }
+
+    const url = `${minioEndpoint}/${bucket}?${params.toString()}`
 
     const response = await fetch(url, {
       method: 'GET',
       headers: {
-        'authorization': `Bearer ${supabaseServiceKey}`,
+        'Authorization': getMinioAuthHeader(),
       },
     })
 
-    return new Response(response.body, {
-      status: response.status,
-      headers: response.headers,
+    if (!response.ok) {
+      // If bucket doesn't exist, return empty list
+      if (response.status === 404) {
+        return new Response(buildS3ListXml(bucket, prefix, [], []), {
+          status: 200,
+          headers: { 'Content-Type': 'application/xml' },
+        })
+      }
+      return new Response(response.body, {
+        status: response.status,
+        headers: response.headers,
+      })
+    }
+
+    // MinIO returns proper S3 XML, just forward it
+    const xml = await response.text()
+    return new Response(xml, {
+      status: 200,
+      headers: { 'Content-Type': 'application/xml' },
     })
   } catch (error) {
     console.error('Storage LIST error:', error)
     return c.json({ error: 'Failed to list files' }, 500)
   }
+}
+
+/**
+ * Build S3 ListObjectsV2 XML response (fallback for empty buckets)
+ */
+function buildS3ListXml(
+  bucket: string,
+  prefix: string,
+  objects: Array<{ key: string; size: number; lastModified: string }>,
+  commonPrefixes: string[],
+): string {
+  const contentsXml = objects.map(obj => `
+    <Contents>
+      <Key>${escapeXml(obj.key)}</Key>
+      <LastModified>${obj.lastModified}</LastModified>
+      <Size>${obj.size}</Size>
+      <StorageClass>STANDARD</StorageClass>
+    </Contents>`).join('')
+
+  const prefixesXml = commonPrefixes.map(p => `
+    <CommonPrefixes>
+      <Prefix>${escapeXml(p)}</Prefix>
+    </CommonPrefixes>`).join('')
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Name>${escapeXml(bucket)}</Name>
+  <Prefix>${escapeXml(prefix)}</Prefix>
+  <KeyCount>${objects.length}</KeyCount>
+  <MaxKeys>1000</MaxKeys>
+  <IsTruncated>false</IsTruncated>${contentsXml}${prefixesXml}
+</ListBucketResult>`
+}
+
+/**
+ * Escape special XML characters
+ */
+function escapeXml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;')
 }
 
 /**
