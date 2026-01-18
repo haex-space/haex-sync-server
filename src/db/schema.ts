@@ -6,9 +6,6 @@ import {
   uuid,
   index,
   uniqueIndex,
-  bigint,
-  integer,
-  boolean,
 } from "drizzle-orm/pg-core";
 
 // Define Supabase auth schema
@@ -116,60 +113,6 @@ export type NewSyncChange = typeof syncChanges.$inferInsert;
 // Legacy type aliases for backward compatibility
 export type SyncLog = SyncChange;
 export type NewSyncLog = NewSyncChange;
-
-// ============================================
-// STORAGE QUOTA TABLES
-// ============================================
-
-/**
- * Storage Tiers Table
- * Defines available storage plans with quotas and pricing
- * Pricing is for future Stripe integration
- */
-export const storageTiers = pgTable("storage_tiers", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  name: text("name").notNull().unique(),
-  slug: text("slug").notNull().unique(),
-  quotaBytes: bigint("quota_bytes", { mode: "number" }).notNull(),
-  priceMonthlyEuroCents: integer("price_monthly_euro_cents"), // NULL for free tier
-  isDefault: boolean("is_default").default(false),
-  sortOrder: integer("sort_order").default(0),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
-
-/**
- * User Storage Quotas Table
- * Tracks each user's storage tier and optional admin override
- * References auth.users from Supabase Auth
- */
-export const userStorageQuotas = pgTable(
-  "user_storage_quotas",
-  {
-    userId: uuid("user_id")
-      .primaryKey()
-      .references(() => authUsers.id, { onDelete: "cascade" }),
-    tierId: uuid("tier_id")
-      .notNull()
-      .references(() => storageTiers.id),
-    adminOverrideBytes: bigint("admin_override_bytes", { mode: "number" }), // Admin can set custom limit
-    createdAt: timestamp("created_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
-  },
-  (table) => [index("user_storage_quotas_tier_idx").on(table.tierId)]
-);
-
-// Type exports for Storage
-export type StorageTier = typeof storageTiers.$inferSelect;
-export type NewStorageTier = typeof storageTiers.$inferInsert;
-
-export type UserStorageQuota = typeof userStorageQuotas.$inferSelect;
-export type NewUserStorageQuota = typeof userStorageQuotas.$inferInsert;
 
 // ============================================
 // S3 STORAGE CREDENTIALS
