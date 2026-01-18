@@ -1,21 +1,23 @@
 import { Hono } from 'hono'
+import type {
+  SyncServerLoginRequest,
+  SyncServerLoginResponse,
+  StorageConfig,
+} from '@haex-space/vault-sdk'
 import { supabaseAdmin } from '../utils/supabase'
 
 const app = new Hono()
 
-interface LoginRequest {
-  email: string
-  password: string
-}
-
-interface LoginResponse {
-  access_token: string
-  refresh_token: string
-  expires_in: number
-  expires_at: number
-  user: {
-    id: string
-    email: string
+/**
+ * Creates the storage config for S3 proxy access.
+ * The proxy endpoint is relative to the server URL, and the client
+ * uses their auth token for authentication.
+ */
+function createStorageConfig(serverUrl: string, userId: string): StorageConfig {
+  return {
+    endpoint: `${serverUrl.replace(/\/$/, '')}/storage/s3`,
+    bucket: `storage-${userId}`,
+    region: 'auto',
   }
 }
 
@@ -101,7 +103,7 @@ app.post('/admin/create-user', async (c) => {
  */
 app.post('/login', async (c) => {
   try {
-    const body = await c.req.json<LoginRequest>()
+    const body = await c.req.json<SyncServerLoginRequest>()
 
     if (!body.email || !body.password) {
       return c.json({ error: 'Email and password are required' }, 400)
@@ -122,7 +124,10 @@ app.post('/login', async (c) => {
       return c.json({ error: 'Login failed - no session created' }, 401)
     }
 
-    const response: LoginResponse = {
+    // Get server URL from request for storage config
+    const serverUrl = new URL(c.req.url).origin
+
+    const response: SyncServerLoginResponse = {
       access_token: data.session.access_token,
       refresh_token: data.session.refresh_token,
       expires_in: data.session.expires_in,
@@ -131,6 +136,7 @@ app.post('/login', async (c) => {
         id: data.user.id,
         email: data.user.email ?? '',
       },
+      storage_config: createStorageConfig(serverUrl, data.user.id),
     }
 
     return c.json(response)
@@ -166,7 +172,10 @@ app.post('/refresh', async (c) => {
       return c.json({ error: 'Refresh failed - no session created' }, 401)
     }
 
-    const response: LoginResponse = {
+    // Get server URL from request for storage config
+    const serverUrl = new URL(c.req.url).origin
+
+    const response: SyncServerLoginResponse = {
       access_token: data.session.access_token,
       refresh_token: data.session.refresh_token,
       expires_in: data.session.expires_in,
@@ -175,6 +184,7 @@ app.post('/refresh', async (c) => {
         id: data.user.id,
         email: data.user.email ?? '',
       },
+      storage_config: createStorageConfig(serverUrl, data.user.id),
     }
 
     return c.json(response)

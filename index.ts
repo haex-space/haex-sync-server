@@ -3,6 +3,7 @@ import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
 import authRoutes from './src/routes/auth'
 import syncRoutes from './src/routes/sync'
+import storageRoutes from './src/routes/storage'
 import packageJson from './package.json'
 
 const app = new Hono()
@@ -38,6 +39,8 @@ app.get('/', (c) => {
 app.route('/auth', authRoutes)
 // Sync routes require authentication via JWT
 app.route('/sync', syncRoutes)
+// Storage proxy routes for S3-compatible file storage
+app.route('/storage', storageRoutes)
 
 // 404 handler
 app.notFound((c) => {
