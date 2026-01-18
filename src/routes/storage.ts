@@ -31,6 +31,37 @@ function getUserBucket(userId: string): string {
 }
 
 /**
+ * Extract bucket name and key from path
+ * Path format: /s3/{bucket}/{key} or /s3/{bucket}
+ * Returns null if bucket doesn't match expected user bucket
+ */
+function extractBucketAndKey(path: string, userId: string): { bucket: string; key: string } | null {
+  // Remove /storage prefix if present (from the full request path)
+  let cleanPath = path.replace(/^\/storage/, '')
+
+  // Remove /s3 prefix
+  cleanPath = cleanPath.replace(/^\/s3\/?/, '')
+
+  // If path is empty, this is a list request at bucket root
+  if (!cleanPath) {
+    return { bucket: getUserBucket(userId), key: '' }
+  }
+
+  // Split into parts: first part is bucket, rest is key
+  const parts = cleanPath.split('/')
+  const requestedBucket = parts[0]
+  const key = parts.slice(1).join('/')
+
+  // Validate that the requested bucket matches the user's bucket
+  const expectedBucket = getUserBucket(userId)
+  if (requestedBucket !== expectedBucket) {
+    return null // Access denied - wrong bucket
+  }
+
+  return { bucket: requestedBucket, key }
+}
+
+/**
  * Extract user ID from Bearer token by verifying with Supabase
  */
 async function extractUserIdFromBearerToken(token: string): Promise<string | null> {
@@ -179,19 +210,24 @@ async function forwardToSupabase(
 /**
  * PUT /storage/s3/*
  * Upload a file to user's bucket
+ * Path format: /storage/s3/{bucket}/{key}
  */
 storage.put('/s3/*', async (c) => {
   const user = c.get('user')!
-  const key = c.req.path.replace('/storage/s3/', '')
+  const extracted = extractBucketAndKey(c.req.path, user.userId)
 
-  if (!key) {
+  if (!extracted) {
+    return c.json({ error: 'Access denied: invalid bucket' }, 403)
+  }
+
+  if (!extracted.key) {
     return c.json({ error: 'Key is required' }, 400)
   }
 
   try {
     const response = await forwardToSupabase(
       'PUT',
-      `/${key}`,
+      `/${extracted.key}`,
       user.userId,
       c.req.raw.body,
       c.req.raw.headers,
@@ -210,20 +246,26 @@ storage.put('/s3/*', async (c) => {
 
 /**
  * GET /storage/s3/*
- * Download a file from user's bucket
+ * Download a file or list bucket contents
+ * Path format: /storage/s3/{bucket}/{key} or /storage/s3/{bucket}
  */
 storage.get('/s3/*', async (c) => {
   const user = c.get('user')!
-  const key = c.req.path.replace('/storage/s3/', '')
+  const extracted = extractBucketAndKey(c.req.path, user.userId)
 
-  if (!key) {
-    return c.json({ error: 'Key is required' }, 400)
+  if (!extracted) {
+    return c.json({ error: 'Access denied: invalid bucket' }, 403)
+  }
+
+  // If no key, this is a list request
+  if (!extracted.key) {
+    return handleListRequest(c, user.userId)
   }
 
   try {
     const response = await forwardToSupabase(
       'GET',
-      `/${key}`,
+      `/${extracted.key}`,
       user.userId,
       null,
       c.req.raw.headers,
@@ -242,19 +284,24 @@ storage.get('/s3/*', async (c) => {
 /**
  * DELETE /storage/s3/*
  * Delete a file from user's bucket
+ * Path format: /storage/s3/{bucket}/{key}
  */
 storage.delete('/s3/*', async (c) => {
   const user = c.get('user')!
-  const key = c.req.path.replace('/storage/s3/', '')
+  const extracted = extractBucketAndKey(c.req.path, user.userId)
 
-  if (!key) {
+  if (!extracted) {
+    return c.json({ error: 'Access denied: invalid bucket' }, 403)
+  }
+
+  if (!extracted.key) {
     return c.json({ error: 'Key is required' }, 400)
   }
 
   try {
     const response = await forwardToSupabase(
       'DELETE',
-      `/${key}`,
+      `/${extracted.key}`,
       user.userId,
       null,
       c.req.raw.headers,
@@ -273,19 +320,24 @@ storage.delete('/s3/*', async (c) => {
 /**
  * HEAD /storage/s3/*
  * Get file metadata
+ * Path format: /storage/s3/{bucket}/{key}
  */
 storage.on('HEAD', '/s3/*', async (c) => {
   const user = c.get('user')!
-  const key = c.req.path.replace('/storage/s3/', '')
+  const extracted = extractBucketAndKey(c.req.path, user.userId)
 
-  if (!key) {
+  if (!extracted) {
+    return c.json({ error: 'Access denied: invalid bucket' }, 403)
+  }
+
+  if (!extracted.key) {
     return c.json({ error: 'Key is required' }, 400)
   }
 
   try {
     const response = await forwardToSupabase(
       'HEAD',
-      `/${key}`,
+      `/${extracted.key}`,
       user.userId,
       null,
       c.req.raw.headers,
@@ -302,12 +354,9 @@ storage.on('HEAD', '/s3/*', async (c) => {
 })
 
 /**
- * GET /storage/s3 (without trailing path)
- * List files in user's bucket (S3 ListObjects)
- * Supports ?prefix= and ?delimiter= query params
+ * Handle list request for a bucket
  */
-storage.get('/s3', async (c) => {
-  const user = c.get('user')!
+async function handleListRequest(c: any, userId: string): Promise<Response> {
   const prefix = c.req.query('prefix') || ''
   const delimiter = c.req.query('delimiter') || ''
   const maxKeys = c.req.query('max-keys') || '1000'
@@ -322,7 +371,7 @@ storage.get('/s3', async (c) => {
     if (maxKeys) params.set('max-keys', maxKeys)
     if (continuationToken) params.set('continuation-token', continuationToken)
 
-    const bucket = getUserBucket(user.userId)
+    const bucket = getUserBucket(userId)
     const url = `${storageS3Endpoint}/${bucket}?${params.toString()}`
 
     const response = await fetch(url, {
@@ -340,6 +389,16 @@ storage.get('/s3', async (c) => {
     console.error('Storage LIST error:', error)
     return c.json({ error: 'Failed to list files' }, 500)
   }
+}
+
+/**
+ * GET /storage/s3 (without trailing path)
+ * List files in user's bucket (S3 ListObjects)
+ * Supports ?prefix= and ?delimiter= query params
+ */
+storage.get('/s3', async (c) => {
+  const user = c.get('user')!
+  return handleListRequest(c, user.userId)
 })
 
 export default storage
