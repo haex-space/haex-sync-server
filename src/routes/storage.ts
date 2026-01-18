@@ -16,8 +16,16 @@ const minioEndpoint = process.env.MINIO_ENDPOINT
 const minioRootUser = process.env.MINIO_ROOT_USER
 const minioRootPassword = process.env.MINIO_ROOT_PASSWORD
 
+// Log warning if MinIO is not configured (storage routes will return 503)
 if (!minioEndpoint || !minioRootUser || !minioRootPassword) {
-  throw new Error('MINIO_ENDPOINT, MINIO_ROOT_USER and MINIO_ROOT_PASSWORD must be set for storage proxy')
+  console.warn('Warning: MinIO not configured. Storage routes will return 503 Service Unavailable.')
+}
+
+/**
+ * Check if MinIO is configured
+ */
+function isMinioConfigured(): boolean {
+  return !!(minioEndpoint && minioRootUser && minioRootPassword)
 }
 
 // Supabase for auth verification (Bearer token)
@@ -158,6 +166,9 @@ storage.use('/*', storageAuthMiddleware)
  * Create MinIO auth header using root credentials
  */
 function getMinioAuthHeader(): string {
+  if (!minioRootUser || !minioRootPassword) {
+    throw new Error('MinIO credentials not configured')
+  }
   return 'Basic ' + Buffer.from(`${minioRootUser}:${minioRootPassword}`).toString('base64')
 }
 
@@ -260,6 +271,10 @@ async function headFromMinio(
  * Path format: /storage/s3/{bucket}/{key}
  */
 storage.put('/s3/*', async (c) => {
+  if (!isMinioConfigured()) {
+    return c.json({ error: 'Storage service not available' }, 503)
+  }
+
   const user = c.get('user')!
   const extracted = extractBucketAndKey(c.req.path, user.userId)
 
@@ -312,6 +327,10 @@ storage.put('/s3/*', async (c) => {
  * Path format: /storage/s3/{bucket}/{key} or /storage/s3/{bucket}
  */
 storage.get('/s3/*', async (c) => {
+  if (!isMinioConfigured()) {
+    return c.json({ error: 'Storage service not available' }, 503)
+  }
+
   const user = c.get('user')!
   const extracted = extractBucketAndKey(c.req.path, user.userId)
 
@@ -348,6 +367,10 @@ storage.get('/s3/*', async (c) => {
  * Path format: /storage/s3/{bucket}/{key}
  */
 storage.delete('/s3/*', async (c) => {
+  if (!isMinioConfigured()) {
+    return c.json({ error: 'Storage service not available' }, 503)
+  }
+
   const user = c.get('user')!
   const extracted = extractBucketAndKey(c.req.path, user.userId)
 
@@ -386,6 +409,10 @@ storage.delete('/s3/*', async (c) => {
  * Path format: /storage/s3/{bucket}/{key}
  */
 storage.on('HEAD', '/s3/*', async (c) => {
+  if (!isMinioConfigured()) {
+    return c.json({ error: 'Storage service not available' }, 503)
+  }
+
   const user = c.get('user')!
   const extracted = extractBucketAndKey(c.req.path, user.userId)
 
@@ -538,6 +565,10 @@ function escapeXml(str: string): string {
  * Supports ?prefix= and ?delimiter= query params
  */
 storage.get('/s3', async (c) => {
+  if (!isMinioConfigured()) {
+    return c.json({ error: 'Storage service not available' }, 503)
+  }
+
   const user = c.get('user')!
   return handleListRequest(c, user.userId)
 })
