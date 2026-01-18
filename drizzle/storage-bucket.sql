@@ -201,6 +201,12 @@ DROP POLICY IF EXISTS "user_read" ON storage.objects;
 DROP POLICY IF EXISTS "user_delete" ON storage.objects;
 DROP POLICY IF EXISTS "user_update" ON storage.objects;
 
+-- Drop per-user bucket policies if they exist (for idempotent execution)
+DROP POLICY IF EXISTS "user_upload_own_bucket" ON storage.objects;
+DROP POLICY IF EXISTS "user_read_own_bucket" ON storage.objects;
+DROP POLICY IF EXISTS "user_delete_own_bucket" ON storage.objects;
+DROP POLICY IF EXISTS "user_update_own_bucket" ON storage.objects;
+
 -- Per-user bucket policies
 -- Upload: only to own bucket, check quota
 CREATE POLICY "user_upload_own_bucket" ON storage.objects
