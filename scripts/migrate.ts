@@ -27,27 +27,28 @@ try {
   console.log('🔧 Ensuring FK constraints reference auth.users...')
   await migrationClient.unsafe(`
     DO $$
+    DECLARE
+      ref_schema text;
     BEGIN
-      -- Check if the FK exists and points to public.users (wrong) instead of auth.users
-      -- The constraint may exist but reference the wrong table due to db:push
-      IF EXISTS (
-        SELECT 1 FROM information_schema.table_constraints
-        WHERE constraint_name = 'user_storage_credentials_user_id_users_id_fk'
-        AND table_name = 'user_storage_credentials'
-      ) THEN
-        -- Check if it references the correct schema
-        IF NOT EXISTS (
-          SELECT 1 FROM information_schema.constraint_column_usage
-          WHERE constraint_name = 'user_storage_credentials_user_id_users_id_fk'
-          AND table_schema = 'auth'
-          AND table_name = 'users'
-        ) THEN
-          -- Drop and recreate with correct reference
-          ALTER TABLE user_storage_credentials DROP CONSTRAINT user_storage_credentials_user_id_users_id_fk;
-          ALTER TABLE user_storage_credentials ADD CONSTRAINT user_storage_credentials_user_id_users_id_fk
-            FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE CASCADE ON UPDATE NO ACTION;
-          RAISE NOTICE 'Fixed user_storage_credentials FK to reference auth.users';
-        END IF;
+      -- Get the actual referenced schema using pg_constraint
+      SELECT n.nspname INTO ref_schema
+      FROM pg_constraint c
+      JOIN pg_class cl ON c.confrelid = cl.oid
+      JOIN pg_namespace n ON cl.relnamespace = n.oid
+      WHERE c.conname = 'user_storage_credentials_user_id_users_id_fk'
+      AND c.contype = 'f';
+
+      IF ref_schema IS NOT NULL AND ref_schema != 'auth' THEN
+        -- Drop and recreate with correct reference to auth.users
+        RAISE NOTICE 'FK references schema %, fixing to auth...', ref_schema;
+        ALTER TABLE user_storage_credentials DROP CONSTRAINT user_storage_credentials_user_id_users_id_fk;
+        ALTER TABLE user_storage_credentials ADD CONSTRAINT user_storage_credentials_user_id_users_id_fk
+          FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE CASCADE ON UPDATE NO ACTION;
+        RAISE NOTICE 'Fixed user_storage_credentials FK to reference auth.users';
+      ELSIF ref_schema = 'auth' THEN
+        RAISE NOTICE 'FK already correctly references auth.users';
+      ELSE
+        RAISE NOTICE 'FK constraint not found, nothing to fix';
       END IF;
     END $$;
   `)
