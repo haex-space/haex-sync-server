@@ -15,7 +15,10 @@
     "db:realtime": "bun run scripts/apply-realtime.ts",
     "db:partitioning": "bun run scripts/apply-partitioning.ts",
     "db:storage-bucket": "bun run scripts/apply-storage-bucket.ts",
-    "db:studio": "drizzle-kit studio"
+    "db:studio": "drizzle-kit studio",
+    "release:patch": "node scripts/release.js patch",
+    "release:minor": "node scripts/release.js minor",
+    "release:major": "node scripts/release.js major"
   },
   "devDependencies": {
     "@types/bun": "latest",
