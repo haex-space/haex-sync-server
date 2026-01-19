@@ -22,6 +22,37 @@ try {
   await migrate(db, { migrationsFolder: './drizzle/migrations' })
   console.log('✅ Migrations completed successfully')
 
+  // Fix FK constraints that may have been created incorrectly by db:push
+  // This is idempotent and safe to run multiple times
+  console.log('🔧 Ensuring FK constraints reference auth.users...')
+  await migrationClient.unsafe(`
+    DO $$
+    BEGIN
+      -- Check if the FK exists and points to public.users (wrong) instead of auth.users
+      -- The constraint may exist but reference the wrong table due to db:push
+      IF EXISTS (
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE constraint_name = 'user_storage_credentials_user_id_users_id_fk'
+        AND table_name = 'user_storage_credentials'
+      ) THEN
+        -- Check if it references the correct schema
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.constraint_column_usage
+          WHERE constraint_name = 'user_storage_credentials_user_id_users_id_fk'
+          AND table_schema = 'auth'
+          AND table_name = 'users'
+        ) THEN
+          -- Drop and recreate with correct reference
+          ALTER TABLE user_storage_credentials DROP CONSTRAINT user_storage_credentials_user_id_users_id_fk;
+          ALTER TABLE user_storage_credentials ADD CONSTRAINT user_storage_credentials_user_id_users_id_fk
+            FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE CASCADE ON UPDATE NO ACTION;
+          RAISE NOTICE 'Fixed user_storage_credentials FK to reference auth.users';
+        END IF;
+      END IF;
+    END $$;
+  `)
+  console.log('✅ FK constraints verified')
+
   // Apply RLS policies (these need to be reapplied after schema changes)
   console.log('🔒 Applying RLS policies...')
   const rlsPoliciesSQL = readFileSync(join(import.meta.dir, '../drizzle/rls-policies.sql'), 'utf-8')
