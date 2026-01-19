@@ -92,6 +92,13 @@
       "when": 1737248400000,
       "tag": "0012_fix_user_storage_fk",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1737252000000,
+      "tag": "0013_fix_user_storage_fk_auth_schema",
+      "breakpoints": true
     }
   ]
 }
