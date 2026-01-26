@@ -94,6 +94,9 @@ BEGIN
     CREATE TABLE "sync_changes_default" PARTITION OF "sync_changes" DEFAULT;
     -- Enable RLS on default partition
     ALTER TABLE "sync_changes_default" ENABLE ROW LEVEL SECURITY;
+    -- Create RLS policies on default partition
+    CREATE POLICY "Users can only access their own sync changes" ON "sync_changes_default" FOR SELECT USING (auth.uid() = user_id);
+    CREATE POLICY "Users can only insert their own sync changes" ON "sync_changes_default" FOR INSERT WITH CHECK (auth.uid() = user_id);
 
     -- Step 6: Create partitions for existing vault_ids and migrate data
     FOR v_id IN SELECT DISTINCT vault_id FROM sync_changes_old
