@@ -254,3 +254,53 @@ CREATE TRIGGER drop_partition_on_vault_delete
     BEFORE DELETE ON vault_keys
     FOR EACH ROW
     EXECUTE FUNCTION drop_sync_changes_partition();
+
+-- Ensure RLS policies exist on all partitions (idempotent - runs on every startup)
+-- This handles partitions that were created before policies were added
+DO $$
+DECLARE
+    partition_rec RECORD;
+    policy_exists BOOLEAN;
+BEGIN
+    -- Find all partitions of sync_changes
+    FOR partition_rec IN
+        SELECT c.relname AS partition_name
+        FROM pg_inherits i
+        JOIN pg_class c ON c.oid = i.inhrelid
+        JOIN pg_class p ON p.oid = i.inhparent
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE p.relname = 'sync_changes' AND n.nspname = 'public'
+    LOOP
+        -- Check if SELECT policy exists
+        SELECT EXISTS (
+            SELECT 1 FROM pg_policy pol
+            JOIN pg_class c ON c.oid = pol.polrelid
+            WHERE c.relname = partition_rec.partition_name
+            AND pol.polname = 'Users can only access their own sync changes'
+        ) INTO policy_exists;
+
+        IF NOT policy_exists THEN
+            EXECUTE format(
+                'CREATE POLICY "Users can only access their own sync changes" ON %I FOR SELECT USING (auth.uid() = user_id)',
+                partition_rec.partition_name
+            );
+            RAISE NOTICE 'Added SELECT policy to partition %', partition_rec.partition_name;
+        END IF;
+
+        -- Check if INSERT policy exists
+        SELECT EXISTS (
+            SELECT 1 FROM pg_policy pol
+            JOIN pg_class c ON c.oid = pol.polrelid
+            WHERE c.relname = partition_rec.partition_name
+            AND pol.polname = 'Users can only insert their own sync changes'
+        ) INTO policy_exists;
+
+        IF NOT policy_exists THEN
+            EXECUTE format(
+                'CREATE POLICY "Users can only insert their own sync changes" ON %I FOR INSERT WITH CHECK (auth.uid() = user_id)',
+                partition_rec.partition_name
+            );
+            RAISE NOTICE 'Added INSERT policy to partition %', partition_rec.partition_name;
+        END IF;
+    END LOOP;
+END $$;
