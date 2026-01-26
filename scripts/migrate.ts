@@ -73,6 +73,20 @@ try {
       throw e
     }
   }
+
+  // Apply Partitioning configuration (converts sync_changes to partitioned table)
+  // This is idempotent - it checks if table is already partitioned
+  console.log('📊 Applying Partitioning configuration...')
+  const partitioningSQL = readFileSync(join(import.meta.dir, '../drizzle/partitioning.sql'), 'utf-8')
+  await migrationClient.unsafe(partitioningSQL)
+  console.log('✅ Partitioning configuration applied successfully')
+
+  // Apply Realtime configuration (adds sync_changes partitions to supabase_realtime publication)
+  // This must run AFTER partitioning to ensure all partitions are included
+  console.log('📡 Applying Realtime configuration...')
+  const realtimeSQL = readFileSync(join(import.meta.dir, '../drizzle/realtime.sql'), 'utf-8')
+  await migrationClient.unsafe(realtimeSQL)
+  console.log('✅ Realtime configuration applied successfully')
 } catch (error) {
   console.error('❌ Migration failed:', error)
   await migrationClient.end()
