@@ -213,7 +213,7 @@ BEGIN
 
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SET search_path = '';
 
 -- Create trigger to auto-create partition when vault is created (idempotent)
 DROP TRIGGER IF EXISTS create_partition_on_vault_insert ON vault_keys;
@@ -243,7 +243,7 @@ BEGIN
 
     RETURN OLD;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SET search_path = '';
 
 -- Create trigger to drop partition when vault is deleted (idempotent)
 DROP TRIGGER IF EXISTS drop_partition_on_vault_delete ON vault_keys;

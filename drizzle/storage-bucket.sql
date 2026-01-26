@@ -13,7 +13,7 @@
 CREATE OR REPLACE FUNCTION public.get_user_bucket_name(p_user_id UUID)
 RETURNS TEXT AS $$
   SELECT 'user-' || p_user_id::text;
-$$ LANGUAGE sql IMMUTABLE;
+$$ LANGUAGE sql IMMUTABLE SET search_path = '';
 
 -- Function: Get user storage quota info (simplified - returns fixed 10GB quota)
 -- Actual enforcement is done by MinIO bucket quotas
@@ -33,7 +33,7 @@ BEGIN
     'Free'::TEXT as tier_name,
     'free'::TEXT as tier_slug;
 END;
-$$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '';
 
 -- ============================================
 -- PERMISSIONS
