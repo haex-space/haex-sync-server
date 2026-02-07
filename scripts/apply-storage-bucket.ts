@@ -3,35 +3,38 @@
  * Run with: bun run scripts/apply-storage-bucket.ts
  */
 
-import { readFileSync } from "fs";
-import postgres from "postgres";
+import { readFileSync } from 'fs'
+import postgres from 'postgres'
 
-const DATABASE_URL = process.env.DATABASE_URL;
+const DATABASE_URL = process.env.DATABASE_URL
 
 if (!DATABASE_URL) {
-  console.error("❌ DATABASE_URL environment variable is not set");
-  process.exit(1);
+  console.error('❌ DATABASE_URL environment variable is not set')
+  process.exit(1)
 }
 
+// Validated value
+const dbUrl: string = DATABASE_URL
+
 async function applyStorageBucketAsync() {
-  console.log("📦 Applying Storage Bucket configuration to Supabase...");
+  console.log('📦 Applying Storage Bucket configuration to Supabase...')
 
   // Read SQL file
-  const sql = readFileSync("./drizzle/storage-bucket.sql", "utf-8");
+  const sql = readFileSync('./drizzle/storage-bucket.sql', 'utf-8')
 
   // Connect to database
-  const db = postgres(DATABASE_URL);
+  const db = postgres(dbUrl)
 
   try {
     // Execute SQL
-    await db.unsafe(sql);
-    console.log("✅ Storage Bucket configuration applied successfully!");
+    await db.unsafe(sql)
+    console.log('✅ Storage Bucket configuration applied successfully!')
   } catch (error) {
-    console.error("❌ Failed to apply Storage Bucket configuration:", error);
-    process.exit(1);
+    console.error('❌ Failed to apply Storage Bucket configuration:', error)
+    process.exit(1)
   } finally {
-    await db.end();
+    await db.end()
   }
 }
 
-applyStorageBucketAsync();
+applyStorageBucketAsync()

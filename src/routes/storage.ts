@@ -43,7 +43,7 @@ const supabase = createClient(supabaseUrl, supabaseServiceKey)
  * Path format: /s3/{bucket}/{key} or /s3/{bucket}
  * Returns null if bucket doesn't match expected user bucket
  */
-function extractBucketAndKey(path: string, userId: string): { bucket: string; key: string } | null {
+export function extractBucketAndKey(path: string, userId: string): { bucket: string; key: string } | null {
   // Remove /storage prefix if present (from the full request path)
   let cleanPath = path.replace(/^\/storage/, '')
 
@@ -87,7 +87,7 @@ async function extractUserIdFromBearerToken(token: string): Promise<string | nul
 /**
  * Get all headers as a lowercase-keyed record
  */
-function getHeadersRecord(headers: Headers): Record<string, string> {
+export function getHeadersRecord(headers: Headers): Record<string, string> {
   const result: Record<string, string> = {}
   headers.forEach((value, key) => {
     result[key.toLowerCase()] = value
@@ -518,7 +518,7 @@ async function handleListRequest(c: any, userId: string): Promise<Response> {
 /**
  * Build S3 ListObjectsV2 XML response (fallback for empty buckets)
  */
-function buildS3ListXml(
+export function buildS3ListXml(
   bucket: string,
   prefix: string,
   objects: Array<{ key: string; size: number; lastModified: string }>,
@@ -550,7 +550,7 @@ function buildS3ListXml(
 /**
  * Escape special XML characters
  */
-function escapeXml(str: string): string {
+export function escapeXml(str: string): string {
   return str
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')

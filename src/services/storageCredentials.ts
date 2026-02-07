@@ -5,6 +5,7 @@
  * Credentials are encrypted at rest using pgcrypto's pgp_sym_encrypt.
  */
 
+import { randomBytes } from 'crypto'
 import { db } from '../db'
 import { userStorageCredentials } from '../db/schema'
 import { eq, sql } from 'drizzle-orm'
@@ -16,27 +17,32 @@ if (!STORAGE_ENCRYPTION_KEY) {
 }
 
 /**
- * Generate a random access key ID (format: HAEX + 16 alphanumeric chars)
+ * Generate a cryptographically secure random string from a character set.
+ * Uses crypto.randomBytes() for security-critical credential generation.
  */
-function generateAccessKeyId(): string {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
-  let result = 'HAEX'
-  for (let i = 0; i < 16; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length))
+export function generateSecureRandomString(length: number, chars: string): string {
+  const bytes = randomBytes(length)
+  let result = ''
+  for (let i = 0; i < length; i++) {
+    result += chars.charAt(bytes[i]! % chars.length)
   }
   return result
 }
 
 /**
+ * Generate a random access key ID (format: HAEX + 16 alphanumeric chars)
+ */
+export function generateAccessKeyId(): string {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+  return 'HAEX' + generateSecureRandomString(16, chars)
+}
+
+/**
  * Generate a random secret access key (40 chars, like AWS)
  */
-function generateSecretAccessKey(): string {
+export function generateSecretAccessKey(): string {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-  let result = ''
-  for (let i = 0; i < 40; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length))
-  }
-  return result
+  return generateSecureRandomString(40, chars)
 }
 
 export interface StorageCredentials {

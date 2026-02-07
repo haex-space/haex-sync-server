@@ -13,6 +13,9 @@ if (!DATABASE_URL) {
   process.exit(1)
 }
 
+// Validated value
+const dbUrl: string = DATABASE_URL
+
 async function applyRlsPoliciesAsync() {
   console.log('🔒 Applying RLS policies to Supabase...')
 
@@ -20,7 +23,7 @@ async function applyRlsPoliciesAsync() {
   const sql = readFileSync('./drizzle/rls-policies.sql', 'utf-8')
 
   // Connect to database
-  const db = postgres(DATABASE_URL)
+  const db = postgres(dbUrl)
 
   try {
     // Execute SQL

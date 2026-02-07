@@ -6,22 +6,25 @@
 import postgres from 'postgres'
 
 const DATABASE_URL = process.env.DATABASE_URL
-const vaultId = process.argv[2]
+const vaultIdArg = process.argv[2]
 
 if (!DATABASE_URL) {
   console.error('❌ DATABASE_URL environment variable is not set')
   process.exit(1)
 }
 
-if (!vaultId) {
+if (!vaultIdArg) {
   console.error('❌ Usage: bun run scripts/check-realtime.ts <vault-id>')
   process.exit(1)
 }
 
+// Validated values
+const dbUrl: string = DATABASE_URL
+const vaultId: string = vaultIdArg
 const partitionName = `sync_changes_${vaultId.replace(/-/g, '_')}`
 
 async function checkRealtimeAsync() {
-  const db = postgres(DATABASE_URL)
+  const db = postgres(dbUrl)
 
   try {
     // Check RLS policies on the partition

@@ -11,6 +11,7 @@ ALTER TABLE sync_changes ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Users can only access their own vault keys" ON vault_keys;
 DROP POLICY IF EXISTS "Users can only insert their own vault keys" ON vault_keys;
 DROP POLICY IF EXISTS "Users can only update their own vault keys" ON vault_keys;
+DROP POLICY IF EXISTS "Users can only delete their own vault keys" ON vault_keys;
 DROP POLICY IF EXISTS "Users can only access their own sync changes" ON sync_changes;
 DROP POLICY IF EXISTS "Users can only insert their own sync changes" ON sync_changes;
 
@@ -30,6 +31,11 @@ CREATE POLICY "Users can only update their own vault keys"
   FOR UPDATE
   USING ((select auth.uid()) = user_id)
   WITH CHECK ((select auth.uid()) = user_id);
+
+CREATE POLICY "Users can only delete their own vault keys"
+  ON vault_keys
+  FOR DELETE
+  USING ((select auth.uid()) = user_id);
 
 -- Sync Changes Policies (on parent table - inherited by partitions)
 CREATE POLICY "Users can only access their own sync changes"

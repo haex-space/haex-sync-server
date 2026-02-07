@@ -83,5 +83,31 @@ services:
     volumes:
       - ./config/kong.yml:/home/kong/kong.yml:ro
 
+  # HaexHub Sync Server
+  sync-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: haex-sync-server
+    restart: unless-stopped
+    ports:
+      - "${SYNC_SERVER_PORT:-3002}:3002"
+    environment:
+      PORT: 3002
+      SUPABASE_URL: http://kong:8000
+      SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY:-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImV4cCI6MTk4MzgxMjk5Nn0.EGIM96RAZx35lJzdJsyH-qQwv8Hdp7fsn3W0YpN81IU}
+    depends_on:
+      db:
+        condition: service_healthy
+      kong:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "bun", "run", "-e", "fetch('http://localhost:3002').then(r => r.ok ? process.exit(0) : process.exit(1))"]
+      interval: 30s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+
 volumes:
   db_data:

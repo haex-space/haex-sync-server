@@ -32,7 +32,7 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Run tests
-        run: bun test || echo "No tests found yet"
+        run: bun test tests/awsSignatureV4.test.ts tests/storageCredentials.test.ts tests/storage.test.ts tests/syncBatchValidation.test.ts
 
   build-and-push:
     name: Build and Push Docker Image

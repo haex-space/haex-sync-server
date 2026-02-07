@@ -13,6 +13,9 @@ if (!DATABASE_URL) {
   process.exit(1)
 }
 
+// Validated value
+const dbUrl: string = DATABASE_URL
+
 async function applyRealtimeAsync() {
   console.log('📡 Applying Realtime configuration to Supabase...')
 
@@ -20,7 +23,7 @@ async function applyRealtimeAsync() {
   const sql = readFileSync('./drizzle/realtime.sql', 'utf-8')
 
   // Connect to database
-  const db = postgres(DATABASE_URL)
+  const db = postgres(dbUrl)
 
   try {
     // Execute SQL

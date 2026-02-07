@@ -18,6 +18,9 @@ if (!DATABASE_URL) {
   process.exit(1)
 }
 
+// Validated value
+const dbUrl: string = DATABASE_URL
+
 async function applyPartitioningAsync() {
   console.log('🔧 Applying List Partitioning to sync_changes table...')
   console.log('   This will create one partition per vault_id for better query performance.')
@@ -27,7 +30,7 @@ async function applyPartitioningAsync() {
   const sql = readFileSync('./drizzle/partitioning.sql', 'utf-8')
 
   // Connect to database
-  const db = postgres(DATABASE_URL)
+  const db = postgres(dbUrl)
 
   try {
     // Execute SQL

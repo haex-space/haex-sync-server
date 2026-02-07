@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'crypto'
 import { Hono } from 'hono'
 import type {
   SyncServerLoginRequest,
@@ -53,7 +54,12 @@ app.post('/admin/create-user', async (c) => {
     }
 
     const providedKey = authHeader.substring(7) // Remove 'Bearer ' prefix
-    if (providedKey !== serviceKey) {
+
+    // Use timing-safe comparison to prevent timing attacks
+    const providedKeyBuf = Buffer.from(providedKey)
+    const serviceKeyBuf = Buffer.from(serviceKey)
+    if (providedKeyBuf.length !== serviceKeyBuf.length ||
+        !timingSafeEqual(providedKeyBuf, serviceKeyBuf)) {
       return c.json({ error: 'Invalid service key' }, 403)
     }
 
