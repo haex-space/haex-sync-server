@@ -5,19 +5,16 @@
  * Uses MinIO Admin API to create per-user credentials and buckets.
  */
 
+// Re-export getUserBucket from utils for backwards compatibility
+export { getUserBucket } from '../utils/storageUtils'
+import { getUserBucket } from '../utils/storageUtils'
+
 const MINIO_ENDPOINT = process.env.MINIO_ENDPOINT
 const MINIO_ROOT_USER = process.env.MINIO_ROOT_USER
 const MINIO_ROOT_PASSWORD = process.env.MINIO_ROOT_PASSWORD
 
 if (!MINIO_ENDPOINT || !MINIO_ROOT_USER || !MINIO_ROOT_PASSWORD) {
   console.warn('Warning: MinIO admin credentials not configured. MinIO storage will not work.')
-}
-
-/**
- * Get user's bucket name
- */
-export function getUserBucket(userId: string): string {
-  return `user-${userId}`
 }
 
 /**

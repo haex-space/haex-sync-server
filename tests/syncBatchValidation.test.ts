@@ -8,7 +8,7 @@
  */
 
 import { describe, test, expect } from 'bun:test'
-import { validateBatches, type SyncChange } from '../src/routes/sync'
+import { validateBatches, type SyncChange } from '../src/utils/syncUtils'
 
 describe('Sync - Batch Validation', () => {
   describe('validateBatches', () => {

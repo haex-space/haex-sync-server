@@ -13,8 +13,8 @@ import {
   escapeXml,
   buildS3ListXml,
   getHeadersRecord,
-} from '../src/routes/storage'
-import { getUserBucket } from '../src/services/minioAdmin'
+  getUserBucket,
+} from '../src/utils/storageUtils'
 
 describe('Storage - Bucket Isolation', () => {
   const userId = 'abc123-def456-ghi789'

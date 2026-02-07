@@ -10,7 +10,7 @@ import {
   generateSecureRandomString,
   generateAccessKeyId,
   generateSecretAccessKey,
-} from '../src/services/storageCredentials'
+} from '../src/utils/credentialUtils'
 
 describe('Storage Credentials - Secure Random Generation', () => {
   describe('generateSecureRandomString', () => {
@@ -122,7 +122,7 @@ describe('Storage Credentials - Secure Random Generation', () => {
       for (let i = 0; i < 50; i++) {
         const key = generateSecureRandomString(20, chars)
         for (const char of key) {
-          charCounts[char]++
+          charCounts[char] = (charCounts[char] ?? 0) + 1
         }
       }
 
