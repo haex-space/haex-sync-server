@@ -95,8 +95,8 @@ BEGIN
     -- Enable RLS on default partition
     ALTER TABLE "sync_changes_default" ENABLE ROW LEVEL SECURITY;
     -- Create RLS policies on default partition
-    CREATE POLICY "Users can only access their own sync changes" ON "sync_changes_default" FOR SELECT USING (auth.uid() = user_id);
-    CREATE POLICY "Users can only insert their own sync changes" ON "sync_changes_default" FOR INSERT WITH CHECK (auth.uid() = user_id);
+    CREATE POLICY "Users can only access their own sync changes" ON "sync_changes_default" FOR SELECT USING ((select auth.uid()) = user_id);
+    CREATE POLICY "Users can only insert their own sync changes" ON "sync_changes_default" FOR INSERT WITH CHECK ((select auth.uid()) = user_id);
 
     -- Step 6: Create partitions for existing vault_ids and migrate data
     FOR v_id IN SELECT DISTINCT vault_id FROM sync_changes_old
@@ -155,11 +155,11 @@ BEGIN
     -- Step 11: Recreate RLS policies
     CREATE POLICY "Users can only access their own sync changes"
         ON sync_changes FOR SELECT
-        USING (auth.uid() = user_id);
+        USING ((select auth.uid()) = user_id);
 
     CREATE POLICY "Users can only insert their own sync changes"
         ON sync_changes FOR INSERT
-        WITH CHECK (auth.uid() = user_id);
+        WITH CHECK ((select auth.uid()) = user_id);
 
     -- Step 12: Drop old table
     -- Note: Realtime configuration is handled by db:realtime script
@@ -183,32 +183,32 @@ BEGIN
         JOIN pg_namespace n ON n.oid = c.relnamespace
         WHERE c.relname = partition_name AND n.nspname = 'public'
     ) THEN
-        -- Create new partition
+        -- Create new partition (explicit public schema to avoid search_path issues)
         EXECUTE format(
-            'CREATE TABLE %I PARTITION OF sync_changes FOR VALUES IN (%L)',
+            'CREATE TABLE public.%I PARTITION OF public.sync_changes FOR VALUES IN (%L)',
             partition_name,
             NEW.vault_id
         );
 
         -- Enable RLS on the new partition
-        EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', partition_name);
+        EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', partition_name);
 
         -- Create RLS policies on partition (policies are NOT inherited from parent!)
         EXECUTE format(
-            'CREATE POLICY "Users can only access their own sync changes" ON %I FOR SELECT USING (auth.uid() = user_id)',
+            'CREATE POLICY "Users can only access their own sync changes" ON public.%I FOR SELECT USING ((select auth.uid()) = user_id)',
             partition_name
         );
         EXECUTE format(
-            'CREATE POLICY "Users can only insert their own sync changes" ON %I FOR INSERT WITH CHECK (auth.uid() = user_id)',
+            'CREATE POLICY "Users can only insert their own sync changes" ON public.%I FOR INSERT WITH CHECK ((select auth.uid()) = user_id)',
             partition_name
         );
 
         -- Configure Realtime for the new partition
-        EXECUTE format('ALTER TABLE %I REPLICA IDENTITY FULL', partition_name);
+        EXECUTE format('ALTER TABLE public.%I REPLICA IDENTITY FULL', partition_name);
 
         -- Add to supabase_realtime publication if it exists
         IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
-            EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE %I', partition_name);
+            EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE public.%I', partition_name);
         END IF;
 
         RAISE NOTICE 'Created partition % for new vault % (with RLS, policies, and Realtime enabled)', partition_name, NEW.vault_id;
@@ -240,7 +240,7 @@ BEGIN
         JOIN pg_namespace n ON n.oid = c.relnamespace
         WHERE c.relname = partition_name AND n.nspname = 'public'
     ) THEN
-        EXECUTE format('DROP TABLE %I', partition_name);
+        EXECUTE format('DROP TABLE public.%I', partition_name);
         RAISE NOTICE 'Dropped partition % for deleted vault %', partition_name, OLD.vault_id;
     END IF;
 
@@ -281,7 +281,7 @@ BEGIN
 
         IF NOT policy_exists THEN
             EXECUTE format(
-                'CREATE POLICY "Users can only access their own sync changes" ON %I FOR SELECT USING (auth.uid() = user_id)',
+                'CREATE POLICY "Users can only access their own sync changes" ON public.%I FOR SELECT USING ((select auth.uid()) = user_id)',
                 partition_rec.partition_name
             );
             RAISE NOTICE 'Added SELECT policy to partition %', partition_rec.partition_name;
@@ -297,7 +297,7 @@ BEGIN
 
         IF NOT policy_exists THEN
             EXECUTE format(
-                'CREATE POLICY "Users can only insert their own sync changes" ON %I FOR INSERT WITH CHECK (auth.uid() = user_id)',
+                'CREATE POLICY "Users can only insert their own sync changes" ON public.%I FOR INSERT WITH CHECK ((select auth.uid()) = user_id)',
                 partition_rec.partition_name
             );
             RAISE NOTICE 'Added INSERT policy to partition %', partition_rec.partition_name;

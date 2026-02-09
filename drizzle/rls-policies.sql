@@ -77,14 +77,26 @@ ALTER TABLE user_storage_credentials ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Users can read their own credentials" ON user_storage_credentials;
 DROP POLICY IF EXISTS "Service role can manage credentials" ON user_storage_credentials;
 
--- Users can only read their own credentials
+-- Users can only read their own credentials (or service role can read all)
 CREATE POLICY "Users can read their own credentials"
   ON user_storage_credentials
   FOR SELECT
-  USING ((select auth.uid()) = user_id);
+  USING ((select auth.uid()) = user_id OR (select auth.role()) = 'service_role');
 
--- Service role can manage all credentials (for creation via sync-server)
-CREATE POLICY "Service role can manage credentials"
+-- Service role can insert credentials (for creation via sync-server)
+CREATE POLICY "Service role can insert credentials"
   ON user_storage_credentials
-  FOR ALL
-  USING (auth.role() = 'service_role');
+  FOR INSERT
+  WITH CHECK ((select auth.role()) = 'service_role');
+
+-- Service role can update credentials
+CREATE POLICY "Service role can update credentials"
+  ON user_storage_credentials
+  FOR UPDATE
+  USING ((select auth.role()) = 'service_role');
+
+-- Service role can delete credentials
+CREATE POLICY "Service role can delete credentials"
+  ON user_storage_credentials
+  FOR DELETE
+  USING ((select auth.role()) = 'service_role');
