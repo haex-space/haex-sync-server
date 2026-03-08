@@ -42,7 +42,7 @@ export const spaceTokenAuthMiddleware = createMiddleware(async (c, next) => {
   db.update(spaceAccessTokens)
     .set({ lastUsedAt: new Date() })
     .where(eq(spaceAccessTokens.id, tokenRecord.id))
-    .then(() => {})
+    .catch(() => {})
 
   c.set('spaceToken', {
     spaceId: tokenRecord.spaceId,
