@@ -6,6 +6,8 @@ import {
   uuid,
   index,
   uniqueIndex,
+  integer,
+  primaryKey,
 } from "drizzle-orm/pg-core";
 
 // Define Supabase auth schema
@@ -185,3 +187,83 @@ export const userStorageCredentials = pgTable(
 
 export type UserStorageCredential = typeof userStorageCredentials.$inferSelect;
 export type NewUserStorageCredential = typeof userStorageCredentials.$inferInsert;
+
+// ============================================
+// SHARED SPACES
+// ============================================
+
+/**
+ * Spaces Table
+ * A space is a shared encrypted container that multiple users can access.
+ * The space name is encrypted client-side (only members can read it).
+ */
+export const spaces = pgTable("spaces", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  ownerId: uuid("owner_id")
+    .notNull()
+    .references(() => authUsers.id),
+  encryptedName: text("encrypted_name").notNull(),
+  nameNonce: text("name_nonce").notNull(),
+  currentKeyGeneration: integer("current_key_generation").notNull().default(1),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type Space = typeof spaces.$inferSelect;
+export type NewSpace = typeof spaces.$inferInsert;
+
+/**
+ * Space Members Table
+ * Tracks which users belong to a space and their role.
+ * Composite primary key: (spaceId, userId)
+ */
+export const spaceMembers = pgTable(
+  "space_members",
+  {
+    spaceId: uuid("space_id")
+      .notNull()
+      .references(() => spaces.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => authUsers.id, { onDelete: "cascade" }),
+    role: text("role").notNull(), // 'admin' | 'member' | 'viewer'
+    invitedBy: uuid("invited_by").references(() => authUsers.id),
+    joinedAt: timestamp("joined_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.spaceId, table.userId] }),
+  ]
+);
+
+export type SpaceMember = typeof spaceMembers.$inferSelect;
+export type NewSpaceMember = typeof spaceMembers.$inferInsert;
+
+/**
+ * Space Key Grants Table
+ * Stores encrypted space keys per user per key generation.
+ * When a member is removed, a new generation is created and re-granted to remaining members.
+ * Composite primary key: (spaceId, userId, generation)
+ */
+export const spaceKeyGrants = pgTable(
+  "space_key_grants",
+  {
+    spaceId: uuid("space_id")
+      .notNull()
+      .references(() => spaces.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => authUsers.id, { onDelete: "cascade" }),
+    generation: integer("generation").notNull(),
+    encryptedSpaceKey: text("encrypted_space_key").notNull(),
+    keyNonce: text("key_nonce").notNull(),
+    ephemeralPublicKey: text("ephemeral_public_key").notNull(),
+    grantedBy: uuid("granted_by").references(() => authUsers.id),
+    grantedAt: timestamp("granted_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.spaceId, table.userId, table.generation] }),
+  ]
+);
+
+export type SpaceKeyGrant = typeof spaceKeyGrants.$inferSelect;
+export type NewSpaceKeyGrant = typeof spaceKeyGrants.$inferInsert;

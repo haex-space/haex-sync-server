@@ -5,6 +5,7 @@ import authRoutes from './src/routes/auth'
 import syncRoutes from './src/routes/sync'
 import storageRoutes from './src/routes/storage'
 import keypairRoutes from './src/routes/keypairs'
+import spacesRoutes from './src/routes/spaces'
 import packageJson from './package.json'
 
 const app = new Hono()
@@ -44,6 +45,8 @@ app.route('/sync', syncRoutes)
 app.route('/storage', storageRoutes)
 // Keypair routes for asymmetric crypto (shared spaces)
 app.route('/keypairs', keypairRoutes)
+// Space routes for shared encrypted spaces
+app.route('/spaces', spacesRoutes)
 
 // 404 handler
 app.notFound((c) => {
