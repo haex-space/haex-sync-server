@@ -1,5 +1,11 @@
 ALTER TABLE user_keypairs ENABLE ROW LEVEL SECURITY;
 
+-- Drop existing policies if any (to allow re-running this file)
+DROP POLICY IF EXISTS user_keypairs_select ON user_keypairs;
+DROP POLICY IF EXISTS user_keypairs_insert ON user_keypairs;
+DROP POLICY IF EXISTS user_keypairs_update ON user_keypairs;
+DROP POLICY IF EXISTS user_keypairs_delete ON user_keypairs;
+
 -- Anyone can read public keys (needed for inviting others)
 CREATE POLICY user_keypairs_select ON user_keypairs
   FOR SELECT USING (true);

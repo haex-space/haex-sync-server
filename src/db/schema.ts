@@ -137,7 +137,7 @@ export const userKeypairs = pgTable("user_keypairs", {
   encryptedPrivateKey: text("encrypted_private_key").notNull(), // AES-GCM encrypted (Base64)
   privateKeyNonce: text("private_key_nonce").notNull(), // AES-GCM nonce (Base64)
   privateKeySalt: text("private_key_salt").notNull(), // PBKDF2 salt (Base64)
-  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export type UserKeypair = typeof userKeypairs.$inferSelect;
