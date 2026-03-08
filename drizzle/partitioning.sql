@@ -319,50 +319,60 @@ BEGIN
   safe_space_id := replace(NEW.id::text, '-', '_');
   partition_name := 'sync_changes_space_' || safe_space_id;
 
-  EXECUTE format(
-    'CREATE TABLE IF NOT EXISTS %I PARTITION OF sync_changes FOR VALUES IN (%L)',
-    partition_name, NEW.id::text
-  );
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE c.relname = partition_name AND n.nspname = 'public'
+  ) THEN
+    EXECUTE format(
+      'CREATE TABLE public.%I PARTITION OF public.sync_changes FOR VALUES IN (%L)',
+      partition_name, NEW.id::text
+    );
 
-  EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', partition_name);
+    EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', partition_name);
 
-  -- SELECT: any space member can read
-  EXECUTE format(
-    'CREATE POLICY space_select ON %I FOR SELECT USING (
-      EXISTS (
-        SELECT 1 FROM space_members
-        WHERE space_id = %L AND user_id = (SELECT auth.uid())
-      )
-    )', partition_name, NEW.id::text
-  );
+    -- SELECT: any space member can read
+    EXECUTE format(
+      'CREATE POLICY space_select ON public.%I FOR SELECT USING (
+        EXISTS (
+          SELECT 1 FROM public.space_members
+          WHERE space_id = %L AND user_id = (SELECT auth.uid())
+        )
+      )', partition_name, NEW.id::text
+    );
 
-  -- INSERT: member or admin can write
-  EXECUTE format(
-    'CREATE POLICY space_insert ON %I FOR INSERT WITH CHECK (
-      EXISTS (
-        SELECT 1 FROM space_members
-        WHERE space_id = %L AND user_id = (SELECT auth.uid())
-        AND role IN (''member'', ''admin'')
-      )
-    )', partition_name, NEW.id::text
-  );
+    -- INSERT: member or admin can write
+    EXECUTE format(
+      'CREATE POLICY space_insert ON public.%I FOR INSERT WITH CHECK (
+        EXISTS (
+          SELECT 1 FROM public.space_members
+          WHERE space_id = %L AND user_id = (SELECT auth.uid())
+          AND role IN (''member'', ''admin'')
+        )
+      )', partition_name, NEW.id::text
+    );
 
-  -- UPDATE: member or admin can update (record ownership checked at application level)
-  EXECUTE format(
-    'CREATE POLICY space_update ON %I FOR UPDATE USING (
-      EXISTS (
-        SELECT 1 FROM space_members
-        WHERE space_id = %L AND user_id = (SELECT auth.uid())
-        AND role IN (''member'', ''admin'')
-      )
-    )', partition_name, NEW.id::text
-  );
+    -- UPDATE: member or admin can update (record ownership checked at application level)
+    EXECUTE format(
+      'CREATE POLICY space_update ON public.%I FOR UPDATE USING (
+        EXISTS (
+          SELECT 1 FROM public.space_members
+          WHERE space_id = %L AND user_id = (SELECT auth.uid())
+          AND role IN (''member'', ''admin'')
+        )
+      )', partition_name, NEW.id::text
+    );
 
-  EXECUTE format('ALTER TABLE %I REPLICA IDENTITY FULL', partition_name);
+    EXECUTE format('ALTER TABLE public.%I REPLICA IDENTITY FULL', partition_name);
+
+    IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
+      EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE public.%I', partition_name);
+    END IF;
+  END IF;
 
   RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
 
 -- Drop and recreate trigger to be idempotent
 DROP TRIGGER IF EXISTS create_space_partition_trigger ON spaces;
@@ -378,10 +388,10 @@ DECLARE
   partition_name TEXT;
 BEGIN
   partition_name := 'sync_changes_space_' || replace(OLD.id::text, '-', '_');
-  EXECUTE format('DROP TABLE IF EXISTS %I', partition_name);
+  EXECUTE format('DROP TABLE IF EXISTS public.%I', partition_name);
   RETURN OLD;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
 
 DROP TRIGGER IF EXISTS drop_space_partition_trigger ON spaces;
 CREATE TRIGGER drop_space_partition_trigger
