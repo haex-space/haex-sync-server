@@ -7,6 +7,13 @@ import { spaceTokenAuthMiddleware } from '../middleware/spaceTokenAuth'
 import { verifyRecordSignature } from '../utils/signatureVerification'
 import { eq, and, ne, sql, max, asc, or, inArray } from 'drizzle-orm'
 
+class SpacePushValidationError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'SpacePushValidationError'
+  }
+}
+
 const sync = new Hono()
 
 // Space token middleware must run BEFORE auth middleware so auth can skip when space token is present
@@ -121,6 +128,7 @@ async function validateSpacePush(
   spaceId: string,
   authenticatedPublicKey: string,
   role: string,
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
 ): Promise<{ valid: boolean; error?: string }> {
   // 1. Role check
   if (role === 'viewer') {
@@ -155,7 +163,7 @@ async function validateSpacePush(
     }
 
     // 5. Record ownership check (per-row, not per-column)
-    const existingRecord = await db.select({
+    const existingRecord = await tx.select({
       recordOwner: syncChanges.recordOwner,
       collaborative: syncChanges.collaborative,
     }).from(syncChanges)
@@ -185,13 +193,11 @@ async function validateSpacePush(
         }
       }
 
-      // Data modification: only owner or collaborative
-      if (change.encryptedValue !== undefined) {
-        const isOwner = change.signedBy === existing.recordOwner
-        const isCollaborative = existing.collaborative === true
-        if (!isOwner && !isCollaborative) {
-          return { valid: false, error: `Cannot modify record owned by ${existing.recordOwner}` }
-        }
+      // Data modification: only owner or collaborative (applies to updates and deletes)
+      const isOwner = change.signedBy === existing.recordOwner
+      const isCollaborative = existing.collaborative === true
+      if (!isOwner && !isCollaborative) {
+        return { valid: false, error: `Cannot modify record owned by ${existing.recordOwner}` }
       }
     }
   }
@@ -204,6 +210,10 @@ async function validateSpacePush(
  * Store encrypted vault key for a user (Hybrid-Ansatz)
  */
 sync.post('/vault-key', zValidator('json', vaultKeySchema), async (c) => {
+  const spaceToken = c.get('spaceToken')
+  if (spaceToken) {
+    return c.json({ error: 'Space tokens can only be used for push/pull operations' }, 403)
+  }
   const user = c.get('user')
   const { vaultId, encryptedVaultKey, encryptedVaultName, vaultKeySalt, vaultNameSalt, vaultKeyNonce, vaultNameNonce } = c.req.valid('json')
 
@@ -259,6 +269,10 @@ sync.post('/vault-key', zValidator('json', vaultKeySchema), async (c) => {
  * Retrieve all vaults for the authenticated user
  */
 sync.get('/vaults', async (c) => {
+  const spaceToken = c.get('spaceToken')
+  if (spaceToken) {
+    return c.json({ error: 'Space tokens can only be used for push/pull operations' }, 403)
+  }
   const user = c.get('user')
 
   try {
@@ -287,6 +301,10 @@ sync.get('/vaults', async (c) => {
  * Update encrypted vault name for a vault
  */
 sync.patch('/vault-key/:vaultId', zValidator('json', updateVaultNameSchema), async (c) => {
+  const spaceToken = c.get('spaceToken')
+  if (spaceToken) {
+    return c.json({ error: 'Space tokens can only be used for push/pull operations' }, 403)
+  }
   const user = c.get('user')
   const vaultId = c.req.param('vaultId')
   const { encryptedVaultName, vaultNameNonce } = c.req.valid('json')
@@ -334,6 +352,10 @@ sync.patch('/vault-key/:vaultId', zValidator('json', updateVaultNameSchema), asy
  * Retrieve encrypted vault key for a user
  */
 sync.get('/vault-key/:vaultId', async (c) => {
+  const spaceToken = c.get('spaceToken')
+  if (spaceToken) {
+    return c.json({ error: 'Space tokens can only be used for push/pull operations' }, 403)
+  }
   const user = c.get('user')
   const vaultId = c.req.param('vaultId')
 
@@ -382,8 +404,15 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
   const changes = rawChanges as PushChange[]
 
   try {
+    // Validate space token matches target vault
+    if (spaceToken && spaceToken.spaceId !== vaultId) {
+      return c.json({ error: 'Space token does not match target vault' }, 403)
+    }
+
     // Space-scoped push validation
     const isSpaceSync = !!spaceToken || await isSpacePartition(vaultId)
+    let spaceAuthenticatedPublicKey: string | undefined
+    let spaceRole: string | undefined
 
     if (isSpaceSync) {
       const authenticatedPublicKey = spaceToken
@@ -400,10 +429,8 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
         return c.json({ error: 'Not a member of this space' }, 403)
       }
 
-      const validation = await validateSpacePush(changes, vaultId, authenticatedPublicKey, role)
-      if (!validation.valid) {
-        return c.json({ error: validation.error }, 403)
-      }
+      spaceAuthenticatedPublicKey = authenticatedPublicKey
+      spaceRole = role
     }
 
     // Validate batch completeness if batch metadata is present
@@ -459,19 +486,30 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
     // Each change has ~9 parameters, so we can safely insert ~5000 changes per query.
     const CHUNK_SIZE = 5000
 
-    // Resolve effective userId before the transaction (for space token auth, use space owner)
+    // Resolve effective userId (for space token auth, use space owner)
     let effectiveUserId: string
     if (spaceToken) {
       const space = await db.select({ ownerId: spaces.ownerId })
         .from(spaces)
         .where(eq(spaces.id, vaultId))
         .limit(1)
-      effectiveUserId = space[0]?.ownerId ?? ''
+      if (!space[0]) {
+        return c.json({ error: 'Space not found' }, 404)
+      }
+      effectiveUserId = space[0].ownerId
     } else {
       effectiveUserId = user!.userId
     }
 
     const result = await db.transaction(async (tx) => {
+      // Validate space push inside transaction to prevent TOCTOU races
+      if (isSpaceSync) {
+        const validation = await validateSpacePush(changes, vaultId, spaceAuthenticatedPublicKey!, spaceRole!, tx)
+        if (!validation.valid) {
+          throw new SpacePushValidationError(validation.error ?? 'Space push validation failed')
+        }
+      }
+
       const allInsertedChanges: { id: string; hlcTimestamp: string }[] = []
 
       // Process changes in chunks to avoid PostgreSQL parameter limit
@@ -508,12 +546,14 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
               deviceId: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.device_id ELSE sync_changes.device_id END`,
               encryptedValue: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.encrypted_value ELSE sync_changes.encrypted_value END`,
               nonce: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.nonce ELSE sync_changes.nonce END`,
-              // Space-specific: update signature and signedBy, but NEVER overwrite recordOwner (immutable)
-              signature: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.signature ELSE sync_changes.signature END`,
-              signedBy: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.signed_by ELSE sync_changes.signed_by END`,
-              collaborative: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.collaborative ELSE sync_changes.collaborative END`,
-              // recordOwner: keep existing value (immutable once set)
-              recordOwner: sql`COALESCE(sync_changes.record_owner, EXCLUDED.record_owner)`,
+              // Space-specific columns: only include when syncing a space to avoid overwriting with NULLs
+              ...(isSpaceSync ? {
+                signature: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.signature ELSE sync_changes.signature END`,
+                signedBy: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.signed_by ELSE sync_changes.signed_by END`,
+                collaborative: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.collaborative ELSE sync_changes.collaborative END`,
+                // recordOwner: keep existing value (immutable once set)
+                recordOwner: sql`COALESCE(sync_changes.record_owner, EXCLUDED.record_owner)`,
+              } : {}),
               // Only update updatedAt if data actually changed (HLC is newer)
               updatedAt: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN now() ELSE sync_changes.updated_at END`,
             },
@@ -536,6 +576,9 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
       serverTimestamp: new Date().toISOString(),
     })
   } catch (error) {
+    if (error instanceof SpacePushValidationError) {
+      return c.json({ error: error.message }, 403)
+    }
     console.error('Push changes error:', error)
     return c.json({ error: 'Internal server error' }, 500)
   }
@@ -551,6 +594,11 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
  * even if they missed earlier syncs (prevents NOT NULL constraint violations).
  */
 sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
+  // TODO: Add space token support for pull in a future task
+  const spaceToken = c.get('spaceToken')
+  if (spaceToken) {
+    return c.json({ error: 'Space token pull not yet supported' }, 403)
+  }
   const user = c.get('user')
   const { vaultId, excludeDeviceId, afterUpdatedAt, afterTableName, afterRowPks, limit } = c.req.valid('query')
 
@@ -659,6 +707,10 @@ sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
  * 2. Trigger drops the vault's partition table (instant, no row-by-row delete)
  */
 sync.delete('/vault/:vaultId', async (c) => {
+  const spaceToken = c.get('spaceToken')
+  if (spaceToken) {
+    return c.json({ error: 'Space tokens can only be used for push/pull operations' }, 403)
+  }
   const user = c.get('user')
   const vaultId = c.req.param('vaultId')
 
@@ -708,6 +760,10 @@ sync.delete('/vault/:vaultId', async (c) => {
  * correct association during insertion.
  */
 sync.post('/pull-columns', zValidator('json', pullColumnsSchema), async (c) => {
+  const spaceToken = c.get('spaceToken')
+  if (spaceToken) {
+    return c.json({ error: 'Space tokens can only be used for push/pull operations' }, 403)
+  }
   const user = c.get('user')
   const { vaultId, columns, limit, afterRowPks, afterTableName } = c.req.valid('json')
 
