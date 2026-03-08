@@ -1,13 +1,17 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { db, syncChanges, vaultKeys, type NewSyncChange, type NewVaultKey } from '../db'
+import { db, syncChanges, vaultKeys, spaces, spaceMembers, userKeypairs, type NewSyncChange, type NewVaultKey } from '../db'
 import { authMiddleware } from '../middleware/auth'
+import { spaceTokenAuthMiddleware } from '../middleware/spaceTokenAuth'
+import { verifyRecordSignature } from '../utils/signatureVerification'
 import { eq, and, ne, sql, max, asc, or, inArray } from 'drizzle-orm'
 
 const sync = new Hono()
 
-// All sync routes require authentication
+// Space token middleware must run BEFORE auth middleware so auth can skip when space token is present
+sync.use('/*', spaceTokenAuthMiddleware)
+// All sync routes require authentication (skips if space token already validated)
 sync.use('/*', authMiddleware)
 
 // Validation schemas
@@ -26,22 +30,30 @@ const updateVaultNameSchema = z.object({
   vaultNameNonce: z.string(),
 })
 
+const pushChangeSchema = z.object({
+  tableName: z.string(),
+  rowPks: z.string(), // JSON string
+  columnName: z.string().nullable(),
+  hlcTimestamp: z.string(),
+  deviceId: z.string().optional(),
+  encryptedValue: z.string().nullable(),
+  nonce: z.string().nullable(),
+  batchId: z.string().optional(), // UUID for grouping related changes
+  batchSeq: z.number().int().positive().optional(), // 1-based sequence within batch
+  batchTotal: z.number().int().positive().optional(), // Total changes in this batch
+  // Space-specific fields (required for space pushes, ignored for personal vaults)
+  signature: z.string().optional(), // ECDSA P-256 signature (Base64)
+  signedBy: z.string().optional(), // Public key of signer (Base64 SPKI)
+  collaborative: z.boolean().optional(), // Can others modify this record?
+})
+
+type PushChange = z.infer<typeof pushChangeSchema> & {
+  recordOwner?: string | null // Set by server during validation
+}
+
 const pushChangesSchema = z.object({
   vaultId: z.string(),
-  changes: z.array(
-    z.object({
-      tableName: z.string(),
-      rowPks: z.string(), // JSON string
-      columnName: z.string().nullable(),
-      hlcTimestamp: z.string(),
-      deviceId: z.string().optional(),
-      encryptedValue: z.string().nullable(),
-      nonce: z.string().nullable(),
-      batchId: z.string().optional(), // UUID for grouping related changes
-      batchSeq: z.number().int().positive().optional(), // 1-based sequence within batch
-      batchTotal: z.number().int().positive().optional(), // Total changes in this batch
-    })
-  ),
+  changes: z.array(pushChangeSchema),
 })
 
 const pullChangesSchema = z.object({
@@ -68,6 +80,124 @@ const pullColumnsSchema = z.object({
 
 // Re-export sync utilities
 export { validateBatches, type SyncChange, type BatchValidationError } from '../utils/syncUtils'
+
+// ============================================
+// Space push helpers
+// ============================================
+
+/** Check if a vaultId corresponds to a space */
+async function isSpacePartition(vaultId: string): Promise<boolean> {
+  const result = await db.select({ id: spaces.id })
+    .from(spaces)
+    .where(eq(spaces.id, vaultId))
+    .limit(1)
+  return result.length > 0
+}
+
+/** Look up a user's public key from the keypairs table */
+async function getUserPublicKey(userId: string): Promise<string | null> {
+  const result = await db.select({ publicKey: userKeypairs.publicKey })
+    .from(userKeypairs)
+    .where(eq(userKeypairs.userId, userId))
+    .limit(1)
+  return result[0]?.publicKey ?? null
+}
+
+/** Look up a user's role in a space */
+async function getCallerRole(spaceId: string, userId: string): Promise<string | null> {
+  const result = await db.select({ role: spaceMembers.role })
+    .from(spaceMembers)
+    .where(and(
+      eq(spaceMembers.spaceId, spaceId),
+      eq(spaceMembers.userId, userId),
+    ))
+    .limit(1)
+  return result[0]?.role ?? null
+}
+
+/** Validate all changes in a space push (signatures, ownership, roles) */
+async function validateSpacePush(
+  changes: PushChange[],
+  spaceId: string,
+  authenticatedPublicKey: string,
+  role: string,
+): Promise<{ valid: boolean; error?: string }> {
+  // 1. Role check
+  if (role === 'viewer') {
+    return { valid: false, error: 'Viewers cannot push changes' }
+  }
+
+  for (const change of changes) {
+    // 2. Signature required
+    if (!change.signature || !change.signedBy) {
+      return { valid: false, error: `Change for ${change.tableName}/${change.rowPks} missing signature` }
+    }
+
+    // 3. signedBy must match authenticated user
+    if (change.signedBy !== authenticatedPublicKey) {
+      return { valid: false, error: 'signedBy does not match authenticated user' }
+    }
+
+    // 4. Verify signature cryptographically
+    const isValid = await verifyRecordSignature(
+      {
+        tableName: change.tableName,
+        rowPks: change.rowPks,
+        columnName: change.columnName,
+        encryptedValue: change.encryptedValue,
+        hlcTimestamp: change.hlcTimestamp,
+      },
+      change.signature,
+      change.signedBy,
+    )
+    if (!isValid) {
+      return { valid: false, error: `Invalid signature for ${change.tableName}/${change.rowPks}` }
+    }
+
+    // 5. Record ownership check (per-row, not per-column)
+    const existingRecord = await db.select({
+      recordOwner: syncChanges.recordOwner,
+      collaborative: syncChanges.collaborative,
+    }).from(syncChanges)
+      .where(and(
+        eq(syncChanges.vaultId, spaceId),
+        eq(syncChanges.tableName, change.tableName),
+        eq(syncChanges.rowPks, change.rowPks),
+      ))
+      .limit(1)
+
+    if (existingRecord.length === 0) {
+      // New record: server sets record_owner = signedBy
+      change.recordOwner = change.signedBy
+    } else {
+      const existing = existingRecord[0]!
+
+      // Cannot change record_owner
+      if (change.recordOwner && change.recordOwner !== existing.recordOwner) {
+        return { valid: false, error: `Cannot change record_owner for ${change.rowPks}` }
+      }
+      change.recordOwner = existing.recordOwner
+
+      // collaborative flag: only owner can change
+      if (change.collaborative !== undefined && change.collaborative !== existing.collaborative) {
+        if (change.signedBy !== existing.recordOwner) {
+          return { valid: false, error: 'Only record owner can change collaborative flag' }
+        }
+      }
+
+      // Data modification: only owner or collaborative
+      if (change.encryptedValue !== undefined) {
+        const isOwner = change.signedBy === existing.recordOwner
+        const isCollaborative = existing.collaborative === true
+        if (!isOwner && !isCollaborative) {
+          return { valid: false, error: `Cannot modify record owned by ${existing.recordOwner}` }
+        }
+      }
+    }
+  }
+
+  return { valid: true }
+}
 
 /**
  * POST /sync/vault-key
@@ -244,10 +374,38 @@ sync.get('/vault-key/:vaultId', async (c) => {
  * Validates batch completeness if batchId/batchSeq/batchTotal are provided
  */
 sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
-  const user = c.get('user')
-  const { vaultId, changes } = c.req.valid('json')
+  const spaceToken = c.get('spaceToken')
+  const user = spaceToken ? null : c.get('user')
+  const { vaultId, changes: rawChanges } = c.req.valid('json')
+
+  // Cast to mutable type so validateSpacePush can set recordOwner
+  const changes = rawChanges as PushChange[]
 
   try {
+    // Space-scoped push validation
+    const isSpaceSync = !!spaceToken || await isSpacePartition(vaultId)
+
+    if (isSpaceSync) {
+      const authenticatedPublicKey = spaceToken
+        ? spaceToken.publicKey
+        : await getUserPublicKey(user!.userId)
+      const role = spaceToken
+        ? spaceToken.role
+        : await getCallerRole(vaultId, user!.userId)
+
+      if (!authenticatedPublicKey) {
+        return c.json({ error: 'User has no registered keypair' }, 400)
+      }
+      if (!role) {
+        return c.json({ error: 'Not a member of this space' }, 403)
+      }
+
+      const validation = await validateSpacePush(changes, vaultId, authenticatedPublicKey, role)
+      if (!validation.valid) {
+        return c.json({ error: validation.error }, 403)
+      }
+    }
+
     // Validate batch completeness if batch metadata is present
     const batchMap = new Map<string, typeof changes>()
 
@@ -301,6 +459,18 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
     // Each change has ~9 parameters, so we can safely insert ~5000 changes per query.
     const CHUNK_SIZE = 5000
 
+    // Resolve effective userId before the transaction (for space token auth, use space owner)
+    let effectiveUserId: string
+    if (spaceToken) {
+      const space = await db.select({ ownerId: spaces.ownerId })
+        .from(spaces)
+        .where(eq(spaces.id, vaultId))
+        .limit(1)
+      effectiveUserId = space[0]?.ownerId ?? ''
+    } else {
+      effectiveUserId = user!.userId
+    }
+
     const result = await db.transaction(async (tx) => {
       const allInsertedChanges: { id: string; hlcTimestamp: string }[] = []
 
@@ -312,7 +482,7 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
           .insert(syncChanges)
           .values(
             chunk.map((change) => ({
-              userId: user.userId,
+              userId: effectiveUserId,
               vaultId,
               tableName: change.tableName,
               rowPks: change.rowPks,
@@ -321,6 +491,13 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
               deviceId: change.deviceId,
               encryptedValue: change.encryptedValue,
               nonce: change.nonce,
+              // Space-specific columns
+              ...(isSpaceSync ? {
+                signature: change.signature,
+                signedBy: change.signedBy,
+                recordOwner: change.recordOwner,
+                collaborative: change.collaborative ?? false,
+              } : {}),
             } as NewSyncChange))
           )
           .onConflictDoUpdate({
@@ -331,6 +508,12 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
               deviceId: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.device_id ELSE sync_changes.device_id END`,
               encryptedValue: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.encrypted_value ELSE sync_changes.encrypted_value END`,
               nonce: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.nonce ELSE sync_changes.nonce END`,
+              // Space-specific: update signature and signedBy, but NEVER overwrite recordOwner (immutable)
+              signature: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.signature ELSE sync_changes.signature END`,
+              signedBy: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.signed_by ELSE sync_changes.signed_by END`,
+              collaborative: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.collaborative ELSE sync_changes.collaborative END`,
+              // recordOwner: keep existing value (immutable once set)
+              recordOwner: sql`COALESCE(sync_changes.record_owner, EXCLUDED.record_owner)`,
               // Only update updatedAt if data actually changed (HLC is newer)
               updatedAt: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN now() ELSE sync_changes.updated_at END`,
             },

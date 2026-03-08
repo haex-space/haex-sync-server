@@ -26,6 +26,11 @@ declare module 'hono' {
  * Verifies Supabase JWT token from Authorization header and attaches user to context
  */
 export const authMiddleware = async (c: Context, next: Next) => {
+  // Skip JWT auth if space token already validated by spaceTokenAuthMiddleware
+  if (c.get('spaceToken')) {
+    return next()
+  }
+
   const authHeader = c.req.header('Authorization')
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
