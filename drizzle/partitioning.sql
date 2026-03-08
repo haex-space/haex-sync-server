@@ -304,3 +304,87 @@ BEGIN
         END IF;
     END LOOP;
 END $$;
+
+-- =============================================
+-- SHARED SPACES PARTITIONING
+-- =============================================
+
+-- Auto-create partition when a space is created
+CREATE OR REPLACE FUNCTION create_space_partition()
+RETURNS TRIGGER AS $$
+DECLARE
+  partition_name TEXT;
+  safe_space_id TEXT;
+BEGIN
+  safe_space_id := replace(NEW.id::text, '-', '_');
+  partition_name := 'sync_changes_space_' || safe_space_id;
+
+  EXECUTE format(
+    'CREATE TABLE IF NOT EXISTS %I PARTITION OF sync_changes FOR VALUES IN (%L)',
+    partition_name, NEW.id::text
+  );
+
+  EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', partition_name);
+
+  -- SELECT: any space member can read
+  EXECUTE format(
+    'CREATE POLICY space_select ON %I FOR SELECT USING (
+      EXISTS (
+        SELECT 1 FROM space_members
+        WHERE space_id = %L AND user_id = (SELECT auth.uid())
+      )
+    )', partition_name, NEW.id::text
+  );
+
+  -- INSERT: member or admin can write
+  EXECUTE format(
+    'CREATE POLICY space_insert ON %I FOR INSERT WITH CHECK (
+      EXISTS (
+        SELECT 1 FROM space_members
+        WHERE space_id = %L AND user_id = (SELECT auth.uid())
+        AND role IN (''member'', ''admin'')
+      )
+    )', partition_name, NEW.id::text
+  );
+
+  -- UPDATE: member or admin can update (record ownership checked at application level)
+  EXECUTE format(
+    'CREATE POLICY space_update ON %I FOR UPDATE USING (
+      EXISTS (
+        SELECT 1 FROM space_members
+        WHERE space_id = %L AND user_id = (SELECT auth.uid())
+        AND role IN (''member'', ''admin'')
+      )
+    )', partition_name, NEW.id::text
+  );
+
+  EXECUTE format('ALTER TABLE %I REPLICA IDENTITY FULL', partition_name);
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Drop and recreate trigger to be idempotent
+DROP TRIGGER IF EXISTS create_space_partition_trigger ON spaces;
+CREATE TRIGGER create_space_partition_trigger
+  AFTER INSERT ON spaces
+  FOR EACH ROW
+  EXECUTE FUNCTION create_space_partition();
+
+-- Auto-drop partition when space is deleted
+CREATE OR REPLACE FUNCTION drop_space_partition()
+RETURNS TRIGGER AS $$
+DECLARE
+  partition_name TEXT;
+BEGIN
+  partition_name := 'sync_changes_space_' || replace(OLD.id::text, '-', '_');
+  EXECUTE format('DROP TABLE IF EXISTS %I', partition_name);
+  RETURN OLD;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS drop_space_partition_trigger ON spaces;
+CREATE TRIGGER drop_space_partition_trigger
+  BEFORE DELETE ON spaces
+  FOR EACH ROW
+  EXECUTE FUNCTION drop_space_partition();
