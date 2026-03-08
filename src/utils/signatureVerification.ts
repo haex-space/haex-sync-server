@@ -13,10 +13,17 @@ interface RecordData {
 
 /**
  * Build the canonical string for signature verification.
- * Format: tableName|rowPks|columnName|encryptedValue|hlcTimestamp
+ * Format: fields joined by \0 (null byte), null values encoded as '\x01NULL'
+ * Must match the SDK's canonicalize() in @haex-space/vault-sdk/src/crypto/recordSigning.ts
  */
 function buildCanonicalString(record: RecordData): string {
-  return `${record.tableName}|${record.rowPks}|${record.columnName}|${record.encryptedValue}|${record.hlcTimestamp}`
+  return [
+    record.tableName,
+    record.rowPks,
+    record.columnName === null ? '\x01NULL' : record.columnName,
+    record.encryptedValue === null ? '\x01NULL' : record.encryptedValue,
+    record.hlcTimestamp,
+  ].join('\0')
 }
 
 /**
