@@ -3,7 +3,7 @@ import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { db, spaces, spaceMembers, spaceKeyGrants } from '../db'
 import { authMiddleware } from '../middleware/auth'
-import { eq, and } from 'drizzle-orm'
+import { eq, and, count } from 'drizzle-orm'
 
 const spacesRouter = new Hono()
 
@@ -111,11 +111,6 @@ spacesRouter.get('/:spaceId', async (c) => {
   }
 
   try {
-    const role = await getCallerRole(spaceId, user.userId)
-    if (!role) {
-      return c.json({ error: 'Not a member of this space' }, 403)
-    }
-
     const spaceResult = await db.select()
       .from(spaces)
       .where(eq(spaces.id, spaceId))
@@ -123,6 +118,11 @@ spacesRouter.get('/:spaceId', async (c) => {
 
     if (spaceResult.length === 0) {
       return c.json({ error: 'Space not found' }, 404)
+    }
+
+    const role = await getCallerRole(spaceId, user.userId)
+    if (!role) {
+      return c.json({ error: 'Not a member of this space' }, 403)
     }
 
     const members = await db.select({
@@ -154,6 +154,15 @@ spacesRouter.delete('/:spaceId', async (c) => {
   }
 
   try {
+    const spaceResult = await db.select({ id: spaces.id })
+      .from(spaces)
+      .where(eq(spaces.id, spaceId))
+      .limit(1)
+
+    if (spaceResult.length === 0) {
+      return c.json({ error: 'Space not found' }, 404)
+    }
+
     const role = await getCallerRole(spaceId, user.userId)
     if (role !== 'admin') {
       return c.json({ error: 'Only admins can delete a space' }, 403)
@@ -190,18 +199,42 @@ spacesRouter.post('/:spaceId/members', zValidator('json', inviteMemberSchema), a
   }
 
   try {
-    const callerRole = await getCallerRole(spaceId, user.userId)
-    if (callerRole !== 'admin') {
-      return c.json({ error: 'Only admins can invite members' }, 403)
-    }
+    const result = await db.transaction(async (tx) => {
+      // Check caller is admin (inside transaction to prevent race)
+      const callerResult = await tx.select({ role: spaceMembers.role })
+        .from(spaceMembers)
+        .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.userId, user.userId)))
+        .limit(1)
+      const callerRole = callerResult[0]?.role ?? null
 
-    // Check if already a member
-    const existing = await getCallerRole(spaceId, body.userId)
-    if (existing) {
-      return c.json({ error: 'User is already a member of this space' }, 409)
-    }
+      if (callerRole !== 'admin') {
+        return { error: 'Only admins can invite members', status: 403 as const }
+      }
 
-    await db.transaction(async (tx) => {
+      // Validate key generation matches space's current generation
+      const spaceResult = await tx.select({ currentKeyGeneration: spaces.currentKeyGeneration })
+        .from(spaces)
+        .where(eq(spaces.id, spaceId))
+        .limit(1)
+
+      if (spaceResult.length === 0) {
+        return { error: 'Space not found', status: 404 as const }
+      }
+
+      if (body.keyGrant.generation !== spaceResult[0]!.currentKeyGeneration) {
+        return { error: 'Key grant generation does not match current space key generation', status: 400 as const }
+      }
+
+      // Check if already a member (inside transaction to prevent race)
+      const existing = await tx.select({ role: spaceMembers.role })
+        .from(spaceMembers)
+        .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.userId, body.userId)))
+        .limit(1)
+
+      if (existing.length > 0) {
+        return { error: 'User is already a member of this space', status: 409 as const }
+      }
+
       await tx.insert(spaceMembers).values({
         spaceId,
         userId: body.userId,
@@ -218,7 +251,13 @@ spacesRouter.post('/:spaceId/members', zValidator('json', inviteMemberSchema), a
         ephemeralPublicKey: body.keyGrant.ephemeralPublicKey,
         grantedBy: user.userId,
       })
+
+      return null
     })
+
+    if (result) {
+      return c.json({ error: result.error }, result.status)
+    }
 
     return c.json({ success: true }, 201)
   } catch (error) {
@@ -238,42 +277,64 @@ spacesRouter.delete('/:spaceId/members/:userId', async (c) => {
   }
 
   try {
-    const callerRole = await getCallerRole(spaceId, user.userId)
-    if (!callerRole) {
-      return c.json({ error: 'Not a member of this space' }, 403)
-    }
-
     const isSelf = user.userId === targetUserId
 
-    // Non-admins can only remove themselves
-    if (!isSelf && callerRole !== 'admin') {
-      return c.json({ error: 'Only admins can remove other members' }, 403)
-    }
-
-    // Check if target is a member
-    const targetRole = isSelf ? callerRole : await getCallerRole(spaceId, targetUserId)
-    if (!targetRole) {
-      return c.json({ error: 'Target user is not a member of this space' }, 404)
-    }
-
-    // Prevent last admin from leaving
-    if (targetRole === 'admin') {
-      const admins = await db.select({ userId: spaceMembers.userId })
+    const result = await db.transaction(async (tx) => {
+      // Check caller membership
+      const callerResult = await tx.select({ role: spaceMembers.role })
         .from(spaceMembers)
-        .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.role, 'admin')))
+        .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.userId, user.userId)))
+        .limit(1)
+      const callerRole = callerResult[0]?.role ?? null
 
-      if (admins.length <= 1) {
-        return c.json({ error: 'Cannot remove the last admin. Transfer admin role to another member first, or delete the space.' }, 400)
+      if (!callerRole) {
+        return { error: 'Not a member of this space', status: 403 as const }
       }
-    }
 
-    await db.transaction(async (tx) => {
+      // Non-admins can only remove themselves
+      if (!isSelf && callerRole !== 'admin') {
+        return { error: 'Only admins can remove other members', status: 403 as const }
+      }
+
+      // Check if target is a member
+      let targetRole: string | null
+      if (isSelf) {
+        targetRole = callerRole
+      } else {
+        const targetResult = await tx.select({ role: spaceMembers.role })
+          .from(spaceMembers)
+          .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.userId, targetUserId)))
+          .limit(1)
+        targetRole = targetResult[0]?.role ?? null
+      }
+
+      if (!targetRole) {
+        return { error: 'Target user is not a member of this space', status: 404 as const }
+      }
+
+      // Prevent last admin from leaving
+      if (targetRole === 'admin') {
+        const adminCount = await tx.select({ value: count() })
+          .from(spaceMembers)
+          .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.role, 'admin')))
+
+        if (adminCount[0]!.value <= 1) {
+          return { error: 'Cannot remove the last admin. Transfer admin role to another member first, or delete the space.', status: 400 as const }
+        }
+      }
+
       await tx.delete(spaceMembers)
         .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.userId, targetUserId)))
 
       await tx.delete(spaceKeyGrants)
         .where(and(eq(spaceKeyGrants.spaceId, spaceId), eq(spaceKeyGrants.userId, targetUserId)))
+
+      return null
     })
+
+    if (result) {
+      return c.json({ error: result.error }, result.status)
+    }
 
     return c.json({ success: true })
   } catch (error) {
