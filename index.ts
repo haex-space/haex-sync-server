@@ -4,6 +4,7 @@ import { logger } from 'hono/logger'
 import authRoutes from './src/routes/auth'
 import syncRoutes from './src/routes/sync'
 import storageRoutes from './src/routes/storage'
+import keypairRoutes from './src/routes/keypairs'
 import packageJson from './package.json'
 
 const app = new Hono()
@@ -41,6 +42,8 @@ app.route('/auth', authRoutes)
 app.route('/sync', syncRoutes)
 // Storage proxy routes for S3-compatible file storage
 app.route('/storage', storageRoutes)
+// Keypair routes for asymmetric crypto (shared spaces)
+app.route('/keypairs', keypairRoutes)
 
 // 404 handler
 app.notFound((c) => {
