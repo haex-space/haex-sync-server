@@ -1,7 +1,8 @@
+import { randomBytes } from 'crypto'
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { db, spaces, spaceMembers, spaceKeyGrants } from '../db'
+import { db, spaces, spaceMembers, spaceKeyGrants, spaceAccessTokens } from '../db'
 import { authMiddleware } from '../middleware/auth'
 import { eq, and, count } from 'drizzle-orm'
 
@@ -365,6 +366,127 @@ spacesRouter.get('/:spaceId/key-grants', async (c) => {
     return c.json(grants)
   } catch (error) {
     console.error('Get key grants error:', error)
+    return c.json({ error: 'Internal server error' }, 500)
+  }
+})
+
+// ============================================
+// SPACE ACCESS TOKENS
+// ============================================
+
+// POST /:spaceId/tokens – Create token (admin only)
+const createTokenSchema = z.object({
+  publicKey: z.string().min(1),
+  role: z.enum(['admin', 'member', 'viewer']),
+  label: z.string().optional(),
+})
+
+spacesRouter.post('/:spaceId/tokens', zValidator('json', createTokenSchema), async (c) => {
+  const spaceId = c.req.param('spaceId')
+  const user = c.get('user')
+  const body = c.req.valid('json')
+
+  if (!isValidUuid(spaceId)) {
+    return c.json({ error: 'Invalid space ID format' }, 400)
+  }
+
+  try {
+    const role = await getCallerRole(spaceId, user.userId)
+    if (role !== 'admin') {
+      return c.json({ error: 'Only admins can create tokens' }, 403)
+    }
+
+    const token = randomBytes(32).toString('hex')
+
+    const [inserted] = await db.insert(spaceAccessTokens).values({
+      spaceId,
+      token,
+      publicKey: body.publicKey,
+      role: body.role,
+      label: body.label ?? null,
+      issuedBy: user.userId,
+    }).returning({ id: spaceAccessTokens.id })
+
+    return c.json({ tokenId: inserted.id, token }, 201)
+  } catch (error) {
+    console.error('Create token error:', error)
+    return c.json({ error: 'Internal server error' }, 500)
+  }
+})
+
+// GET /:spaceId/tokens – List tokens (admin only)
+spacesRouter.get('/:spaceId/tokens', async (c) => {
+  const spaceId = c.req.param('spaceId')
+  const user = c.get('user')
+
+  if (!isValidUuid(spaceId)) {
+    return c.json({ error: 'Invalid space ID format' }, 400)
+  }
+
+  try {
+    const role = await getCallerRole(spaceId, user.userId)
+    if (role !== 'admin') {
+      return c.json({ error: 'Only admins can list tokens' }, 403)
+    }
+
+    const tokens = await db.select({
+      id: spaceAccessTokens.id,
+      publicKey: spaceAccessTokens.publicKey,
+      role: spaceAccessTokens.role,
+      label: spaceAccessTokens.label,
+      revoked: spaceAccessTokens.revoked,
+      createdAt: spaceAccessTokens.createdAt,
+      lastUsedAt: spaceAccessTokens.lastUsedAt,
+    })
+      .from(spaceAccessTokens)
+      .where(eq(spaceAccessTokens.spaceId, spaceId))
+
+    return c.json(tokens)
+  } catch (error) {
+    console.error('List tokens error:', error)
+    return c.json({ error: 'Internal server error' }, 500)
+  }
+})
+
+// DELETE /:spaceId/tokens/:tokenId – Revoke token (admin only)
+spacesRouter.delete('/:spaceId/tokens/:tokenId', async (c) => {
+  const spaceId = c.req.param('spaceId')
+  const tokenId = c.req.param('tokenId')
+  const user = c.get('user')
+
+  if (!isValidUuid(spaceId) || !isValidUuid(tokenId)) {
+    return c.json({ error: 'Invalid ID format' }, 400)
+  }
+
+  try {
+    const role = await getCallerRole(spaceId, user.userId)
+    if (role !== 'admin') {
+      return c.json({ error: 'Only admins can revoke tokens' }, 403)
+    }
+
+    const existing = await db.select({ id: spaceAccessTokens.id })
+      .from(spaceAccessTokens)
+      .where(and(
+        eq(spaceAccessTokens.id, tokenId),
+        eq(spaceAccessTokens.spaceId, spaceId),
+      ))
+      .limit(1)
+
+    if (existing.length === 0) {
+      return c.json({ error: 'Token not found' }, 404)
+    }
+
+    await db.update(spaceAccessTokens)
+      .set({
+        revoked: true,
+        revokedAt: new Date(),
+        revokedBy: user.userId,
+      })
+      .where(eq(spaceAccessTokens.id, tokenId))
+
+    return c.json({ success: true })
+  } catch (error) {
+    console.error('Revoke token error:', error)
     return c.json({ error: 'Internal server error' }, 500)
   }
 })

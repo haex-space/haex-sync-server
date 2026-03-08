@@ -7,6 +7,7 @@ import {
   index,
   uniqueIndex,
   integer,
+  boolean,
   primaryKey,
 } from "drizzle-orm/pg-core";
 
@@ -267,3 +268,36 @@ export const spaceKeyGrants = pgTable(
 
 export type SpaceKeyGrant = typeof spaceKeyGrants.$inferSelect;
 export type NewSpaceKeyGrant = typeof spaceKeyGrants.$inferInsert;
+
+// ============================================
+// SPACE ACCESS TOKENS
+// ============================================
+
+/**
+ * Space Access Tokens Table
+ * Tokens scoped to a single space, bound to a public key, and carrying a role.
+ *
+ * Security guarantees:
+ * - Stolen token + wrong private key = server rejects (signature mismatch during push)
+ * - Viewer token = no writes allowed
+ * - Revoked token = immediate access loss
+ */
+export const spaceAccessTokens = pgTable("space_access_tokens", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  spaceId: uuid("space_id")
+    .notNull()
+    .references(() => spaces.id, { onDelete: "cascade" }),
+  token: text("token").notNull().unique(),
+  publicKey: text("public_key").notNull(),
+  role: text("role").notNull(), // 'admin' | 'member' | 'viewer'
+  label: text("label"),
+  issuedBy: uuid("issued_by").references(() => authUsers.id),
+  revoked: boolean("revoked").notNull().default(false),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  revokedBy: text("revoked_by"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+});
+
+export type SpaceAccessToken = typeof spaceAccessTokens.$inferSelect;
+export type NewSpaceAccessToken = typeof spaceAccessTokens.$inferInsert;
