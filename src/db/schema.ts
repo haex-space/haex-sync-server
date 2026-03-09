@@ -221,8 +221,9 @@ export type NewSpace = typeof spaces.$inferInsert;
 
 /**
  * Space Members Table
- * Tracks which users belong to a space and their role.
- * Composite primary key: (spaceId, userId)
+ * Tracks which public keys belong to a space and their permissions.
+ * Uses publicKey (not userId) as identifier — enables federation across servers.
+ * Composite primary key: (spaceId, publicKey)
  */
 export const spaceMembers = pgTable(
   "space_members",
@@ -230,15 +231,15 @@ export const spaceMembers = pgTable(
     spaceId: uuid("space_id")
       .notNull()
       .references(() => spaces.id, { onDelete: "cascade" }),
-    userId: uuid("user_id")
-      .notNull()
-      .references(() => authUsers.id, { onDelete: "cascade" }),
+    publicKey: text("public_key").notNull(), // ECDSA P-256 public key (Base64 SPKI)
+    label: text("label").notNull(), // Human-readable name assigned by the inviter
     role: text("role").notNull(), // 'admin' | 'member' | 'viewer'
-    invitedBy: uuid("invited_by").references(() => authUsers.id),
+    canInvite: boolean("can_invite").notNull().default(false), // Whether this member can invite others (admin always can)
+    invitedBy: text("invited_by"), // Public key of the inviter (null for space creator)
     joinedAt: timestamp("joined_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    primaryKey({ columns: [table.spaceId, table.userId] }),
+    primaryKey({ columns: [table.spaceId, table.publicKey] }),
   ]
 );
 
@@ -247,9 +248,9 @@ export type NewSpaceMember = typeof spaceMembers.$inferInsert;
 
 /**
  * Space Key Grants Table
- * Stores encrypted space keys per user per key generation.
+ * Stores encrypted space keys per public key per key generation.
  * When a member is removed, a new generation is created and re-granted to remaining members.
- * Composite primary key: (spaceId, userId, generation)
+ * Composite primary key: (spaceId, publicKey, generation)
  */
 export const spaceKeyGrants = pgTable(
   "space_key_grants",
@@ -257,18 +258,16 @@ export const spaceKeyGrants = pgTable(
     spaceId: uuid("space_id")
       .notNull()
       .references(() => spaces.id, { onDelete: "cascade" }),
-    userId: uuid("user_id")
-      .notNull()
-      .references(() => authUsers.id, { onDelete: "cascade" }),
+    publicKey: text("public_key").notNull(), // ECDSA P-256 public key (Base64 SPKI)
     generation: integer("generation").notNull(),
     encryptedSpaceKey: text("encrypted_space_key").notNull(),
     keyNonce: text("key_nonce").notNull(),
     ephemeralPublicKey: text("ephemeral_public_key").notNull(),
-    grantedBy: uuid("granted_by").references(() => authUsers.id),
+    grantedBy: text("granted_by"), // Public key of the granter
     grantedAt: timestamp("granted_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    primaryKey({ columns: [table.spaceId, table.userId, table.generation] }),
+    primaryKey({ columns: [table.spaceId, table.publicKey, table.generation] }),
   ]
 );
 

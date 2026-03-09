@@ -1,18 +1,16 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
-import { z } from 'zod'
-import { db, syncChanges, vaultKeys, spaces, spaceMembers, userKeypairs, type NewSyncChange, type NewVaultKey } from '../db'
+import { db, syncChanges, spaces, userKeypairs, type NewSyncChange } from '../db'
 import { authMiddleware } from '../middleware/auth'
 import { spaceTokenAuthMiddleware } from '../middleware/spaceTokenAuth'
-import { verifyRecordSignatureAsync, verifySpaceChallengeAsync } from '@haex-space/vault-sdk'
-import { eq, and, ne, sql, max, asc, or, inArray } from 'drizzle-orm'
+import { verifySpaceChallengeAsync } from '@haex-space/vault-sdk'
+import { eq, and, ne, sql, max, asc, or } from 'drizzle-orm'
+import { pushChangesSchema, pullChangesSchema, pullColumnsSchema, SpacePushValidationError, type PushChange } from './sync.schemas'
+import { isSpacePartition, getUserPublicKey, getCallerRoleByUserId, validateSpacePush } from './sync.helpers'
+import vaultRoutes from './sync.vaults'
 
-class SpacePushValidationError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'SpacePushValidationError'
-  }
-}
+// Re-export sync utilities
+export { validateBatches, type SyncChange, type BatchValidationError } from '../utils/syncUtils'
 
 const sync = new Hono()
 
@@ -21,373 +19,8 @@ sync.use('/*', spaceTokenAuthMiddleware)
 // All sync routes require authentication (skips if space token already validated)
 sync.use('/*', authMiddleware)
 
-// Validation schemas
-const vaultKeySchema = z.object({
-  vaultId: z.string().uuid(),
-  encryptedVaultKey: z.string(),
-  encryptedVaultName: z.string(),
-  vaultKeySalt: z.string(), // Salt for vault password -> vault key encryption
-  vaultNameSalt: z.string(), // Salt for server password -> vault name encryption
-  vaultKeyNonce: z.string(),
-  vaultNameNonce: z.string(),
-})
-
-const updateVaultNameSchema = z.object({
-  encryptedVaultName: z.string(),
-  vaultNameNonce: z.string(),
-})
-
-const pushChangeSchema = z.object({
-  tableName: z.string(),
-  rowPks: z.string(), // JSON string
-  columnName: z.string().nullable(),
-  hlcTimestamp: z.string(),
-  deviceId: z.string().optional(),
-  encryptedValue: z.string().nullable(),
-  nonce: z.string().nullable(),
-  batchId: z.string().optional(), // UUID for grouping related changes
-  batchSeq: z.number().int().positive().optional(), // 1-based sequence within batch
-  batchTotal: z.number().int().positive().optional(), // Total changes in this batch
-  // Space-specific fields (required for space pushes, ignored for personal vaults)
-  signature: z.string().optional(), // ECDSA P-256 signature (Base64)
-  signedBy: z.string().optional(), // Public key of signer (Base64 SPKI)
-  collaborative: z.boolean().optional(), // Can others modify this record?
-})
-
-type PushChange = z.infer<typeof pushChangeSchema> & {
-  recordOwner?: string | null // Set by server during validation
-}
-
-const pushChangesSchema = z.object({
-  vaultId: z.string(),
-  changes: z.array(pushChangeSchema),
-})
-
-const pullChangesSchema = z.object({
-  vaultId: z.string(),
-  excludeDeviceId: z.string().optional(), // Exclude changes from this device ID
-  afterUpdatedAt: z.string().optional(), // Pull changes after this server timestamp (ISO 8601)
-  afterTableName: z.string().optional(), // Secondary cursor for stable pagination (table name)
-  afterRowPks: z.string().optional(), // Secondary cursor for stable pagination (row primary keys)
-  limit: z.coerce.number().int().min(1).max(1000).default(100), // Coerce string to number for query params
-})
-
-const pullColumnsSchema = z.object({
-  vaultId: z.string(),
-  columns: z.array(
-    z.object({
-      tableName: z.string(),
-      columnName: z.string(),
-    })
-  ).min(1).max(100), // Limit to 100 columns per request
-  limit: z.number().int().min(1).max(10000).default(1000), // Higher limit since we're fetching specific columns
-  afterRowPks: z.string().optional(), // Cursor for pagination (rowPks of last item)
-  afterTableName: z.string().optional(), // Cursor for pagination (tableName of last item)
-})
-
-// Re-export sync utilities
-export { validateBatches, type SyncChange, type BatchValidationError } from '../utils/syncUtils'
-
-// ============================================
-// Space push helpers
-// ============================================
-
-/** Check if a vaultId corresponds to a space */
-async function isSpacePartition(vaultId: string): Promise<boolean> {
-  const result = await db.select({ id: spaces.id })
-    .from(spaces)
-    .where(eq(spaces.id, vaultId))
-    .limit(1)
-  return result.length > 0
-}
-
-/** Look up a user's public key from the keypairs table */
-async function getUserPublicKey(userId: string): Promise<string | null> {
-  const result = await db.select({ publicKey: userKeypairs.publicKey })
-    .from(userKeypairs)
-    .where(eq(userKeypairs.userId, userId))
-    .limit(1)
-  return result[0]?.publicKey ?? null
-}
-
-/** Look up a user's role in a space */
-async function getCallerRole(spaceId: string, userId: string): Promise<string | null> {
-  const result = await db.select({ role: spaceMembers.role })
-    .from(spaceMembers)
-    .where(and(
-      eq(spaceMembers.spaceId, spaceId),
-      eq(spaceMembers.userId, userId),
-    ))
-    .limit(1)
-  return result[0]?.role ?? null
-}
-
-/** Validate all changes in a space push (signatures, ownership, roles) */
-async function validateSpacePush(
-  changes: PushChange[],
-  spaceId: string,
-  authenticatedPublicKey: string,
-  role: string,
-  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
-): Promise<{ valid: boolean; error?: string }> {
-  // 1. Role check
-  if (role === 'viewer') {
-    return { valid: false, error: 'Viewers cannot push changes' }
-  }
-
-  for (const change of changes) {
-    // 2. Signature required
-    if (!change.signature || !change.signedBy) {
-      return { valid: false, error: `Change for ${change.tableName}/${change.rowPks} missing signature` }
-    }
-
-    // 3. signedBy must match authenticated user
-    if (change.signedBy !== authenticatedPublicKey) {
-      return { valid: false, error: 'signedBy does not match authenticated user' }
-    }
-
-    // 4. Verify signature cryptographically
-    const isValid = await verifyRecordSignatureAsync(
-      {
-        tableName: change.tableName,
-        rowPks: change.rowPks,
-        columnName: change.columnName,
-        encryptedValue: change.encryptedValue,
-        hlcTimestamp: change.hlcTimestamp,
-      },
-      change.signature,
-      change.signedBy,
-    )
-    if (!isValid) {
-      return { valid: false, error: `Invalid signature for ${change.tableName}/${change.rowPks}` }
-    }
-
-    // 5. Record ownership check (per-row, not per-column)
-    const existingRecord = await tx.select({
-      recordOwner: syncChanges.recordOwner,
-      collaborative: syncChanges.collaborative,
-    }).from(syncChanges)
-      .where(and(
-        eq(syncChanges.vaultId, spaceId),
-        eq(syncChanges.tableName, change.tableName),
-        eq(syncChanges.rowPks, change.rowPks),
-      ))
-      .limit(1)
-
-    if (existingRecord.length === 0) {
-      // New record: server sets record_owner = signedBy
-      change.recordOwner = change.signedBy
-    } else {
-      const existing = existingRecord[0]!
-
-      // Cannot change record_owner
-      if (change.recordOwner && change.recordOwner !== existing.recordOwner) {
-        return { valid: false, error: `Cannot change record_owner for ${change.rowPks}` }
-      }
-      change.recordOwner = existing.recordOwner
-
-      // collaborative flag: only owner can change
-      if (change.collaborative !== undefined && change.collaborative !== existing.collaborative) {
-        if (change.signedBy !== existing.recordOwner) {
-          return { valid: false, error: 'Only record owner can change collaborative flag' }
-        }
-      }
-
-      // Data modification: only owner or collaborative (applies to updates and deletes)
-      const isOwner = change.signedBy === existing.recordOwner
-      const isCollaborative = existing.collaborative === true
-      if (!isOwner && !isCollaborative) {
-        return { valid: false, error: `Cannot modify record owned by ${existing.recordOwner}` }
-      }
-    }
-  }
-
-  return { valid: true }
-}
-
-/**
- * POST /sync/vault-key
- * Store encrypted vault key for a user (Hybrid-Ansatz)
- */
-sync.post('/vault-key', zValidator('json', vaultKeySchema), async (c) => {
-  const spaceToken = c.get('spaceToken')
-  if (spaceToken) {
-    return c.json({ error: 'Space tokens can only be used for push/pull operations' }, 403)
-  }
-  const user = c.get('user')
-  const { vaultId, encryptedVaultKey, encryptedVaultName, vaultKeySalt, vaultNameSalt, vaultKeyNonce, vaultNameNonce } = c.req.valid('json')
-
-  try {
-    // Check if vault key already exists
-    const existing = await db.query.vaultKeys.findFirst({
-      where: and(
-        eq(vaultKeys.userId, user.userId),
-        eq(vaultKeys.vaultId, vaultId)
-      ),
-    })
-
-    if (existing) {
-      return c.json({ error: 'Vault key already exists for this vault' }, 409)
-    }
-
-    // Insert vault key
-    const insertedKeys = await db
-      .insert(vaultKeys)
-      .values({
-        userId: user.userId,
-        vaultId,
-        encryptedVaultKey,
-        encryptedVaultName,
-        vaultKeySalt,
-        vaultNameSalt,
-        vaultKeyNonce,
-        vaultNameNonce,
-      } as NewVaultKey)
-      .returning()
-
-    const newVaultKey = insertedKeys[0]
-    if (!newVaultKey) {
-      return c.json({ error: 'Failed to insert vault key' }, 500)
-    }
-
-    return c.json({
-      message: 'Vault key stored successfully',
-      vaultKey: {
-        id: newVaultKey.id,
-        vaultId: newVaultKey.vaultId,
-        createdAt: newVaultKey.createdAt,
-      },
-    }, 201)
-  } catch (error) {
-    console.error('Store vault key error:', error)
-    return c.json({ error: 'Internal server error' }, 500)
-  }
-})
-
-/**
- * GET /sync/vaults
- * Retrieve all vaults for the authenticated user
- */
-sync.get('/vaults', async (c) => {
-  const spaceToken = c.get('spaceToken')
-  if (spaceToken) {
-    return c.json({ error: 'Space tokens can only be used for push/pull operations' }, 403)
-  }
-  const user = c.get('user')
-
-  try {
-    const userVaults = await db.query.vaultKeys.findMany({
-      where: eq(vaultKeys.userId, user.userId),
-      orderBy: vaultKeys.createdAt,
-    })
-
-    return c.json({
-      vaults: userVaults.map((vault) => ({
-        vaultId: vault.vaultId,
-        encryptedVaultName: vault.encryptedVaultName,
-        vaultNameNonce: vault.vaultNameNonce,
-        vaultNameSalt: vault.vaultNameSalt, // Salt for server password decryption
-        createdAt: vault.createdAt,
-      })),
-    })
-  } catch (error) {
-    console.error('Get vaults error:', error)
-    return c.json({ error: 'Internal server error' }, 500)
-  }
-})
-
-/**
- * PATCH /sync/vault-key/:vaultId
- * Update encrypted vault name for a vault
- */
-sync.patch('/vault-key/:vaultId', zValidator('json', updateVaultNameSchema), async (c) => {
-  const spaceToken = c.get('spaceToken')
-  if (spaceToken) {
-    return c.json({ error: 'Space tokens can only be used for push/pull operations' }, 403)
-  }
-  const user = c.get('user')
-  const vaultId = c.req.param('vaultId')
-  const { encryptedVaultName, vaultNameNonce } = c.req.valid('json')
-
-  try {
-    // Check if vault key exists and belongs to user
-    const existing = await db.query.vaultKeys.findFirst({
-      where: and(
-        eq(vaultKeys.userId, user.userId),
-        eq(vaultKeys.vaultId, vaultId)
-      ),
-    })
-
-    if (!existing) {
-      return c.json({ error: 'Vault key not found' }, 404)
-    }
-
-    // Update vault name
-    await db
-      .update(vaultKeys)
-      .set({
-        encryptedVaultName,
-        vaultNameNonce,
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(vaultKeys.userId, user.userId),
-          eq(vaultKeys.vaultId, vaultId)
-        )
-      )
-
-    return c.json({
-      message: 'Vault name updated successfully',
-      vaultId,
-    })
-  } catch (error) {
-    console.error('Update vault name error:', error)
-    return c.json({ error: 'Internal server error' }, 500)
-  }
-})
-
-/**
- * GET /sync/vault-key/:vaultId
- * Retrieve encrypted vault key for a user
- */
-sync.get('/vault-key/:vaultId', async (c) => {
-  const spaceToken = c.get('spaceToken')
-  if (spaceToken) {
-    return c.json({ error: 'Space tokens can only be used for push/pull operations' }, 403)
-  }
-  const user = c.get('user')
-  const vaultId = c.req.param('vaultId')
-
-  try {
-    const vaultKey = await db.query.vaultKeys.findFirst({
-      where: and(
-        eq(vaultKeys.userId, user.userId),
-        eq(vaultKeys.vaultId, vaultId)
-      ),
-    })
-
-    if (!vaultKey) {
-      return c.json({ error: 'Vault key not found' }, 404)
-    }
-
-    return c.json({
-      vaultKey: {
-        vaultId: vaultKey.vaultId,
-        encryptedVaultKey: vaultKey.encryptedVaultKey,
-        encryptedVaultName: vaultKey.encryptedVaultName,
-        vaultKeySalt: vaultKey.vaultKeySalt, // Salt for vault password decryption
-        vaultNameSalt: vaultKey.vaultNameSalt, // Salt for server password decryption
-        vaultKeyNonce: vaultKey.vaultKeyNonce,
-        vaultNameNonce: vaultKey.vaultNameNonce,
-        createdAt: vaultKey.createdAt,
-      },
-    })
-  } catch (error) {
-    console.error('Get vault key error:', error)
-    return c.json({ error: 'Internal server error' }, 500)
-  }
-})
+// Mount vault routes (vault-key CRUD, vaults list, vault delete)
+sync.route('/', vaultRoutes)
 
 /**
  * POST /sync/push
@@ -436,7 +69,7 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
         : await getUserPublicKey(user!.userId)
       const role = spaceToken
         ? spaceToken.role
-        : await getCallerRole(vaultId, user!.userId)
+        : await getCallerRoleByUserId(vaultId, user!.userId)
 
       if (!authenticatedPublicKey) {
         return c.json({ error: 'User has no registered keypair' }, 400)
@@ -652,7 +285,7 @@ sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
       }
     } else if (isSpaceSync) {
       // JWT user pulling from a space: verify membership
-      const role = await getCallerRole(vaultId, user!.userId)
+      const role = await getCallerRoleByUserId(vaultId, user!.userId)
       if (!role) {
         return c.json({ error: 'Not a member of this space' }, 403)
       }
@@ -762,58 +395,6 @@ sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
 })
 
 /**
- * DELETE /sync/vault/:vaultId
- * Delete a vault and all its associated data from the server
- * This includes:
- * - All CRDT changes (sync_changes table) - via FK CASCADE + partition drop trigger
- * - Vault key and configuration (vault_keys table)
- *
- * With partitioning enabled, deleting the vault_key triggers:
- * 1. FK CASCADE deletes sync_changes (if any in default partition)
- * 2. Trigger drops the vault's partition table (instant, no row-by-row delete)
- */
-sync.delete('/vault/:vaultId', async (c) => {
-  const spaceToken = c.get('spaceToken')
-  if (spaceToken) {
-    return c.json({ error: 'Space tokens can only be used for push/pull operations' }, 403)
-  }
-  const user = c.get('user')
-  const vaultId = c.req.param('vaultId')
-
-  try {
-    // Check if vault belongs to user
-    const vaultKey = await db.query.vaultKeys.findFirst({
-      where: and(
-        eq(vaultKeys.userId, user.userId),
-        eq(vaultKeys.vaultId, vaultId)
-      ),
-    })
-
-    if (!vaultKey) {
-      return c.json({ error: 'Vault not found or access denied' }, 404)
-    }
-
-    // Delete vault key - this cascades to sync_changes and drops the partition
-    await db
-      .delete(vaultKeys)
-      .where(
-        and(
-          eq(vaultKeys.userId, user.userId),
-          eq(vaultKeys.vaultId, vaultId)
-        )
-      )
-
-    return c.json({
-      message: 'Vault deleted successfully',
-      vaultId,
-    })
-  } catch (error) {
-    console.error('Delete vault error:', error)
-    return c.json({ error: 'Internal server error' }, 500)
-  }
-})
-
-/**
  * POST /sync/pull-columns
  * Pull specific column data for pending columns after schema migration
  *
@@ -852,7 +433,7 @@ sync.post('/pull-columns', zValidator('json', pullColumnsSchema), async (c) => {
         return c.json({ error: challenge.error }, 401)
       }
     } else if (isSpaceSync) {
-      const role = await getCallerRole(vaultId, user!.userId)
+      const role = await getCallerRoleByUserId(vaultId, user!.userId)
       if (!role) {
         return c.json({ error: 'Not a member of this space' }, 403)
       }

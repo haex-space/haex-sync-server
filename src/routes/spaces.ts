@@ -2,7 +2,7 @@ import { randomBytes } from 'crypto'
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { db, spaces, spaceMembers, spaceKeyGrants, spaceAccessTokens } from '../db'
+import { db, spaces, spaceMembers, spaceKeyGrants, spaceAccessTokens, userKeypairs } from '../db'
 import { authMiddleware } from '../middleware/auth'
 import { eq, and, count } from 'drizzle-orm'
 
@@ -17,12 +17,25 @@ function isValidUuid(id: string): boolean {
   return uuidRegex.test(id)
 }
 
-async function getCallerRole(spaceId: string, userId: string): Promise<string | null> {
-  const result = await db.select({ role: spaceMembers.role })
-    .from(spaceMembers)
-    .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.userId, userId)))
+/** Resolve the caller's public key from their userId (JWT auth) */
+async function resolveCallerPublicKey(userId: string): Promise<string | null> {
+  const result = await db.select({ publicKey: userKeypairs.publicKey })
+    .from(userKeypairs)
+    .where(eq(userKeypairs.userId, userId))
     .limit(1)
-  return result[0]?.role ?? null
+  return result[0]?.publicKey ?? null
+}
+
+/** Get caller's membership info for a space */
+async function getCallerMembership(spaceId: string, publicKey: string) {
+  const result = await db.select({
+    role: spaceMembers.role,
+    canInvite: spaceMembers.canInvite,
+  })
+    .from(spaceMembers)
+    .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.publicKey, publicKey)))
+    .limit(1)
+  return result[0] ?? null
 }
 
 // POST / – Create space
@@ -30,6 +43,7 @@ const createSpaceSchema = z.object({
   id: z.string().uuid(),
   encryptedName: z.string(),
   nameNonce: z.string(),
+  label: z.string().min(1), // Creator's own label (e.g. "Me" or their name)
   keyGrant: z.object({
     encryptedSpaceKey: z.string(),
     keyNonce: z.string(),
@@ -42,6 +56,11 @@ spacesRouter.post('/', zValidator('json', createSpaceSchema), async (c) => {
   const body = c.req.valid('json')
 
   try {
+    const callerPublicKey = await resolveCallerPublicKey(user.userId)
+    if (!callerPublicKey) {
+      return c.json({ error: 'No keypair registered. Generate a keypair first.' }, 400)
+    }
+
     await db.transaction(async (tx) => {
       await tx.insert(spaces).values({
         id: body.id,
@@ -52,19 +71,21 @@ spacesRouter.post('/', zValidator('json', createSpaceSchema), async (c) => {
 
       await tx.insert(spaceMembers).values({
         spaceId: body.id,
-        userId: user.userId,
+        publicKey: callerPublicKey,
+        label: body.label,
         role: 'admin',
+        canInvite: true,
         invitedBy: null,
       })
 
       await tx.insert(spaceKeyGrants).values({
         spaceId: body.id,
-        userId: user.userId,
+        publicKey: callerPublicKey,
         generation: 1,
         encryptedSpaceKey: body.keyGrant.encryptedSpaceKey,
         keyNonce: body.keyGrant.keyNonce,
         ephemeralPublicKey: body.keyGrant.ephemeralPublicKey,
-        grantedBy: user.userId,
+        grantedBy: null,
       })
     })
 
@@ -80,6 +101,11 @@ spacesRouter.get('/', async (c) => {
   const user = c.get('user')
 
   try {
+    const callerPublicKey = await resolveCallerPublicKey(user.userId)
+    if (!callerPublicKey) {
+      return c.json([])
+    }
+
     const result = await db.select({
       id: spaces.id,
       ownerId: spaces.ownerId,
@@ -89,11 +115,12 @@ spacesRouter.get('/', async (c) => {
       createdAt: spaces.createdAt,
       updatedAt: spaces.updatedAt,
       role: spaceMembers.role,
+      canInvite: spaceMembers.canInvite,
       joinedAt: spaceMembers.joinedAt,
     })
       .from(spaceMembers)
       .innerJoin(spaces, eq(spaceMembers.spaceId, spaces.id))
-      .where(eq(spaceMembers.userId, user.userId))
+      .where(eq(spaceMembers.publicKey, callerPublicKey))
 
     return c.json(result)
   } catch (error) {
@@ -112,6 +139,11 @@ spacesRouter.get('/:spaceId', async (c) => {
   }
 
   try {
+    const callerPublicKey = await resolveCallerPublicKey(user.userId)
+    if (!callerPublicKey) {
+      return c.json({ error: 'No keypair registered' }, 400)
+    }
+
     const spaceResult = await db.select()
       .from(spaces)
       .where(eq(spaces.id, spaceId))
@@ -121,14 +153,16 @@ spacesRouter.get('/:spaceId', async (c) => {
       return c.json({ error: 'Space not found' }, 404)
     }
 
-    const role = await getCallerRole(spaceId, user.userId)
-    if (!role) {
+    const membership = await getCallerMembership(spaceId, callerPublicKey)
+    if (!membership) {
       return c.json({ error: 'Not a member of this space' }, 403)
     }
 
     const members = await db.select({
-      userId: spaceMembers.userId,
+      publicKey: spaceMembers.publicKey,
+      label: spaceMembers.label,
       role: spaceMembers.role,
+      canInvite: spaceMembers.canInvite,
       invitedBy: spaceMembers.invitedBy,
       joinedAt: spaceMembers.joinedAt,
     })
@@ -145,7 +179,7 @@ spacesRouter.get('/:spaceId', async (c) => {
   }
 })
 
-// DELETE /:spaceId – Delete space
+// DELETE /:spaceId – Delete space (admin only)
 spacesRouter.delete('/:spaceId', async (c) => {
   const spaceId = c.req.param('spaceId')
   const user = c.get('user')
@@ -155,18 +189,14 @@ spacesRouter.delete('/:spaceId', async (c) => {
   }
 
   try {
-    const spaceResult = await db.select({ id: spaces.id })
-      .from(spaces)
-      .where(eq(spaces.id, spaceId))
-      .limit(1)
-
-    if (spaceResult.length === 0) {
-      return c.json({ error: 'Space not found' }, 404)
+    const callerPublicKey = await resolveCallerPublicKey(user.userId)
+    if (!callerPublicKey) {
+      return c.json({ error: 'No keypair registered' }, 400)
     }
 
-    const role = await getCallerRole(spaceId, user.userId)
-    if (role !== 'admin') {
-      return c.json({ error: 'Only admins can delete a space' }, 403)
+    const membership = await getCallerMembership(spaceId, callerPublicKey)
+    if (membership?.role !== 'admin') {
+      return c.json({ error: 'Only the admin can delete a space' }, 403)
     }
 
     await db.delete(spaces).where(eq(spaces.id, spaceId))
@@ -180,8 +210,10 @@ spacesRouter.delete('/:spaceId', async (c) => {
 
 // POST /:spaceId/members – Invite member
 const inviteMemberSchema = z.object({
-  userId: z.string().uuid(),
-  role: z.enum(['admin', 'member', 'viewer']),
+  publicKey: z.string().min(1),
+  label: z.string().min(1),
+  role: z.enum(['member', 'viewer']), // Only admin can be set during creation, not via invite
+  canInvite: z.boolean().default(false),
   keyGrant: z.object({
     encryptedSpaceKey: z.string(),
     keyNonce: z.string(),
@@ -200,19 +232,37 @@ spacesRouter.post('/:spaceId/members', zValidator('json', inviteMemberSchema), a
   }
 
   try {
-    const result = await db.transaction(async (tx) => {
-      // Check caller is admin (inside transaction to prevent race)
-      const callerResult = await tx.select({ role: spaceMembers.role })
-        .from(spaceMembers)
-        .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.userId, user.userId)))
-        .limit(1)
-      const callerRole = callerResult[0]?.role ?? null
+    const callerPublicKey = await resolveCallerPublicKey(user.userId)
+    if (!callerPublicKey) {
+      return c.json({ error: 'No keypair registered' }, 400)
+    }
 
-      if (callerRole !== 'admin') {
-        return { error: 'Only admins can invite members', status: 403 as const }
+    const result = await db.transaction(async (tx) => {
+      // Check caller has invite permission
+      const callerResult = await tx.select({
+        role: spaceMembers.role,
+        canInvite: spaceMembers.canInvite,
+      })
+        .from(spaceMembers)
+        .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.publicKey, callerPublicKey)))
+        .limit(1)
+      const caller = callerResult[0]
+
+      if (!caller) {
+        return { error: 'Not a member of this space', status: 403 as const }
       }
 
-      // Validate key generation matches space's current generation
+      const isAdmin = caller.role === 'admin'
+      if (!isAdmin && !caller.canInvite) {
+        return { error: 'You do not have permission to invite members', status: 403 as const }
+      }
+
+      // Only admin can grant canInvite permission
+      if (body.canInvite && !isAdmin) {
+        return { error: 'Only the admin can grant invite permissions', status: 403 as const }
+      }
+
+      // Validate key generation
       const spaceResult = await tx.select({ currentKeyGeneration: spaces.currentKeyGeneration })
         .from(spaces)
         .where(eq(spaces.id, spaceId))
@@ -226,31 +276,33 @@ spacesRouter.post('/:spaceId/members', zValidator('json', inviteMemberSchema), a
         return { error: 'Key grant generation does not match current space key generation', status: 400 as const }
       }
 
-      // Check if already a member (inside transaction to prevent race)
+      // Check if already a member
       const existing = await tx.select({ role: spaceMembers.role })
         .from(spaceMembers)
-        .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.userId, body.userId)))
+        .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.publicKey, body.publicKey)))
         .limit(1)
 
       if (existing.length > 0) {
-        return { error: 'User is already a member of this space', status: 409 as const }
+        return { error: 'This public key is already a member of this space', status: 409 as const }
       }
 
       await tx.insert(spaceMembers).values({
         spaceId,
-        userId: body.userId,
+        publicKey: body.publicKey,
+        label: body.label,
         role: body.role,
-        invitedBy: user.userId,
+        canInvite: body.canInvite,
+        invitedBy: callerPublicKey,
       })
 
       await tx.insert(spaceKeyGrants).values({
         spaceId,
-        userId: body.userId,
+        publicKey: body.publicKey,
         generation: body.keyGrant.generation,
         encryptedSpaceKey: body.keyGrant.encryptedSpaceKey,
         keyNonce: body.keyGrant.keyNonce,
         ephemeralPublicKey: body.keyGrant.ephemeralPublicKey,
-        grantedBy: user.userId,
+        grantedBy: callerPublicKey,
       })
 
       return null
@@ -267,68 +319,65 @@ spacesRouter.post('/:spaceId/members', zValidator('json', inviteMemberSchema), a
   }
 })
 
-// DELETE /:spaceId/members/:userId – Remove member or self-leave
-spacesRouter.delete('/:spaceId/members/:userId', async (c) => {
+// DELETE /:spaceId/members/:publicKey – Remove member or self-leave
+spacesRouter.delete('/:spaceId/members/:memberPublicKey', async (c) => {
   const spaceId = c.req.param('spaceId')
-  const targetUserId = c.req.param('userId')
+  const targetPublicKey = decodeURIComponent(c.req.param('memberPublicKey'))
   const user = c.get('user')
 
-  if (!isValidUuid(spaceId) || !isValidUuid(targetUserId)) {
-    return c.json({ error: 'Invalid ID format' }, 400)
+  if (!isValidUuid(spaceId)) {
+    return c.json({ error: 'Invalid space ID format' }, 400)
   }
 
   try {
-    const isSelf = user.userId === targetUserId
+    const callerPublicKey = await resolveCallerPublicKey(user.userId)
+    if (!callerPublicKey) {
+      return c.json({ error: 'No keypair registered' }, 400)
+    }
+
+    const isSelf = callerPublicKey === targetPublicKey
 
     const result = await db.transaction(async (tx) => {
-      // Check caller membership
-      const callerResult = await tx.select({ role: spaceMembers.role })
+      const callerMembership = await tx.select({
+        role: spaceMembers.role,
+      })
         .from(spaceMembers)
-        .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.userId, user.userId)))
+        .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.publicKey, callerPublicKey)))
         .limit(1)
-      const callerRole = callerResult[0]?.role ?? null
 
-      if (!callerRole) {
+      if (!callerMembership[0]) {
         return { error: 'Not a member of this space', status: 403 as const }
       }
 
+      const isAdmin = callerMembership[0].role === 'admin'
+
       // Non-admins can only remove themselves
-      if (!isSelf && callerRole !== 'admin') {
-        return { error: 'Only admins can remove other members', status: 403 as const }
+      if (!isSelf && !isAdmin) {
+        return { error: 'Only the admin can remove other members', status: 403 as const }
       }
 
-      // Check if target is a member
-      let targetRole: string | null
-      if (isSelf) {
-        targetRole = callerRole
-      } else {
-        const targetResult = await tx.select({ role: spaceMembers.role })
+      // Admin cannot leave — they must delete the space
+      if (isSelf && isAdmin) {
+        return { error: 'The admin cannot leave the space. Delete it instead.', status: 400 as const }
+      }
+
+      // Check target membership exists
+      if (!isSelf) {
+        const target = await tx.select({ role: spaceMembers.role })
           .from(spaceMembers)
-          .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.userId, targetUserId)))
+          .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.publicKey, targetPublicKey)))
           .limit(1)
-        targetRole = targetResult[0]?.role ?? null
-      }
 
-      if (!targetRole) {
-        return { error: 'Target user is not a member of this space', status: 404 as const }
-      }
-
-      // Prevent last admin from leaving
-      if (targetRole === 'admin') {
-        const adminCount = await tx.select({ value: count() })
-          .from(spaceMembers)
-          .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.role, 'admin')))
-
-        if (adminCount[0]!.value <= 1) {
-          return { error: 'Cannot remove the last admin. Transfer admin role to another member first, or delete the space.', status: 400 as const }
+        if (!target[0]) {
+          return { error: 'Target is not a member of this space', status: 404 as const }
         }
       }
 
       await tx.delete(spaceMembers)
-        .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.userId, targetUserId)))
+        .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.publicKey, targetPublicKey)))
 
       await tx.delete(spaceKeyGrants)
-        .where(and(eq(spaceKeyGrants.spaceId, spaceId), eq(spaceKeyGrants.userId, targetUserId)))
+        .where(and(eq(spaceKeyGrants.spaceId, spaceId), eq(spaceKeyGrants.publicKey, targetPublicKey)))
 
       return null
     })
@@ -354,14 +403,19 @@ spacesRouter.get('/:spaceId/key-grants', async (c) => {
   }
 
   try {
-    const role = await getCallerRole(spaceId, user.userId)
-    if (!role) {
+    const callerPublicKey = await resolveCallerPublicKey(user.userId)
+    if (!callerPublicKey) {
+      return c.json({ error: 'No keypair registered' }, 400)
+    }
+
+    const membership = await getCallerMembership(spaceId, callerPublicKey)
+    if (!membership) {
       return c.json({ error: 'Not a member of this space' }, 403)
     }
 
     const grants = await db.select()
       .from(spaceKeyGrants)
-      .where(and(eq(spaceKeyGrants.spaceId, spaceId), eq(spaceKeyGrants.userId, user.userId)))
+      .where(and(eq(spaceKeyGrants.spaceId, spaceId), eq(spaceKeyGrants.publicKey, callerPublicKey)))
 
     return c.json(grants)
   } catch (error) {
@@ -377,7 +431,7 @@ spacesRouter.get('/:spaceId/key-grants', async (c) => {
 // POST /:spaceId/tokens – Create token (admin only)
 const createTokenSchema = z.object({
   publicKey: z.string().min(1),
-  role: z.enum(['admin', 'member', 'viewer']),
+  role: z.enum(['member', 'viewer']),
   label: z.string().optional(),
 })
 
@@ -391,9 +445,14 @@ spacesRouter.post('/:spaceId/tokens', zValidator('json', createTokenSchema), asy
   }
 
   try {
-    const role = await getCallerRole(spaceId, user.userId)
-    if (role !== 'admin') {
-      return c.json({ error: 'Only admins can create tokens' }, 403)
+    const callerPublicKey = await resolveCallerPublicKey(user.userId)
+    if (!callerPublicKey) {
+      return c.json({ error: 'No keypair registered' }, 400)
+    }
+
+    const membership = await getCallerMembership(spaceId, callerPublicKey)
+    if (membership?.role !== 'admin') {
+      return c.json({ error: 'Only the admin can create tokens' }, 403)
     }
 
     const token = randomBytes(32).toString('hex')
@@ -407,7 +466,7 @@ spacesRouter.post('/:spaceId/tokens', zValidator('json', createTokenSchema), asy
       issuedBy: user.userId,
     }).returning({ id: spaceAccessTokens.id })
 
-    return c.json({ tokenId: inserted.id, token }, 201)
+    return c.json({ tokenId: inserted!.id, token }, 201)
   } catch (error) {
     console.error('Create token error:', error)
     return c.json({ error: 'Internal server error' }, 500)
@@ -424,9 +483,14 @@ spacesRouter.get('/:spaceId/tokens', async (c) => {
   }
 
   try {
-    const role = await getCallerRole(spaceId, user.userId)
-    if (role !== 'admin') {
-      return c.json({ error: 'Only admins can list tokens' }, 403)
+    const callerPublicKey = await resolveCallerPublicKey(user.userId)
+    if (!callerPublicKey) {
+      return c.json({ error: 'No keypair registered' }, 400)
+    }
+
+    const membership = await getCallerMembership(spaceId, callerPublicKey)
+    if (membership?.role !== 'admin') {
+      return c.json({ error: 'Only the admin can list tokens' }, 403)
     }
 
     const tokens = await db.select({
@@ -459,9 +523,14 @@ spacesRouter.delete('/:spaceId/tokens/:tokenId', async (c) => {
   }
 
   try {
-    const role = await getCallerRole(spaceId, user.userId)
-    if (role !== 'admin') {
-      return c.json({ error: 'Only admins can revoke tokens' }, 403)
+    const callerPublicKey = await resolveCallerPublicKey(user.userId)
+    if (!callerPublicKey) {
+      return c.json({ error: 'No keypair registered' }, 400)
+    }
+
+    const membership = await getCallerMembership(spaceId, callerPublicKey)
+    if (membership?.role !== 'admin') {
+      return c.json({ error: 'Only the admin can revoke tokens' }, 403)
     }
 
     const existing = await db.select({ id: spaceAccessTokens.id })
@@ -480,7 +549,7 @@ spacesRouter.delete('/:spaceId/tokens/:tokenId', async (c) => {
       .set({
         revoked: true,
         revokedAt: new Date(),
-        revokedBy: user.userId,
+        revokedBy: callerPublicKey,
       })
       .where(eq(spaceAccessTokens.id, tokenId))
 

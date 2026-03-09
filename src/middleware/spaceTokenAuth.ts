@@ -36,7 +36,7 @@ export const spaceTokenAuthMiddleware = createMiddleware(async (c, next) => {
     return c.json({ error: 'Invalid or revoked space token' }, 401)
   }
 
-  const tokenRecord = result[0]
+  const tokenRecord = result[0]!
 
   // Update lastUsedAt (fire-and-forget, don't block the request)
   db.update(spaceAccessTokens)
