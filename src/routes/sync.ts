@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { db, syncChanges, vaultKeys, spaces, spaceMembers, userKeypairs, type NewSyncChange, type NewVaultKey } from '../db'
 import { authMiddleware } from '../middleware/auth'
 import { spaceTokenAuthMiddleware } from '../middleware/spaceTokenAuth'
-import { verifyRecordSignature } from '../utils/signatureVerification'
+import { verifyRecordSignatureAsync, verifySpaceChallengeAsync } from '@haex-space/vault-sdk'
 import { eq, and, ne, sql, max, asc, or, inArray } from 'drizzle-orm'
 
 class SpacePushValidationError extends Error {
@@ -147,7 +147,7 @@ async function validateSpacePush(
     }
 
     // 4. Verify signature cryptographically
-    const isValid = await verifyRecordSignature(
+    const isValid = await verifyRecordSignatureAsync(
       {
         tableName: change.tableName,
         rowPks: change.rowPks,
@@ -409,6 +409,22 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
       return c.json({ error: 'Space token does not match target vault' }, 403)
     }
 
+    // Verify challenge signature for space token auth (proof of private key possession)
+    if (spaceToken) {
+      const challengeTimestamp = c.req.header('X-Space-Timestamp')
+      const challengeSignature = c.req.header('X-Space-Signature')
+      if (!challengeTimestamp || !challengeSignature) {
+        return c.json({ error: 'Space token requests require X-Space-Timestamp and X-Space-Signature headers' }, 401)
+      }
+
+      const challenge = await verifySpaceChallengeAsync(
+        vaultId, challengeTimestamp, challengeSignature, spaceToken.publicKey,
+      )
+      if (!challenge.valid) {
+        return c.json({ error: challenge.error }, 401)
+      }
+    }
+
     // Space-scoped push validation
     const isSpaceSync = !!spaceToken || await isSpacePartition(vaultId)
     let spaceAuthenticatedPublicKey: string | undefined
@@ -486,17 +502,30 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
     // Each change has ~9 parameters, so we can safely insert ~5000 changes per query.
     const CHUNK_SIZE = 5000
 
-    // Resolve effective userId (for space token auth, use space owner)
+    // Resolve effective userId
+    // For spaces: use actual user's userId for traceability.
+    // For space tokens (federated): look up local user by public key,
+    // fall back to space owner if no local account exists.
+    // True attribution is always cryptographically guaranteed via signedBy + signature.
     let effectiveUserId: string
     if (spaceToken) {
-      const space = await db.select({ ownerId: spaces.ownerId })
-        .from(spaces)
-        .where(eq(spaces.id, vaultId))
+      const localUser = await db.select({ userId: userKeypairs.userId })
+        .from(userKeypairs)
+        .where(eq(userKeypairs.publicKey, spaceToken.publicKey))
         .limit(1)
-      if (!space[0]) {
-        return c.json({ error: 'Space not found' }, 404)
+      if (localUser[0]) {
+        effectiveUserId = localUser[0].userId
+      } else {
+        // Federated user: no local account
+        const space = await db.select({ ownerId: spaces.ownerId })
+          .from(spaces)
+          .where(eq(spaces.id, vaultId))
+          .limit(1)
+        if (!space[0]) {
+          return c.json({ error: 'Space not found' }, 404)
+        }
+        effectiveUserId = space[0].ownerId
       }
-      effectiveUserId = space[0].ownerId
     } else {
       effectiveUserId = user!.userId
     }
@@ -594,15 +623,47 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
  * even if they missed earlier syncs (prevents NOT NULL constraint violations).
  */
 sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
-  // TODO: Add space token support for pull in a future task
   const spaceToken = c.get('spaceToken')
-  if (spaceToken) {
-    return c.json({ error: 'Space token pull not yet supported' }, 403)
-  }
-  const user = c.get('user')
+  const user = spaceToken ? null : c.get('user')
   const { vaultId, excludeDeviceId, afterUpdatedAt, afterTableName, afterRowPks, limit } = c.req.valid('query')
 
   try {
+    // Determine if this is a space sync
+    const isSpaceSync = !!spaceToken || await isSpacePartition(vaultId)
+
+    if (spaceToken) {
+      // Space token: validate token matches target vault
+      if (spaceToken.spaceId !== vaultId) {
+        return c.json({ error: 'Space token does not match target vault' }, 403)
+      }
+
+      // Verify challenge signature (proof of private key possession)
+      const challengeTimestamp = c.req.header('X-Space-Timestamp')
+      const challengeSignature = c.req.header('X-Space-Signature')
+      if (!challengeTimestamp || !challengeSignature) {
+        return c.json({ error: 'Space token pull requires X-Space-Timestamp and X-Space-Signature headers' }, 401)
+      }
+
+      const challenge = await verifySpaceChallengeAsync(
+        vaultId, challengeTimestamp, challengeSignature, spaceToken.publicKey,
+      )
+      if (!challenge.valid) {
+        return c.json({ error: challenge.error }, 401)
+      }
+    } else if (isSpaceSync) {
+      // JWT user pulling from a space: verify membership
+      const role = await getCallerRole(vaultId, user!.userId)
+      if (!role) {
+        return c.json({ error: 'Not a member of this space' }, 403)
+      }
+    }
+
+    // For spaces: query by vaultId only (multiple users write to the same space)
+    // For personal vaults: query by userId + vaultId (scoped to owner)
+    const scopeFilter = isSpaceSync
+      ? eq(syncChanges.vaultId, vaultId)
+      : and(eq(syncChanges.userId, user!.userId), eq(syncChanges.vaultId, vaultId))
+
     // Step 1: Find rows to return using GROUP BY with HAVING for cursor-based pagination
     // Uses (maxUpdatedAt, tableName, rowPks) for stable cursor - works even with bulk imports
     const modifiedRowsQuery = await db
@@ -615,8 +676,7 @@ sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
       .from(syncChanges)
       .where(
         and(
-          eq(syncChanges.userId, user.userId),
-          eq(syncChanges.vaultId, vaultId),
+          scopeFilter,
           excludeDeviceId !== undefined ? ne(syncChanges.deviceId, excludeDeviceId) : undefined,
         )
       )
@@ -658,8 +718,7 @@ sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
 
     const allColumnsForRows = await db.query.syncChanges.findMany({
       where: and(
-        eq(syncChanges.userId, user.userId),
-        eq(syncChanges.vaultId, vaultId),
+        scopeFilter,
         sql`(${sql.join(rowConditions, sql` OR `)})`,
       ),
       orderBy: syncChanges.updatedAt,
@@ -682,6 +741,13 @@ sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
         nonce: change.nonce,
         deviceId: change.deviceId,
         updatedAt: change.updatedAt.toISOString(),
+        // Space-specific fields for attribution and ownership verification
+        ...(isSpaceSync ? {
+          signature: change.signature,
+          signedBy: change.signedBy,
+          recordOwner: change.recordOwner,
+          collaborative: change.collaborative,
+        } : {}),
       })),
       hasMore,
       serverTimestamp,
@@ -761,13 +827,41 @@ sync.delete('/vault/:vaultId', async (c) => {
  */
 sync.post('/pull-columns', zValidator('json', pullColumnsSchema), async (c) => {
   const spaceToken = c.get('spaceToken')
-  if (spaceToken) {
-    return c.json({ error: 'Space tokens can only be used for push/pull operations' }, 403)
-  }
-  const user = c.get('user')
+  const user = spaceToken ? null : c.get('user')
   const { vaultId, columns, limit, afterRowPks, afterTableName } = c.req.valid('json')
 
   try {
+    const isSpaceSync = !!spaceToken || await isSpacePartition(vaultId)
+
+    if (spaceToken) {
+      if (spaceToken.spaceId !== vaultId) {
+        return c.json({ error: 'Space token does not match target vault' }, 403)
+      }
+
+      // Verify challenge signature (proof of private key possession)
+      const challengeTimestamp = c.req.header('X-Space-Timestamp')
+      const challengeSignature = c.req.header('X-Space-Signature')
+      if (!challengeTimestamp || !challengeSignature) {
+        return c.json({ error: 'Space token pull requires X-Space-Timestamp and X-Space-Signature headers' }, 401)
+      }
+
+      const challenge = await verifySpaceChallengeAsync(
+        vaultId, challengeTimestamp, challengeSignature, spaceToken.publicKey,
+      )
+      if (!challenge.valid) {
+        return c.json({ error: challenge.error }, 401)
+      }
+    } else if (isSpaceSync) {
+      const role = await getCallerRole(vaultId, user!.userId)
+      if (!role) {
+        return c.json({ error: 'Not a member of this space' }, 403)
+      }
+    }
+
+    const scopeFilter = isSpaceSync
+      ? eq(syncChanges.vaultId, vaultId)
+      : and(eq(syncChanges.userId, user!.userId), eq(syncChanges.vaultId, vaultId))
+
     // Build conditions for each (tableName, columnName) pair
     const columnConditions = columns.map(
       (col) => and(
@@ -779,8 +873,7 @@ sync.post('/pull-columns', zValidator('json', pullColumnsSchema), async (c) => {
     // Query all data for these columns with cursor-based pagination
     const changes = await db.query.syncChanges.findMany({
       where: and(
-        eq(syncChanges.userId, user.userId),
-        eq(syncChanges.vaultId, vaultId),
+        scopeFilter,
         or(...columnConditions),
         // Cursor-based pagination using (tableName, rowPks) as compound cursor
         afterTableName && afterRowPks
@@ -806,6 +899,13 @@ sync.post('/pull-columns', zValidator('json', pullColumnsSchema), async (c) => {
         encryptedValue: change.encryptedValue,
         nonce: change.nonce,
         deviceId: change.deviceId,
+        // Space-specific fields
+        ...(isSpaceSync ? {
+          signature: change.signature,
+          signedBy: change.signedBy,
+          recordOwner: change.recordOwner,
+          collaborative: change.collaborative,
+        } : {}),
       })),
       hasMore,
       // Cursor for next page
