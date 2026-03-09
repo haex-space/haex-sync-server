@@ -4,7 +4,7 @@
     "": {
       "name": "haex-sync-server",
       "dependencies": {
-        "@haex-space/vault-sdk": "^2.5.102",
+        "@haex-space/vault-sdk": "2.5.108",
         "@hono/zod-validator": "^0.7.4",
         "@supabase/supabase-js": "^2.79.0",
         "drizzle-orm": "^0.45.1",
@@ -81,7 +81,7 @@
 
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.25.12", "", { "os": "win32", "cpu": "x64" }, "sha512-alJC0uCZpTFrSL0CCDjcgleBXPnCrEAhTBILpeAp7M/OFgoqtAetfBzX0xM00MUsVVPpVjlPuMbREqnZCXaTnA=="],
 
-    "@haex-space/vault-sdk": ["@haex-space/vault-sdk@2.5.102", "", { "dependencies": { "archiver": "^7.0.1", "commander": "^14.0.1", "drizzle-orm": "^0.45.0", "jszip": "^3.10.1" }, "peerDependencies": { "@nuxt/kit": "^3.0.0 || ^4.0.0", "react": "^18.0.0 || ^19.0.0", "svelte": "^4.0.0 || ^5.0.0", "vite": "^5.0.0 || ^6.0.0 || ^7.0.0", "vue": "^3.0.0" }, "optionalPeers": ["@nuxt/kit", "react", "svelte", "vite", "vue"], "bin": { "haex": "dist/cli/index.js" } }, "sha512-tI274BSHCEzZ3TWWkxXcjMsW0cgoMwQqzjGdr2uJjVdBZNdyWVM1Q0+nRrK6Ue4BRrF/IZq0n/7uwOKc4lCLKQ=="],
+    "@haex-space/vault-sdk": ["@haex-space/vault-sdk@2.5.108", "", { "dependencies": { "archiver": "^7.0.1", "commander": "^14.0.3", "drizzle-orm": "^0.45.1", "jszip": "^3.10.1" }, "peerDependencies": { "@nuxt/kit": "^3.0.0 || ^4.0.0", "react": "^18.0.0 || ^19.0.0", "svelte": "^4.0.0 || ^5.0.0", "vite": "^5.0.0 || ^6.0.0 || ^7.0.0", "vue": "^3.0.0" }, "optionalPeers": ["@nuxt/kit", "react", "svelte", "vite", "vue"], "bin": { "haex": "dist/cli/index.js" } }, "sha512-TthlUVaktB5NiLQefFrrg9MsBdOAauDdenKJAjMA7txjGt8y4g2Sp69xwhh3hNYaqf9I6zdKIvpDqJYriFATMg=="],
 
     "@hono/zod-validator": ["@hono/zod-validator@0.7.4", "", { "peerDependencies": { "hono": ">=3.9.0", "zod": "^3.25.0 || ^4.0.0" } }, "sha512-biKGn3BRJVaftZlIPMyK+HCe/UHAjJ6sH0UyXe3+v0OcgVr9xfImDROTJFLtn9e3XEEAHGZIM9U6evu85abm8Q=="],
 
@@ -145,7 +145,7 @@
 
     "color-name": ["color-name@1.1.4", "", {}, "sha512-dOy+3AuW3a2wNbZHIuMZpTcgjGuLU/uBL/ubcZF9OXbDo8ff4O8yVp5Bf0efS8uEoYo5q4Fx7dY9OgQGXgAsQA=="],
 
-    "commander": ["commander@14.0.2", "", {}, "sha512-TywoWNNRbhoD0BXs1P3ZEScW8W5iKrnbithIl0YH+uCmBd0QpPOA8yc82DS3BIE5Ma6FnBVUsJ7wVUDz4dvOWQ=="],
+    "commander": ["commander@14.0.3", "", {}, "sha512-H+y0Jo/T1RZ9qPP4Eh1pkcQcLRglraJaSLoyOtHxu6AapkjWVCy2Sit1QQ4x3Dng8qDlSsZEet7g5Pq06MvTgw=="],
 
     "compress-commons": ["compress-commons@6.0.2", "", { "dependencies": { "crc-32": "^1.2.0", "crc32-stream": "^6.0.0", "is-stream": "^2.0.1", "normalize-path": "^3.0.0", "readable-stream": "^4.0.0" } }, "sha512-6FqVXeETqWPoGcfzrXb37E50NP0LXT8kAMu5ooZayhWWdgEY4lBEEcbQNXtkuKQsGduxiIcI4gOTsxTmuq/bSg=="],
 
