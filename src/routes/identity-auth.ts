@@ -1,7 +1,7 @@
 import { randomBytes } from 'crypto'
 import { Hono } from 'hono'
 import { eq, and, lt, isNull } from 'drizzle-orm'
-import { importUserPublicKeyAsync, base64ToArrayBuffer } from '@haex-space/vault-sdk'
+import { importUserPublicKeyAsync } from '@haex-space/vault-sdk'
 import { supabaseAdmin } from '../utils/supabase'
 import { db, identities, authChallenges } from '../db'
 import { authMiddleware } from '../middleware/auth'
@@ -24,16 +24,19 @@ const CHALLENGE_TTL_MS = 60 * 1000 // 60 seconds
 
 /**
  * Verify a SignedClaimPresentation's ECDSA signature.
- * The canonical form is: JSON.stringify of { did, publicKey, claims, timestamp } with sorted keys.
+ * Canonical form: did\0timestamp\0type1=value1\0type2=value2\0...
+ * (claims sorted alphabetically by type, matching vault-sdk)
  */
 async function verifyClaimPresentation(presentation: SignedClaimPresentation): Promise<boolean> {
   try {
-    const { signature, ...payload } = presentation
-    const canonical = JSON.stringify(payload, Object.keys(payload).sort())
+    const { did, publicKey: pubKeyBase64, claims, timestamp, signature } = presentation
+
+    const sortedEntries = Object.entries(claims).sort(([a], [b]) => a.localeCompare(b))
+    const canonical = [did, timestamp, ...sortedEntries.map(([k, v]) => `${k}=${v}`)].join('\0')
     const data = new TextEncoder().encode(canonical)
 
-    const publicKey = await importUserPublicKeyAsync(presentation.publicKey)
-    const sigBytes = base64ToArrayBuffer(signature)
+    const publicKey = await importUserPublicKeyAsync(pubKeyBase64)
+    const sigBytes = Uint8Array.from(atob(signature), ch => ch.charCodeAt(0))
 
     return await crypto.subtle.verify(
       { name: 'ECDSA', hash: 'SHA-256' },
@@ -147,11 +150,10 @@ app.post('/register', async (c) => {
       privateKeySalt: body.privateKeySalt,
     }).returning({ id: identities.id })
 
-    // Send verification email
+    // Send verification email via magiclink (doesn't overwrite shadow user password)
     const { error: linkError } = await supabaseAdmin.auth.admin.generateLink({
-      type: 'signup',
+      type: 'magiclink',
       email,
-      password: generateRandomPassword(),
     })
 
     if (linkError) {
@@ -228,9 +230,8 @@ app.post('/resend-verification', async (c) => {
     }
 
     const { error } = await supabaseAdmin.auth.admin.generateLink({
-      type: 'signup',
+      type: 'magiclink',
       email: identity.email,
-      password: generateRandomPassword(),
     })
 
     if (error) {
