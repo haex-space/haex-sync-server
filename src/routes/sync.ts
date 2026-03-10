@@ -7,6 +7,7 @@ import { verifySpaceChallengeAsync } from '@haex-space/vault-sdk'
 import { eq, and, ne, sql, max, asc, or } from 'drizzle-orm'
 import { pushChangesSchema, pullChangesSchema, pullColumnsSchema, SpacePushValidationError, type PushChange } from './sync.schemas'
 import { isSpacePartition, getUserPublicKey, getCallerRoleByUserId, validateSpacePush } from './sync.helpers'
+import { getUserQuotaAsync } from '../services/quota'
 import vaultRoutes from './sync.vaults'
 
 // Re-export sync utilities
@@ -161,6 +162,19 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
       }
     } else {
       effectiveUserId = user!.userId
+    }
+
+    // Check storage quota before accepting push
+    const quota = await getUserQuotaAsync(effectiveUserId)
+    if (quota.isOverQuota) {
+      return c.json({
+        error: 'Storage quota exceeded',
+        quota: {
+          tier: quota.tier,
+          maxBytes: quota.maxBytes,
+          usedBytes: quota.usedBytes,
+        },
+      }, 413)
     }
 
     const result = await db.transaction(async (tx) => {
