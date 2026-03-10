@@ -76,6 +76,9 @@ ALTER TABLE user_storage_credentials ENABLE ROW LEVEL SECURITY;
 -- Drop existing policies if any
 DROP POLICY IF EXISTS "Users can read their own credentials" ON user_storage_credentials;
 DROP POLICY IF EXISTS "Service role can manage credentials" ON user_storage_credentials;
+DROP POLICY IF EXISTS "Service role can insert credentials" ON user_storage_credentials;
+DROP POLICY IF EXISTS "Service role can update credentials" ON user_storage_credentials;
+DROP POLICY IF EXISTS "Service role can delete credentials" ON user_storage_credentials;
 
 -- Users can only read their own credentials (or service role can read all)
 CREATE POLICY "Users can read their own credentials"
