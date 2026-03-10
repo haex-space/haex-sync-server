@@ -212,7 +212,7 @@ spacesRouter.delete('/:spaceId', async (c) => {
 const inviteMemberSchema = z.object({
   publicKey: z.string().min(1),
   label: z.string().min(1),
-  role: z.enum(['member', 'viewer']), // Only admin can be set during creation, not via invite
+  role: z.enum(['owner', 'member', 'reader']), // Admin role is never assigned via invite
   canInvite: z.boolean().default(false),
   keyGrant: z.object({
     encryptedSpaceKey: z.string(),
@@ -252,9 +252,18 @@ spacesRouter.post('/:spaceId/members', zValidator('json', inviteMemberSchema), a
         return { error: 'Not a member of this space', status: 403 as const }
       }
 
-      const isAdmin = caller.role === 'admin'
-      if (!isAdmin && !caller.canInvite) {
+      const callerRole = caller.role
+      const isAdmin = callerRole === 'admin'
+      const isOwner = callerRole === 'owner'
+
+      // Check invite permission: admin always can, owner can invite member/reader
+      if (!isAdmin && !isOwner) {
         return { error: 'You do not have permission to invite members', status: 403 as const }
+      }
+
+      // Owner can only invite member or reader, not other owners
+      if (isOwner && body.role === 'owner') {
+        return { error: 'Owners cannot invite other owners', status: 403 as const }
       }
 
       // Only admin can grant canInvite permission
@@ -349,19 +358,16 @@ spacesRouter.delete('/:spaceId/members/:memberPublicKey', async (c) => {
         return { error: 'Not a member of this space', status: 403 as const }
       }
 
-      const isAdmin = callerMembership[0].role === 'admin'
+      const callerRole = callerMembership[0].role
+      const isAdmin = callerRole === 'admin'
+      const isOwner = callerRole === 'owner'
 
-      // Non-admins can only remove themselves
-      if (!isSelf && !isAdmin) {
-        return { error: 'Only the admin can remove other members', status: 403 as const }
-      }
-
-      // Admin cannot leave — they must delete the space
+      // Admin cannot leave — they must transfer admin or delete the space
       if (isSelf && isAdmin) {
-        return { error: 'The admin cannot leave the space. Delete it instead.', status: 400 as const }
+        return { error: 'The admin cannot leave the space. Transfer admin or delete it instead.', status: 400 as const }
       }
 
-      // Check target membership exists
+      // For kicking others: check permissions based on role hierarchy
       if (!isSelf) {
         const target = await tx.select({ role: spaceMembers.role })
           .from(spaceMembers)
@@ -370,6 +376,23 @@ spacesRouter.delete('/:spaceId/members/:memberPublicKey', async (c) => {
 
         if (!target[0]) {
           return { error: 'Target is not a member of this space', status: 404 as const }
+        }
+
+        const targetRole = target[0].role
+
+        // Admin can kick anyone except admin (themselves already handled above)
+        // Owner can kick member or reader only
+        // Member and reader cannot kick anyone
+        if (isAdmin) {
+          if (targetRole === 'admin') {
+            return { error: 'Cannot kick the admin', status: 403 as const }
+          }
+        } else if (isOwner) {
+          if (targetRole !== 'member' && targetRole !== 'reader') {
+            return { error: 'Owners can only kick members and readers', status: 403 as const }
+          }
+        } else {
+          return { error: 'You do not have permission to remove other members', status: 403 as const }
         }
       }
 
@@ -431,7 +454,7 @@ spacesRouter.get('/:spaceId/key-grants', async (c) => {
 // POST /:spaceId/tokens – Create token (admin only)
 const createTokenSchema = z.object({
   publicKey: z.string().min(1),
-  role: z.enum(['member', 'viewer']),
+  role: z.enum(['owner', 'member', 'reader']),
   label: z.string().optional(),
 })
 
@@ -556,6 +579,71 @@ spacesRouter.delete('/:spaceId/tokens/:tokenId', async (c) => {
     return c.json({ success: true })
   } catch (error) {
     console.error('Revoke token error:', error)
+    return c.json({ error: 'Internal server error' }, 500)
+  }
+})
+
+// POST /:spaceId/transfer-admin – Transfer admin role to another member
+const transferAdminSchema = z.object({
+  targetPublicKey: z.string().min(1),
+})
+
+spacesRouter.post('/:spaceId/transfer-admin', zValidator('json', transferAdminSchema), async (c) => {
+  const spaceId = c.req.param('spaceId')
+  const user = c.get('user')
+  const body = c.req.valid('json')
+
+  if (!isValidUuid(spaceId)) {
+    return c.json({ error: 'Invalid space ID format' }, 400)
+  }
+
+  try {
+    const callerPublicKey = await resolveCallerPublicKey(user.userId)
+    if (!callerPublicKey) {
+      return c.json({ error: 'No keypair registered' }, 400)
+    }
+
+    const result = await db.transaction(async (tx) => {
+      // Verify caller is current admin
+      const callerResult = await tx.select({ role: spaceMembers.role })
+        .from(spaceMembers)
+        .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.publicKey, callerPublicKey)))
+        .limit(1)
+
+      if (callerResult[0]?.role !== 'admin') {
+        return { error: 'Only the admin can transfer admin role', status: 403 as const }
+      }
+
+      // Verify target is a member of the space
+      const targetResult = await tx.select({ role: spaceMembers.role })
+        .from(spaceMembers)
+        .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.publicKey, body.targetPublicKey)))
+        .limit(1)
+
+      if (!targetResult[0]) {
+        return { error: 'Target is not a member of this space', status: 404 as const }
+      }
+
+      // Promote target to admin
+      await tx.update(spaceMembers)
+        .set({ role: 'admin', canInvite: true })
+        .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.publicKey, body.targetPublicKey)))
+
+      // Demote caller to owner
+      await tx.update(spaceMembers)
+        .set({ role: 'owner' })
+        .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.publicKey, callerPublicKey)))
+
+      return null
+    })
+
+    if (result) {
+      return c.json({ error: result.error }, result.status)
+    }
+
+    return c.json({ success: true })
+  } catch (error) {
+    console.error('Transfer admin error:', error)
     return c.json({ error: 'Internal server error' }, 500)
   }
 })

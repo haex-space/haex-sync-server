@@ -44,8 +44,8 @@ export async function validateSpacePush(
   tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
 ): Promise<{ valid: boolean; error?: string }> {
   // 1. Role check
-  if (role === 'viewer') {
-    return { valid: false, error: 'Viewers cannot push changes' }
+  if (role === 'reader') {
+    return { valid: false, error: 'Readers cannot push changes' }
   }
 
   for (const change of changes) {

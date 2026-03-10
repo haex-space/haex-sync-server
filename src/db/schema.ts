@@ -204,8 +204,8 @@ export const spaceMembers = pgTable(
       .references(() => spaces.id, { onDelete: "cascade" }),
     publicKey: text("public_key").notNull(), // ECDSA P-256 public key (Base64 SPKI)
     label: text("label").notNull(), // Human-readable name assigned by the inviter
-    role: text("role").notNull(), // 'admin' | 'member' | 'viewer'
-    canInvite: boolean("can_invite").notNull().default(false), // Whether this member can invite others (admin always can)
+    role: text("role").notNull(), // 'admin' | 'owner' | 'member' | 'reader'
+    canInvite: boolean("can_invite").notNull().default(false), // Whether this member can invite others (admin/owner always can)
     invitedBy: text("invited_by"), // Public key of the inviter (null for space creator)
     joinedAt: timestamp("joined_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -255,7 +255,7 @@ export type NewSpaceKeyGrant = typeof spaceKeyGrants.$inferInsert;
  *
  * Security guarantees:
  * - Stolen token + wrong private key = server rejects (signature mismatch during push)
- * - Viewer token = no writes allowed
+ * - Reader token = no writes allowed
  * - Revoked token = immediate access loss
  */
 export const spaceAccessTokens = pgTable("space_access_tokens", {
@@ -265,7 +265,7 @@ export const spaceAccessTokens = pgTable("space_access_tokens", {
     .references(() => spaces.id, { onDelete: "cascade" }),
   token: text("token").notNull().unique(),
   publicKey: text("public_key").notNull(),
-  role: text("role").notNull(), // 'admin' | 'member' | 'viewer'
+  role: text("role").notNull(), // 'admin' | 'owner' | 'member' | 'reader'
   label: text("label"),
   issuedBy: uuid("issued_by").references(() => authUsers.id),
   revoked: boolean("revoked").notNull().default(false),
