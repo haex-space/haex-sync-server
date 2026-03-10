@@ -4,7 +4,7 @@ import { eq, and, lt, isNull } from 'drizzle-orm'
 import { importUserPublicKeyAsync, verifyClaimPresentationAsync } from '@haex-space/vault-sdk'
 import type { SignedClaimPresentation } from '@haex-space/vault-sdk'
 import { supabaseAdmin } from '../utils/supabase'
-import { db, identities, authChallenges, spaces, spaceMembers } from '../db'
+import { db, identities, authChallenges } from '../db'
 import { authMiddleware } from '../middleware/auth'
 import packageJson from '../../package.json'
 
@@ -162,31 +162,6 @@ app.post('/verify-email', async (c) => {
     await db.update(identities)
       .set({ emailVerified: true, updatedAt: new Date() })
       .where(eq(identities.supabaseUserId, data.user.id))
-
-    // Auto-create personal space for this identity
-    const [identity] = await db.select()
-      .from(identities)
-      .where(eq(identities.supabaseUserId, data.user.id))
-      .limit(1)
-
-    if (identity && identity.supabaseUserId) {
-      const [personalSpace] = await db.insert(spaces).values({
-        ownerId: identity.supabaseUserId,
-        encryptedName: '',
-        nameNonce: '',
-        isPersonal: true,
-      }).returning({ id: spaces.id })
-
-      if (personalSpace) {
-        await db.insert(spaceMembers).values({
-          spaceId: personalSpace.id,
-          publicKey: identity.publicKey,
-          label: 'Personal',
-          role: 'admin',
-          canInvite: false,
-        })
-      }
-    }
 
     return c.json({ status: 'verified' })
   } catch (error) {

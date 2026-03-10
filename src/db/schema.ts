@@ -182,7 +182,6 @@ export const spaces = pgTable("spaces", {
     .references(() => authUsers.id),
   encryptedName: text("encrypted_name").notNull(),
   nameNonce: text("name_nonce").notNull(),
-  isPersonal: boolean("is_personal").notNull().default(false),
   currentKeyGeneration: integer("current_key_generation").notNull().default(1),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
