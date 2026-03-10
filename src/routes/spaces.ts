@@ -111,6 +111,7 @@ spacesRouter.get('/', async (c) => {
       ownerId: spaces.ownerId,
       encryptedName: spaces.encryptedName,
       nameNonce: spaces.nameNonce,
+      isPersonal: spaces.isPersonal,
       currentKeyGeneration: spaces.currentKeyGeneration,
       createdAt: spaces.createdAt,
       updatedAt: spaces.updatedAt,
@@ -199,6 +200,16 @@ spacesRouter.delete('/:spaceId', async (c) => {
       return c.json({ error: 'Only the admin can delete a space' }, 403)
     }
 
+    // Prevent deletion of personal spaces
+    const [space] = await db.select({ isPersonal: spaces.isPersonal })
+      .from(spaces)
+      .where(eq(spaces.id, spaceId))
+      .limit(1)
+
+    if (space?.isPersonal) {
+      return c.json({ error: 'Personal spaces cannot be deleted' }, 400)
+    }
+
     await db.delete(spaces).where(eq(spaces.id, spaceId))
 
     return c.json({ success: true })
@@ -232,6 +243,16 @@ spacesRouter.post('/:spaceId/members', zValidator('json', inviteMemberSchema), a
   }
 
   try {
+    // Prevent invites to personal spaces
+    const [space] = await db.select({ isPersonal: spaces.isPersonal })
+      .from(spaces)
+      .where(eq(spaces.id, spaceId))
+      .limit(1)
+
+    if (space?.isPersonal) {
+      return c.json({ error: 'Cannot invite members to a personal space' }, 400)
+    }
+
     const callerPublicKey = await resolveCallerPublicKey(user.userId)
     if (!callerPublicKey) {
       return c.json({ error: 'No keypair registered' }, 400)
