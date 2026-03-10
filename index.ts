@@ -6,6 +6,7 @@ import syncRoutes from './src/routes/sync'
 import storageRoutes from './src/routes/storage'
 import keypairRoutes from './src/routes/keypairs'
 import spacesRoutes from './src/routes/spaces'
+import identityAuthRoutes from './src/routes/identity-auth'
 import packageJson from './package.json'
 
 const app = new Hono()
@@ -37,6 +38,8 @@ app.get('/', (c) => {
 })
 
 // Routes
+// Identity-based challenge-response auth (public, no auth middleware)
+app.route('/identity-auth', identityAuthRoutes)
 // Auth routes for server-side login (bypasses Turnstile captcha for desktop/mobile apps)
 app.route('/auth', authRoutes)
 // Sync routes require authentication via JWT

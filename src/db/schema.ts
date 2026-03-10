@@ -306,3 +306,55 @@ export const spaceAccessTokens = pgTable("space_access_tokens", {
 
 export type SpaceAccessToken = typeof spaceAccessTokens.$inferSelect;
 export type NewSpaceAccessToken = typeof spaceAccessTokens.$inferInsert;
+
+// ============================================
+// IDENTITY AUTH
+// ============================================
+
+/**
+ * Identities Table
+ * Maps DID-based identities to Supabase shadow users.
+ * Enables challenge-response auth without email/password.
+ */
+export const identities = pgTable('identities', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  did: text('did').notNull().unique(),
+  publicKey: text('public_key').notNull().unique(),
+  supabaseUserId: uuid('supabase_user_id')
+    .references(() => authUsers.id, { onDelete: 'cascade' }),
+  email: text('email'),
+  emailVerified: boolean('email_verified').notNull().default(false),
+  tier: text('tier').notNull().default('free'),
+  encryptedPrivateKey: text('encrypted_private_key'),
+  privateKeyNonce: text('private_key_nonce'),
+  privateKeySalt: text('private_key_salt'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+})
+
+export type Identity = typeof identities.$inferSelect
+export type NewIdentity = typeof identities.$inferInsert
+
+/**
+ * Auth Challenges Table
+ * Stores short-lived nonces for challenge-response authentication.
+ */
+export const authChallenges = pgTable('auth_challenges', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  did: text('did').notNull(),
+  nonce: text('nonce').notNull().unique(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  usedAt: timestamp('used_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+})
+
+/**
+ * Tiers Table
+ * Defines service tiers with storage and space limits.
+ */
+export const tiers = pgTable('tiers', {
+  name: text('name').primaryKey(),
+  maxStorageBytes: text('max_storage_bytes').notNull(),
+  maxSpaces: integer('max_spaces').notNull().default(3),
+  description: text('description'),
+})

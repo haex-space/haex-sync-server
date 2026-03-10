@@ -134,6 +134,13 @@
       "when": 1773005928189,
       "tag": "0018_even_banshee",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1773179094860,
+      "tag": "0019_identity_auth_tables",
+      "breakpoints": true
     }
   ]
 }
