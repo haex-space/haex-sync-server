@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
-import { db, syncChanges, spaces, userKeypairs, type NewSyncChange } from '../db'
+import { db, syncChanges, spaces, identities, type NewSyncChange } from '../db'
 import { authMiddleware } from '../middleware/auth'
 import { spaceTokenAuthMiddleware } from '../middleware/spaceTokenAuth'
 import { verifySpaceChallengeAsync } from '@haex-space/vault-sdk'
@@ -142,12 +142,12 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
     // True attribution is always cryptographically guaranteed via signedBy + signature.
     let effectiveUserId: string
     if (spaceToken) {
-      const localUser = await db.select({ userId: userKeypairs.userId })
-        .from(userKeypairs)
-        .where(eq(userKeypairs.publicKey, spaceToken.publicKey))
+      const [localIdentity] = await db.select({ supabaseUserId: identities.supabaseUserId })
+        .from(identities)
+        .where(eq(identities.publicKey, spaceToken.publicKey))
         .limit(1)
-      if (localUser[0]) {
-        effectiveUserId = localUser[0].userId
+      if (localIdentity?.supabaseUserId) {
+        effectiveUserId = localIdentity.supabaseUserId
       } else {
         // Federated user: no local account
         const space = await db.select({ ownerId: spaces.ownerId })

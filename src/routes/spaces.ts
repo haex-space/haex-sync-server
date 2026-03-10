@@ -2,7 +2,7 @@ import { randomBytes } from 'crypto'
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { db, spaces, spaceMembers, spaceKeyGrants, spaceAccessTokens, userKeypairs } from '../db'
+import { db, spaces, spaceMembers, spaceKeyGrants, spaceAccessTokens, identities } from '../db'
 import { authMiddleware } from '../middleware/auth'
 import { eq, and, count } from 'drizzle-orm'
 
@@ -19,11 +19,11 @@ function isValidUuid(id: string): boolean {
 
 /** Resolve the caller's public key from their userId (JWT auth) */
 async function resolveCallerPublicKey(userId: string): Promise<string | null> {
-  const result = await db.select({ publicKey: userKeypairs.publicKey })
-    .from(userKeypairs)
-    .where(eq(userKeypairs.userId, userId))
+  const [identity] = await db.select()
+    .from(identities)
+    .where(eq(identities.supabaseUserId, userId))
     .limit(1)
-  return result[0]?.publicKey ?? null
+  return identity?.publicKey ?? null
 }
 
 /** Get caller's membership info for a space */

@@ -1,10 +1,6 @@
 import { timingSafeEqual } from 'crypto'
 import { Hono } from 'hono'
-import type {
-  SyncServerLoginRequest,
-  SyncServerLoginResponse,
-  StorageConfig,
-} from '@haex-space/vault-sdk'
+import type { StorageConfig } from '@haex-space/vault-sdk'
 import { supabaseAdmin } from '../utils/supabase'
 import { getOrCreateStorageCredentials } from '../services/storageCredentials'
 import { getUserBucket } from '../services/minioAdmin'
@@ -106,59 +102,6 @@ app.post('/admin/create-user', async (c) => {
 })
 
 /**
- * POST /auth/login
- *
- * Server-side login endpoint that bypasses Turnstile captcha.
- * Uses the Supabase Admin client to authenticate users.
- *
- * This is needed for desktop/mobile apps where Turnstile doesn't work.
- */
-app.post('/login', async (c) => {
-  try {
-    const body = await c.req.json<SyncServerLoginRequest>()
-
-    if (!body.email || !body.password) {
-      return c.json({ error: 'Email and password are required' }, 400)
-    }
-
-    // Use admin client to sign in (bypasses captcha)
-    const { data, error } = await supabaseAdmin.auth.signInWithPassword({
-      email: body.email,
-      password: body.password,
-    })
-
-    if (error) {
-      console.error('Login error:', error.message)
-      return c.json({ error: error.message }, 401)
-    }
-
-    if (!data.session || !data.user) {
-      return c.json({ error: 'Login failed - no session created' }, 401)
-    }
-
-    // Get server URL from request for storage config
-    const serverUrl = new URL(c.req.url).origin
-
-    const response: SyncServerLoginResponse = {
-      access_token: data.session.access_token,
-      refresh_token: data.session.refresh_token,
-      expires_in: data.session.expires_in,
-      expires_at: data.session.expires_at ?? 0,
-      user: {
-        id: data.user.id,
-        email: data.user.email ?? '',
-      },
-      storage_config: await createStorageConfig(serverUrl, data.user.id),
-    }
-
-    return c.json(response)
-  } catch (error) {
-    console.error('Login endpoint error:', error)
-    return c.json({ error: 'Internal server error' }, 500)
-  }
-})
-
-/**
  * GET /auth/storage-credentials
  *
  * Get S3 storage credentials for the authenticated user.
@@ -189,54 +132,6 @@ app.get('/storage-credentials', async (c) => {
     return c.json(storageConfig)
   } catch (error) {
     console.error('Storage credentials endpoint error:', error)
-    return c.json({ error: 'Internal server error' }, 500)
-  }
-})
-
-/**
- * POST /auth/refresh
- *
- * Refresh an expired access token using a refresh token.
- */
-app.post('/refresh', async (c) => {
-  try {
-    const body = await c.req.json<{ refresh_token: string }>()
-
-    if (!body.refresh_token) {
-      return c.json({ error: 'Refresh token is required' }, 400)
-    }
-
-    const { data, error } = await supabaseAdmin.auth.refreshSession({
-      refresh_token: body.refresh_token,
-    })
-
-    if (error) {
-      console.error('Refresh error:', error.message)
-      return c.json({ error: error.message }, 401)
-    }
-
-    if (!data.session || !data.user) {
-      return c.json({ error: 'Refresh failed - no session created' }, 401)
-    }
-
-    // Get server URL from request for storage config
-    const serverUrl = new URL(c.req.url).origin
-
-    const response: SyncServerLoginResponse = {
-      access_token: data.session.access_token,
-      refresh_token: data.session.refresh_token,
-      expires_in: data.session.expires_in,
-      expires_at: data.session.expires_at ?? 0,
-      user: {
-        id: data.user.id,
-        email: data.user.email ?? '',
-      },
-      storage_config: await createStorageConfig(serverUrl, data.user.id),
-    }
-
-    return c.json(response)
-  } catch (error) {
-    console.error('Refresh endpoint error:', error)
     return c.json({ error: 'Internal server error' }, 500)
   }
 })

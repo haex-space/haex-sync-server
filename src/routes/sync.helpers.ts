@@ -1,4 +1,4 @@
-import { db, syncChanges, spaces, spaceMembers, userKeypairs } from '../db'
+import { db, syncChanges, spaces, spaceMembers, identities } from '../db'
 import { verifyRecordSignatureAsync } from '@haex-space/vault-sdk'
 import { eq, and } from 'drizzle-orm'
 import type { PushChange } from './sync.schemas'
@@ -12,13 +12,13 @@ export async function isSpacePartition(vaultId: string): Promise<boolean> {
   return result.length > 0
 }
 
-/** Look up a user's public key from the keypairs table */
+/** Look up a user's public key from the identities table */
 export async function getUserPublicKey(userId: string): Promise<string | null> {
-  const result = await db.select({ publicKey: userKeypairs.publicKey })
-    .from(userKeypairs)
-    .where(eq(userKeypairs.userId, userId))
+  const [identity] = await db.select()
+    .from(identities)
+    .where(eq(identities.supabaseUserId, userId))
     .limit(1)
-  return result[0]?.publicKey ?? null
+  return identity?.publicKey ?? null
 }
 
 /** Look up a user's role in a space by resolving their publicKey */

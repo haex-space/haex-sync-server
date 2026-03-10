@@ -124,35 +124,6 @@ export type SyncLog = SyncChange;
 export type NewSyncLog = NewSyncChange;
 
 // ============================================
-// USER KEYPAIRS
-// ============================================
-
-/**
- * User Keypairs Table
- * Stores asymmetric keypairs for each user (one per user)
- *
- * Used for:
- * - Receiving encrypted space keys (ECDH key agreement)
- * - Signing records they write (ECDSA signatures)
- *
- * The keypair is generated client-side. Only the public key is stored in plaintext.
- * The private key is encrypted with the user's server password before upload.
- */
-export const userKeypairs = pgTable("user_keypairs", {
-  userId: uuid("user_id")
-    .primaryKey()
-    .references(() => authUsers.id, { onDelete: "cascade" }),
-  publicKey: text("public_key").notNull(), // ECDSA P-256 public key (Base64 SPKI)
-  encryptedPrivateKey: text("encrypted_private_key").notNull(), // AES-GCM encrypted (Base64)
-  privateKeyNonce: text("private_key_nonce").notNull(), // AES-GCM nonce (Base64)
-  privateKeySalt: text("private_key_salt").notNull(), // PBKDF2 salt (Base64)
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
-
-export type UserKeypair = typeof userKeypairs.$inferSelect;
-export type NewUserKeypair = typeof userKeypairs.$inferInsert;
-
-// ============================================
 // S3 STORAGE CREDENTIALS
 // ============================================
 
