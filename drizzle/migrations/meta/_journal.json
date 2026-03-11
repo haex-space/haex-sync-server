@@ -141,6 +141,27 @@
       "when": 1773179094860,
       "tag": "0019_identity_auth_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1773484800000,
+      "tag": "0020_add_verification_code",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1773571200000,
+      "tag": "0021_update_space_members_to_public_key",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1773657600000,
+      "tag": "0022_add_email_unique_constraint",
+      "breakpoints": true
     }
   ]
 }

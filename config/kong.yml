@@ -1,8 +1,42 @@
-# Minimal Kong configuration for Supabase Studio
+# Kong configuration for local Supabase stack
 _format_version: "2.1"
 _transform: true
 
 services:
+  # GoTrue Auth
+  - name: auth-v1
+    url: http://auth:9999/
+    routes:
+      - name: auth-v1-all
+        strip_path: true
+        paths:
+          - /auth/v1/
+    plugins:
+      - name: cors
+
+  # Realtime WebSocket
+  - name: realtime-v1-ws
+    url: http://realtime.haex-sync:4000/socket/websocket
+    routes:
+      - name: realtime-v1-ws
+        strip_path: true
+        paths:
+          - /realtime/v1/websocket
+    plugins:
+      - name: cors
+
+  # Realtime REST
+  - name: realtime-v1
+    url: http://realtime.haex-sync:4000/socket
+    routes:
+      - name: realtime-v1
+        strip_path: true
+        paths:
+          - /realtime/v1/
+    plugins:
+      - name: cors
+
+  # pg_meta (for Studio)
   - name: meta
     url: http://meta:8080
     routes:

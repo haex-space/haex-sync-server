@@ -1,6 +1,3 @@
-# Simplified Supabase Local Development Stack for HaexHub Sync Server
-# Based on https://github.com/supabase/supabase/blob/master/docker/docker-compose.yml
-
 services:
   # PostgreSQL Database with Supabase extensions
   db:
@@ -28,6 +25,109 @@ services:
       timeout: 5s
       retries: 10
 
+  # GoTrue - Supabase Auth (required for identity-auth)
+  auth:
+    image: supabase/gotrue:v2.170.0
+    container_name: haex-sync-auth
+    restart: unless-stopped
+    environment:
+      GOTRUE_API_HOST: 0.0.0.0
+      GOTRUE_API_PORT: 9999
+      API_EXTERNAL_URL: http://localhost:${KONG_HTTP_PORT:-8000}
+
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:postgres@db:5432/postgres
+
+      GOTRUE_SITE_URL: http://localhost:3003
+      GOTRUE_URI_ALLOW_LIST: ""
+      GOTRUE_DISABLE_SIGNUP: "false"
+
+      GOTRUE_JWT_ADMIN_ROLES: service_role
+      GOTRUE_JWT_AUD: authenticated
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
+      GOTRUE_JWT_EXP: 3600
+      GOTRUE_JWT_SECRET: super-secret-jwt-token-with-at-least-32-characters-long
+
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: "true"
+      GOTRUE_MAILER_AUTOCONFIRM: "true"
+      GOTRUE_SMTP_ADMIN_EMAIL: admin@localhost
+      GOTRUE_MAILER_URLPATHS_INVITE: /auth/v1/verify
+      GOTRUE_MAILER_URLPATHS_CONFIRMATION: /auth/v1/verify
+      GOTRUE_MAILER_URLPATHS_RECOVERY: /auth/v1/verify
+      GOTRUE_MAILER_URLPATHS_EMAIL_CHANGE: /auth/v1/verify
+
+      GOTRUE_EXTERNAL_PHONE_ENABLED: "false"
+      GOTRUE_SMS_AUTOCONFIRM: "true"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # Supabase Realtime - WebSocket server for real-time subscriptions
+  realtime:
+    image: supabase/realtime:v2.68.0
+    container_name: realtime.haex-sync
+    hostname: realtime.haex-sync
+    restart: unless-stopped
+    environment:
+      PORT: 4000
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: supabase_admin
+      DB_PASSWORD: postgres
+      DB_NAME: postgres
+      DB_AFTER_CONNECT_QUERY: "SET search_path TO _realtime"
+      DB_ENC_KEY: supabaseenckey16
+      API_JWT_SECRET: super-secret-jwt-token-with-at-least-32-characters-long
+      SECRET_KEY_BASE: UpNVntn3cDxHJpq99YMc1T1AQgQpc8kfYTuRgBiYa15BLrx8etQoXz3gZv1/u2oq
+      ERL_AFLAGS: -proto_dist inet_tcp
+      DNS_NODES: "''"
+      RLIMIT_NOFILE: "10000"
+      APP_NAME: realtime
+      SEED_SELF_HOST: "true"
+      SELF_HOST_TENANT_NAME: realtime
+      RLS_POLL_INTERVAL: "60"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # Kong API Gateway
+  kong:
+    image: kong:2.8.1
+    container_name: haex-sync-kong
+    restart: unless-stopped
+    ports:
+      - "${KONG_HTTP_PORT:-8000}:8000"
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /home/kong/kong.yml
+      KONG_DNS_ORDER: LAST,A,CNAME
+      KONG_PLUGINS: request-transformer,cors,key-auth,acl,basic-auth
+      KONG_NGINX_PROXY_PROXY_BUFFER_SIZE: 160k
+      KONG_NGINX_PROXY_PROXY_BUFFERS: 64 160k
+    volumes:
+      - ./config/kong.yml:/home/kong/kong.yml:ro
+    depends_on:
+      auth:
+        condition: service_started
+      realtime:
+        condition: service_started
+
+  # pg_meta - PostgreSQL metadata API (required by Studio)
+  meta:
+    image: supabase/postgres-meta:v0.93.1
+    container_name: haex-sync-meta
+    restart: unless-stopped
+    environment:
+      PG_META_PORT: 8080
+      PG_META_DB_HOST: db
+      PG_META_DB_PORT: 5432
+      PG_META_DB_NAME: postgres
+      PG_META_DB_USER: postgres
+      PG_META_DB_PASSWORD: postgres
+    depends_on:
+      db:
+        condition: service_healthy
+
   # Supabase Studio - Database Management UI
   studio:
     image: supabase/studio:2025.10.27-sha-85b84e0
@@ -50,39 +150,6 @@ services:
       meta:
         condition: service_started
 
-  # pg_meta - PostgreSQL metadata API (required by Studio)
-  meta:
-    image: supabase/postgres-meta:v0.93.1
-    container_name: haex-sync-meta
-    restart: unless-stopped
-    environment:
-      PG_META_PORT: 8080
-      PG_META_DB_HOST: db
-      PG_META_DB_PORT: 5432
-      PG_META_DB_NAME: postgres
-      PG_META_DB_USER: postgres
-      PG_META_DB_PASSWORD: postgres
-    depends_on:
-      db:
-        condition: service_healthy
-
-  # Kong API Gateway (optional, but required for Studio)
-  kong:
-    image: kong:2.8.1
-    container_name: haex-sync-kong
-    restart: unless-stopped
-    ports:
-      - "${KONG_HTTP_PORT:-8000}:8000"
-    environment:
-      KONG_DATABASE: "off"
-      KONG_DECLARATIVE_CONFIG: /home/kong/kong.yml
-      KONG_DNS_ORDER: LAST,A,CNAME
-      KONG_PLUGINS: request-transformer,cors,key-auth,acl,basic-auth
-      KONG_NGINX_PROXY_PROXY_BUFFER_SIZE: 160k
-      KONG_NGINX_PROXY_PROXY_BUFFERS: 64 160k
-    volumes:
-      - ./config/kong.yml:/home/kong/kong.yml:ro
-
   # HaexHub Sync Server
   sync-server:
     build:
@@ -94,19 +161,29 @@ services:
       - "${SYNC_SERVER_PORT:-3002}:3002"
     environment:
       PORT: 3002
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/postgres
       SUPABASE_URL: http://kong:8000
-      SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY:-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0}
-      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImV4cCI6MTk4MzgxMjk5Nn0.EGIM96RAZx35lJzdJsyH-qQwv8Hdp7fsn3W0YpN81IU}
+      SUPABASE_PUBLIC_URL: http://localhost:${KONG_HTTP_PORT:-8000}
+      SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0
+      SUPABASE_SERVICE_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImV4cCI6MTk4MzgxMjk5Nn0.EGIM96RAZx35lJzdJsyH-qQwv8Hdp7fsn3W0YpN81IU
+      CORS_ORIGIN: "*"
     depends_on:
       db:
         condition: service_healthy
       kong:
         condition: service_started
     healthcheck:
-      test: ["CMD", "bun", "run", "-e", "fetch('http://localhost:3002').then(r => r.ok ? process.exit(0) : process.exit(1))"]
+      test:
+        [
+          "CMD",
+          "bun",
+          "run",
+          "-e",
+          "fetch('http://localhost:3002').then(r => r.ok ? process.exit(0) : process.exit(1))",
+        ]
       interval: 30s
       timeout: 3s
-      start_period: 5s
+      start_period: 10s
       retries: 3
 
 volumes:

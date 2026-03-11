@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
-import { db, vaultKeys, type NewVaultKey } from '../db'
+import { db, vaultKeys, syncChanges, type NewVaultKey } from '../db'
 import { eq, and } from 'drizzle-orm'
 import { vaultKeySchema, updateVaultNameSchema } from './sync.schemas'
 
@@ -238,6 +238,31 @@ vaultRoutes.delete('/vault/:vaultId', async (c) => {
     })
   } catch (error) {
     console.error('Delete vault error:', error)
+    return c.json({ error: 'Internal server error' }, 500)
+  }
+})
+
+/**
+ * DELETE /vaults
+ * Delete ALL vault data for the authenticated user.
+ * This removes all vault keys and sync changes but keeps the account (identity, spaces, etc.).
+ */
+vaultRoutes.delete('/vaults', async (c) => {
+  const spaceToken = c.get('spaceToken')
+  if (spaceToken) {
+    return c.json({ error: 'Space tokens can only be used for push/pull operations' }, 403)
+  }
+  const user = c.get('user')
+
+  try {
+    await db.transaction(async (tx) => {
+      await tx.delete(vaultKeys).where(eq(vaultKeys.userId, user.userId))
+      await tx.delete(syncChanges).where(eq(syncChanges.userId, user.userId))
+    })
+
+    return c.json({ message: 'All vault data deleted successfully' })
+  } catch (error) {
+    console.error('Delete all vaults error:', error)
     return c.json({ error: 'Internal server error' }, 500)
   }
 })

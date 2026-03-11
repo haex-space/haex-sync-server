@@ -1,4 +1,4 @@
-import { randomBytes } from 'crypto'
+import { randomBytes, createHash } from 'crypto'
 import { Hono } from 'hono'
 import { eq, and, lt, isNull } from 'drizzle-orm'
 import { importUserPublicKeyAsync, verifyClaimPresentationAsync } from '@haex-space/vault-sdk'
@@ -14,9 +14,38 @@ const app = new Hono()
 
 const PRESENTATION_MAX_AGE_MS = 5 * 60 * 1000 // 5 minutes
 const CHALLENGE_TTL_MS = 60 * 1000 // 60 seconds
+const VERIFICATION_CODE_TTL_MS = 10 * 60 * 1000 // 10 minutes
 
 function generateRandomPassword(): string {
   return randomBytes(32).toString('hex')
+}
+
+function generateVerificationCode(): string {
+  const num = parseInt(randomBytes(4).toString('hex'), 16) % 1_000_000
+  return num.toString().padStart(6, '0')
+}
+
+function hashVerificationCode(code: string): string {
+  return createHash('sha256').update(code).digest('hex')
+}
+
+async function storeAndLogVerificationCode(did: string, email: string): Promise<void> {
+  const code = generateVerificationCode()
+  const codeHash = hashVerificationCode(code)
+  const expiresAt = new Date(Date.now() + VERIFICATION_CODE_TTL_MS)
+
+  await db.update(identities)
+    .set({
+      verificationCode: codeHash,
+      verificationCodeExpiresAt: expiresAt,
+      updatedAt: new Date(),
+    })
+    .where(eq(identities.did, did))
+
+  // In dev mode, log the code to console
+  console.log(`[VERIFICATION] Code for ${email} (DID ${did.slice(0, 30)}...): ${code}`)
+
+  // TODO: In prod, send via email (GoTrue/Supabase email templates)
 }
 
 // ── Routes ───────────────────────────────────────────────────────────
@@ -73,17 +102,31 @@ app.post('/register', async (c) => {
       return c.json({ error: 'Email claim is required' }, 400)
     }
 
-    // Check if DID or email already registered
-    const existingByDid = await db.select({ id: identities.id })
+    // Check if DID already registered
+    const [existingByDid] = await db.select({
+      id: identities.id,
+      did: identities.did,
+      email: identities.email,
+      emailVerified: identities.emailVerified,
+    })
       .from(identities)
       .where(eq(identities.did, presentation.did))
       .limit(1)
 
-    if (existingByDid.length > 0) {
-      return c.json({ error: 'DID already registered' }, 409)
+    if (existingByDid) {
+      if (existingByDid.emailVerified) {
+        return c.json({ error: 'DID already registered', did: existingByDid.did }, 409)
+      }
+      // Not verified yet — resend verification code
+      await storeAndLogVerificationCode(existingByDid.did, existingByDid.email!)
+      return c.json({
+        identityId: existingByDid.id,
+        did: existingByDid.did,
+        status: 'verification_pending',
+      }, 200)
     }
 
-    const existingByEmail = await db.select({ id: identities.id })
+    const existingByEmail = await db.select({ id: identities.id, emailVerified: identities.emailVerified })
       .from(identities)
       .where(eq(identities.email, email))
       .limit(1)
@@ -116,19 +159,12 @@ app.post('/register', async (c) => {
       privateKeySalt: body.privateKeySalt,
     }).returning({ id: identities.id })
 
-    // Send verification email via magiclink (doesn't overwrite shadow user password)
-    const { error: linkError } = await supabaseAdmin.auth.admin.generateLink({
-      type: 'magiclink',
-      email,
-    })
-
-    if (linkError) {
-      console.error('Failed to send verification email:', linkError.message)
-      // Don't fail registration, email can be resent
-    }
+    // Generate and store verification code
+    await storeAndLogVerificationCode(presentation.did, email)
 
     return c.json({
       identityId: identity!.id,
+      did: presentation.did,
       status: 'verification_pending',
     }, 201)
   } catch (error) {
@@ -139,29 +175,58 @@ app.post('/register', async (c) => {
 
 /**
  * POST /identity-auth/verify-email
- * Verify email using the OTP token from the verification email.
+ * Verify email using a 6-digit OTP code.
  */
 app.post('/verify-email', async (c) => {
   try {
-    const { token } = await c.req.json<{ token: string }>()
+    const { did, code } = await c.req.json<{ did: string; code: string }>()
 
-    if (!token) {
-      return c.json({ error: 'Token is required' }, 400)
+    if (!did || !code) {
+      return c.json({ error: 'did and code are required' }, 400)
     }
 
-    const { data, error } = await supabaseAdmin.auth.verifyOtp({
-      token_hash: token,
-      type: 'email',
-    })
+    const [identity] = await db.select()
+      .from(identities)
+      .where(eq(identities.did, did))
+      .limit(1)
 
-    if (error || !data.user) {
-      return c.json({ error: 'Invalid or expired token' }, 400)
+    if (!identity) {
+      return c.json({ error: 'Identity not found' }, 404)
     }
 
-    // Mark identity as verified
+    if (identity.emailVerified) {
+      return c.json({ status: 'already_verified' })
+    }
+
+    if (!identity.verificationCode || !identity.verificationCodeExpiresAt) {
+      return c.json({ error: 'No verification code pending' }, 400)
+    }
+
+    if (new Date() > identity.verificationCodeExpiresAt) {
+      return c.json({ error: 'Verification code expired' }, 400)
+    }
+
+    const codeHash = hashVerificationCode(code)
+    if (codeHash !== identity.verificationCode) {
+      return c.json({ error: 'Invalid verification code' }, 400)
+    }
+
+    // Mark as verified, clear the code
     await db.update(identities)
-      .set({ emailVerified: true, updatedAt: new Date() })
-      .where(eq(identities.supabaseUserId, data.user.id))
+      .set({
+        emailVerified: true,
+        verificationCode: null,
+        verificationCodeExpiresAt: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(identities.id, identity.id))
+
+    // Also confirm the Supabase shadow user's email
+    if (identity.supabaseUserId) {
+      await supabaseAdmin.auth.admin.updateUserById(identity.supabaseUserId, {
+        email_confirm: true,
+      })
+    }
 
     return c.json({ status: 'verified' })
   } catch (error) {
@@ -172,7 +237,7 @@ app.post('/verify-email', async (c) => {
 
 /**
  * POST /identity-auth/resend-verification
- * Resend the verification email for a DID.
+ * Resend the verification code for a DID.
  */
 app.post('/resend-verification', async (c) => {
   try {
@@ -195,15 +260,7 @@ app.post('/resend-verification', async (c) => {
       return c.json({ error: 'Email already verified' }, 400)
     }
 
-    const { error } = await supabaseAdmin.auth.admin.generateLink({
-      type: 'magiclink',
-      email: identity.email,
-    })
-
-    if (error) {
-      console.error('Failed to resend verification email:', error.message)
-      return c.json({ error: 'Failed to send verification email' }, 500)
-    }
+    await storeAndLogVerificationCode(did, identity.email)
 
     return c.json({ status: 'verification_sent' })
   } catch (error) {

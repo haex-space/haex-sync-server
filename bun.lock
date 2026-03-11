@@ -4,7 +4,7 @@
     "": {
       "name": "haex-sync-server",
       "dependencies": {
-        "@haex-space/vault-sdk": "2.5.108",
+        "@haex-space/vault-sdk": "^2.5.119",
         "@hono/zod-validator": "^0.7.4",
         "@supabase/supabase-js": "^2.79.0",
         "drizzle-orm": "^0.45.1",
@@ -81,7 +81,7 @@
 
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.25.12", "", { "os": "win32", "cpu": "x64" }, "sha512-alJC0uCZpTFrSL0CCDjcgleBXPnCrEAhTBILpeAp7M/OFgoqtAetfBzX0xM00MUsVVPpVjlPuMbREqnZCXaTnA=="],
 
-    "@haex-space/vault-sdk": ["@haex-space/vault-sdk@2.5.108", "", { "dependencies": { "archiver": "^7.0.1", "commander": "^14.0.3", "drizzle-orm": "^0.45.1", "jszip": "^3.10.1" }, "peerDependencies": { "@nuxt/kit": "^3.0.0 || ^4.0.0", "react": "^18.0.0 || ^19.0.0", "svelte": "^4.0.0 || ^5.0.0", "vite": "^5.0.0 || ^6.0.0 || ^7.0.0", "vue": "^3.0.0" }, "optionalPeers": ["@nuxt/kit", "react", "svelte", "vite", "vue"], "bin": { "haex": "dist/cli/index.js" } }, "sha512-TthlUVaktB5NiLQefFrrg9MsBdOAauDdenKJAjMA7txjGt8y4g2Sp69xwhh3hNYaqf9I6zdKIvpDqJYriFATMg=="],
+    "@haex-space/vault-sdk": ["@haex-space/vault-sdk@2.5.119", "", { "dependencies": { "archiver": "^7.0.1", "commander": "^14.0.3", "drizzle-orm": "^0.45.1", "jszip": "^3.10.1" }, "peerDependencies": { "@nuxt/kit": "^3.0.0 || ^4.0.0", "react": "^18.0.0 || ^19.0.0", "svelte": "^4.0.0 || ^5.0.0", "vite": "^5.0.0 || ^6.0.0 || ^7.0.0", "vue": "^3.0.0" }, "optionalPeers": ["@nuxt/kit", "react", "svelte", "vite", "vue"], "bin": { "haex": "dist/cli/index.js" } }, "sha512-nMIxZ4B20jb8fga30PtLCkhUaiba/ZEM4WreouA4HESsfldsGnewAqEGyr9qk5md4br1VioemkKD4oUjVwDyfQ=="],
 
     "@hono/zod-validator": ["@hono/zod-validator@0.7.4", "", { "peerDependencies": { "hono": ">=3.9.0", "zod": "^3.25.0 || ^4.0.0" } }, "sha512-biKGn3BRJVaftZlIPMyK+HCe/UHAjJ6sH0UyXe3+v0OcgVr9xfImDROTJFLtn9e3XEEAHGZIM9U6evu85abm8Q=="],
 

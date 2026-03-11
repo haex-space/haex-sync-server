@@ -1,6 +1,6 @@
 import { db } from '../db'
-import { identities, spaceMembers, syncChanges, tiers } from '../db/schema'
-import { eq, and, sql } from 'drizzle-orm'
+import { identities, syncChanges, tiers } from '../db/schema'
+import { eq, sql } from 'drizzle-orm'
 
 export interface QuotaInfo {
   tier: string
@@ -11,8 +11,8 @@ export interface QuotaInfo {
 }
 
 /**
- * Calculate storage usage for a user across all spaces they admin.
- * Only space admins carry the quota burden.
+ * Calculate storage usage for a user.
+ * Counts all sync_changes owned by this user (personal vault data + admin spaces).
  */
 export async function getUserQuotaAsync(supabaseUserId: string): Promise<QuotaInfo> {
   // 1. Get user's identity and tier
@@ -33,25 +33,12 @@ export async function getUserQuotaAsync(supabaseUserId: string): Promise<QuotaIn
 
   const maxBytes = tier ? parseInt(tier.maxStorageBytes) : 0
 
-  // 3. Find all spaces where user is admin
-  const adminSpaces = await db.select({ spaceId: spaceMembers.spaceId })
-    .from(spaceMembers)
-    .where(and(
-      eq(spaceMembers.publicKey, identity.publicKey),
-      eq(spaceMembers.role, 'admin'),
-    ))
-
-  if (adminSpaces.length === 0) {
-    return { tier: identity.tier, maxBytes, usedBytes: 0, remainingBytes: maxBytes, isOverQuota: false }
-  }
-
-  // 4. Sum storage across all admin spaces (vaultId = spaceId for spaces)
-  const spaceIds = adminSpaces.map(s => s.spaceId)
+  // 3. Sum all storage owned by this user (personal vaults + space data they pushed)
   const [result] = await db.select({
     totalBytes: sql<string>`COALESCE(SUM(LENGTH(${syncChanges.encryptedValue})), 0)`,
   })
     .from(syncChanges)
-    .where(sql`${syncChanges.vaultId} IN ${spaceIds}`)
+    .where(eq(syncChanges.userId, supabaseUserId))
 
   const usedBytes = parseInt(result?.totalBytes ?? '0')
 

@@ -31,7 +31,7 @@ app.get('/', (c) => {
     version: packageJson.version,
     status: 'ok',
     env: process.env.NODE_ENV || 'development',
-    supabaseUrl: process.env.SUPABASE_URL || 'not configured',
+    supabaseUrl: process.env.SUPABASE_PUBLIC_URL || process.env.SUPABASE_URL || 'not configured',
     supabaseAnonKey: process.env.SUPABASE_ANON_KEY || 'not configured',
   })
 })
