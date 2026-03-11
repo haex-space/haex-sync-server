@@ -4,7 +4,7 @@ import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { db, spaces, spaceMembers, spaceKeyGrants, spaceAccessTokens, identities } from '../db'
 import { authMiddleware } from '../middleware/auth'
-import { eq, and, count } from 'drizzle-orm'
+import { eq, and } from 'drizzle-orm'
 
 const spacesRouter = new Hono()
 
@@ -30,7 +30,6 @@ async function resolveCallerPublicKey(userId: string): Promise<string | null> {
 async function getCallerMembership(spaceId: string, publicKey: string) {
   const result = await db.select({
     role: spaceMembers.role,
-    canInvite: spaceMembers.canInvite,
   })
     .from(spaceMembers)
     .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.publicKey, publicKey)))
@@ -74,7 +73,6 @@ spacesRouter.post('/', zValidator('json', createSpaceSchema), async (c) => {
         publicKey: callerPublicKey,
         label: body.label,
         role: 'admin',
-        canInvite: true,
         invitedBy: null,
       })
 
@@ -115,7 +113,6 @@ spacesRouter.get('/', async (c) => {
       createdAt: spaces.createdAt,
       updatedAt: spaces.updatedAt,
       role: spaceMembers.role,
-      canInvite: spaceMembers.canInvite,
       joinedAt: spaceMembers.joinedAt,
     })
       .from(spaceMembers)
@@ -162,7 +159,6 @@ spacesRouter.get('/:spaceId', async (c) => {
       publicKey: spaceMembers.publicKey,
       label: spaceMembers.label,
       role: spaceMembers.role,
-      canInvite: spaceMembers.canInvite,
       invitedBy: spaceMembers.invitedBy,
       joinedAt: spaceMembers.joinedAt,
     })
@@ -212,8 +208,7 @@ spacesRouter.delete('/:spaceId', async (c) => {
 const inviteMemberSchema = z.object({
   publicKey: z.string().min(1),
   label: z.string().min(1),
-  role: z.enum(['owner', 'member', 'reader']), // Admin role is never assigned via invite
-  canInvite: z.boolean().default(false),
+  role: z.enum(['owner', 'member', 'reader']),
   keyGrant: z.object({
     encryptedSpaceKey: z.string(),
     keyNonce: z.string(),
@@ -241,7 +236,6 @@ spacesRouter.post('/:spaceId/members', zValidator('json', inviteMemberSchema), a
       // Check caller has invite permission
       const callerResult = await tx.select({
         role: spaceMembers.role,
-        canInvite: spaceMembers.canInvite,
       })
         .from(spaceMembers)
         .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.publicKey, callerPublicKey)))
@@ -256,7 +250,7 @@ spacesRouter.post('/:spaceId/members', zValidator('json', inviteMemberSchema), a
       const isAdmin = callerRole === 'admin'
       const isOwner = callerRole === 'owner'
 
-      // Check invite permission: admin always can, owner can invite member/reader
+      // Only admin and owner can invite
       if (!isAdmin && !isOwner) {
         return { error: 'You do not have permission to invite members', status: 403 as const }
       }
@@ -264,11 +258,6 @@ spacesRouter.post('/:spaceId/members', zValidator('json', inviteMemberSchema), a
       // Owner can only invite member or reader, not other owners
       if (isOwner && body.role === 'owner') {
         return { error: 'Owners cannot invite other owners', status: 403 as const }
-      }
-
-      // Only admin can grant canInvite permission
-      if (body.canInvite && !isAdmin) {
-        return { error: 'Only the admin can grant invite permissions', status: 403 as const }
       }
 
       // Validate key generation
@@ -300,7 +289,6 @@ spacesRouter.post('/:spaceId/members', zValidator('json', inviteMemberSchema), a
         publicKey: body.publicKey,
         label: body.label,
         role: body.role,
-        canInvite: body.canInvite,
         invitedBy: callerPublicKey,
       })
 
@@ -626,7 +614,7 @@ spacesRouter.post('/:spaceId/transfer-admin', zValidator('json', transferAdminSc
 
       // Promote target to admin
       await tx.update(spaceMembers)
-        .set({ role: 'admin', canInvite: true })
+        .set({ role: 'admin' })
         .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.publicKey, body.targetPublicKey)))
 
       // Demote caller to owner

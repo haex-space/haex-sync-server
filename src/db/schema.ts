@@ -205,7 +205,6 @@ export const spaceMembers = pgTable(
     publicKey: text("public_key").notNull(), // ECDSA P-256 public key (Base64 SPKI)
     label: text("label").notNull(), // Human-readable name assigned by the inviter
     role: text("role").notNull(), // 'admin' | 'owner' | 'member' | 'reader'
-    canInvite: boolean("can_invite").notNull().default(false), // Whether this member can invite others (admin/owner always can)
     invitedBy: text("invited_by"), // Public key of the inviter (null for space creator)
     joinedAt: timestamp("joined_at", { withTimezone: true }).notNull().defaultNow(),
   },
