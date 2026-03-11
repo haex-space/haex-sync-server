@@ -108,16 +108,47 @@ app.post('/register', async (c) => {
       did: identities.did,
       email: identities.email,
       emailVerified: identities.emailVerified,
+      supabaseUserId: identities.supabaseUserId,
     })
       .from(identities)
       .where(eq(identities.did, presentation.did))
       .limit(1)
 
     if (existingByDid) {
+      const emailChanged = existingByDid.email !== email
+
+      if (emailChanged) {
+        // Email changed — update and require re-verification
+        await db.update(identities)
+          .set({
+            email,
+            emailVerified: false,
+            updatedAt: new Date(),
+          })
+          .where(eq(identities.did, presentation.did))
+
+        // Update Supabase shadow user email if we have one
+        if (existingByDid.supabaseUserId) {
+          await supabaseAdmin.auth.admin.updateUserById(existingByDid.supabaseUserId, {
+            email,
+            email_confirm: false,
+          })
+        }
+
+        await storeAndLogVerificationCode(existingByDid.did, email)
+        return c.json({
+          identityId: existingByDid.id,
+          did: existingByDid.did,
+          status: 'verification_pending',
+        }, 200)
+      }
+
       if (existingByDid.emailVerified) {
+        // Same email, already verified — proceed to login
         return c.json({ error: 'DID already registered', did: existingByDid.did }, 409)
       }
-      // Not verified yet — resend verification code
+
+      // Same email, not verified yet — resend verification code
       await storeAndLogVerificationCode(existingByDid.did, existingByDid.email!)
       return c.json({
         identityId: existingByDid.id,
@@ -126,16 +157,19 @@ app.post('/register', async (c) => {
       }, 200)
     }
 
-    const existingByEmail = await db.select({ id: identities.id, emailVerified: identities.emailVerified })
+    // Check if email is used by a different DID
+    const existingByEmail = await db.select({ id: identities.id })
       .from(identities)
       .where(eq(identities.email, email))
       .limit(1)
 
     if (existingByEmail.length > 0) {
-      return c.json({ error: 'Email already registered' }, 409)
+      return c.json({ error: 'Email already registered by another identity' }, 409)
     }
 
     // Create Supabase shadow user (random password, unconfirmed email)
+    let supabaseUserId: string
+
     const { data: userData, error: createError } = await supabaseAdmin.auth.admin.createUser({
       email,
       password: generateRandomPassword(),
@@ -143,15 +177,32 @@ app.post('/register', async (c) => {
     })
 
     if (createError || !userData.user) {
-      console.error('Failed to create shadow user:', createError?.message)
-      return c.json({ error: 'Failed to create user' }, 500)
+      // User may already exist in Supabase auth (orphaned after identity cleanup)
+      if (createError?.status === 422 || createError?.message?.includes('already been registered')) {
+        const { data: linkData } = await supabaseAdmin.auth.admin.generateLink({
+          type: 'magiclink',
+          email,
+        })
+        if (linkData?.user?.id) {
+          console.log(`[REGISTER] Reusing existing Supabase user for ${email}`)
+          supabaseUserId = linkData.user.id
+        } else {
+          console.error('Failed to create or find shadow user:', createError?.message)
+          return c.json({ error: 'Failed to create user' }, 500)
+        }
+      } else {
+        console.error('Failed to create shadow user:', createError?.message)
+        return c.json({ error: 'Failed to create user' }, 500)
+      }
+    } else {
+      supabaseUserId = userData.user.id
     }
 
     // Store identity mapping
     const [identity] = await db.insert(identities).values({
       did: presentation.did,
       publicKey: presentation.publicKey,
-      supabaseUserId: userData.user.id,
+      supabaseUserId,
       email,
       emailVerified: false,
       encryptedPrivateKey: body.encryptedPrivateKey,

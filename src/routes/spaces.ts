@@ -126,6 +126,36 @@ spacesRouter.get('/', async (c) => {
   }
 })
 
+// DELETE /my-admin-spaces – Delete all spaces where the caller is admin
+spacesRouter.delete('/my-admin-spaces', async (c) => {
+  const user = c.get('user')
+
+  try {
+    const callerPublicKey = await resolveCallerPublicKey(user.userId)
+    if (!callerPublicKey) {
+      return c.json({ error: 'No keypair registered' }, 400)
+    }
+
+    // Find all spaces where user is admin
+    const adminMemberships = await db.select({
+      spaceId: spaceMembers.spaceId,
+    })
+      .from(spaceMembers)
+      .where(and(eq(spaceMembers.publicKey, callerPublicKey), eq(spaceMembers.role, 'admin')))
+
+    const deletedSpaceIds: string[] = []
+    for (const membership of adminMemberships) {
+      await db.delete(spaces).where(eq(spaces.id, membership.spaceId))
+      deletedSpaceIds.push(membership.spaceId)
+    }
+
+    return c.json({ success: true, deletedSpaces: deletedSpaceIds.length })
+  } catch (error) {
+    console.error('Delete my admin spaces error:', error)
+    return c.json({ error: 'Internal server error' }, 500)
+  }
+})
+
 // GET /:spaceId – Get space details
 spacesRouter.get('/:spaceId', async (c) => {
   const spaceId = c.req.param('spaceId')
