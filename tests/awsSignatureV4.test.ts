@@ -277,8 +277,8 @@ describe('AWS Signature v4 Verification', () => {
       test('should reject modified signature byte (timing-safe comparison)', () => {
         const { authHeader, headers } = createSignedRequest(testAccessKeyId, testSecretKey)
 
-        // Modify one character in the signature
-        const tamperedAuth = authHeader.replace(/Signature=([a-f0-9])/, 'Signature=0')
+        // Modify one character in the signature (flip first hex char)
+        const tamperedAuth = authHeader.replace(/Signature=([a-f0-9])/, (_, c) => `Signature=${c === 'a' ? 'b' : 'a'}`)
 
         const isValid = verifySignature(tamperedAuth, headers, 'GET', '/', '', testSecretKey)
         expect(isValid).toBe(false)
