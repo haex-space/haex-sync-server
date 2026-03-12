@@ -162,6 +162,20 @@
       "when": 1773657600000,
       "tag": "0022_add_email_unique_constraint",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1773744000000,
+      "tag": "0023_remove_can_invite_from_space_members",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1773830400000,
+      "tag": "0024_remove_custom_verification_columns",
+      "breakpoints": true
     }
   ]
 }
