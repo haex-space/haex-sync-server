@@ -293,13 +293,10 @@ export const identities = pgTable('identities', {
   supabaseUserId: uuid('supabase_user_id')
     .references(() => authUsers.id, { onDelete: 'cascade' }),
   email: text('email').unique(),
-  emailVerified: boolean('email_verified').notNull().default(false),
   tier: text('tier').notNull().default('free'),
   encryptedPrivateKey: text('encrypted_private_key'),
   privateKeyNonce: text('private_key_nonce'),
   privateKeySalt: text('private_key_salt'),
-  verificationCode: text('verification_code'), // SHA-256 hash of 6-digit OTP
-  verificationCodeExpiresAt: timestamp('verification_code_expires_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })

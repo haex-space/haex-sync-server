@@ -1,8 +1,9 @@
-import { randomBytes, createHash } from 'crypto'
+import { randomBytes } from 'crypto'
 import { Hono } from 'hono'
 import { eq, and, lt, isNull } from 'drizzle-orm'
 import { importUserPublicKeyAsync, verifyClaimPresentationAsync } from '@haex-space/vault-sdk'
 import type { SignedClaimPresentation } from '@haex-space/vault-sdk'
+import { isEmailVerifiedAsync, sendOtpAsync, verifyOtpAsync } from '../utils/emailVerification'
 import { supabaseAdmin } from '../utils/supabase'
 import { db, identities, authChallenges } from '../db'
 import { authMiddleware } from '../middleware/auth'
@@ -14,38 +15,9 @@ const app = new Hono()
 
 const PRESENTATION_MAX_AGE_MS = 5 * 60 * 1000 // 5 minutes
 const CHALLENGE_TTL_MS = 60 * 1000 // 60 seconds
-const VERIFICATION_CODE_TTL_MS = 10 * 60 * 1000 // 10 minutes
 
 function generateRandomPassword(): string {
   return randomBytes(32).toString('hex')
-}
-
-function generateVerificationCode(): string {
-  const num = parseInt(randomBytes(4).toString('hex'), 16) % 1_000_000
-  return num.toString().padStart(6, '0')
-}
-
-function hashVerificationCode(code: string): string {
-  return createHash('sha256').update(code).digest('hex')
-}
-
-async function storeAndLogVerificationCode(did: string, email: string): Promise<void> {
-  const code = generateVerificationCode()
-  const codeHash = hashVerificationCode(code)
-  const expiresAt = new Date(Date.now() + VERIFICATION_CODE_TTL_MS)
-
-  await db.update(identities)
-    .set({
-      verificationCode: codeHash,
-      verificationCodeExpiresAt: expiresAt,
-      updatedAt: new Date(),
-    })
-    .where(eq(identities.did, did))
-
-  // In dev mode, log the code to console
-  console.log(`[VERIFICATION] Code for ${email} (DID ${did.slice(0, 30)}...): ${code}`)
-
-  // TODO: In prod, send via email (GoTrue/Supabase email templates)
 }
 
 // ── Routes ───────────────────────────────────────────────────────────
@@ -107,7 +79,6 @@ app.post('/register', async (c) => {
       id: identities.id,
       did: identities.did,
       email: identities.email,
-      emailVerified: identities.emailVerified,
       supabaseUserId: identities.supabaseUserId,
     })
       .from(identities)
@@ -122,7 +93,6 @@ app.post('/register', async (c) => {
         await db.update(identities)
           .set({
             email,
-            emailVerified: false,
             updatedAt: new Date(),
           })
           .where(eq(identities.did, presentation.did))
@@ -135,7 +105,7 @@ app.post('/register', async (c) => {
           })
         }
 
-        await storeAndLogVerificationCode(existingByDid.did, email)
+        await sendOtpAsync(email)
         return c.json({
           identityId: existingByDid.id,
           did: existingByDid.did,
@@ -143,13 +113,13 @@ app.post('/register', async (c) => {
         }, 200)
       }
 
-      if (existingByDid.emailVerified) {
+      if (existingByDid.supabaseUserId && await isEmailVerifiedAsync(existingByDid.supabaseUserId)) {
         // Same email, already verified — proceed to login
         return c.json({ error: 'DID already registered', did: existingByDid.did }, 409)
       }
 
       // Same email, not verified yet — resend verification code
-      await storeAndLogVerificationCode(existingByDid.did, existingByDid.email!)
+      await sendOtpAsync(existingByDid.email!)
       return c.json({
         identityId: existingByDid.id,
         did: existingByDid.did,
@@ -204,14 +174,13 @@ app.post('/register', async (c) => {
       publicKey: presentation.publicKey,
       supabaseUserId,
       email,
-      emailVerified: false,
       encryptedPrivateKey: body.encryptedPrivateKey,
       privateKeyNonce: body.privateKeyNonce,
       privateKeySalt: body.privateKeySalt,
     }).returning({ id: identities.id })
 
-    // Generate and store verification code
-    await storeAndLogVerificationCode(presentation.did, email)
+    // Send OTP via GoTrue
+    await sendOtpAsync(email)
 
     return c.json({
       identityId: identity!.id,
@@ -236,47 +205,26 @@ app.post('/verify-email', async (c) => {
       return c.json({ error: 'did and code are required' }, 400)
     }
 
-    const [identity] = await db.select()
+    const [identity] = await db.select({
+      id: identities.id,
+      email: identities.email,
+      supabaseUserId: identities.supabaseUserId,
+    })
       .from(identities)
       .where(eq(identities.did, did))
       .limit(1)
 
-    if (!identity) {
+    if (!identity || !identity.email) {
       return c.json({ error: 'Identity not found' }, 404)
     }
 
-    if (identity.emailVerified) {
+    if (identity.supabaseUserId && await isEmailVerifiedAsync(identity.supabaseUserId)) {
       return c.json({ status: 'already_verified' })
     }
 
-    if (!identity.verificationCode || !identity.verificationCodeExpiresAt) {
-      return c.json({ error: 'No verification code pending' }, 400)
-    }
-
-    if (new Date() > identity.verificationCodeExpiresAt) {
-      return c.json({ error: 'Verification code expired' }, 400)
-    }
-
-    const codeHash = hashVerificationCode(code)
-    if (codeHash !== identity.verificationCode) {
-      return c.json({ error: 'Invalid verification code' }, 400)
-    }
-
-    // Mark as verified, clear the code
-    await db.update(identities)
-      .set({
-        emailVerified: true,
-        verificationCode: null,
-        verificationCodeExpiresAt: null,
-        updatedAt: new Date(),
-      })
-      .where(eq(identities.id, identity.id))
-
-    // Also confirm the Supabase shadow user's email
-    if (identity.supabaseUserId) {
-      await supabaseAdmin.auth.admin.updateUserById(identity.supabaseUserId, {
-        email_confirm: true,
-      })
+    const session = await verifyOtpAsync(identity.email, code)
+    if (!session) {
+      return c.json({ error: 'Invalid or expired verification code' }, 400)
     }
 
     return c.json({ status: 'verified' })
@@ -298,7 +246,10 @@ app.post('/resend-verification', async (c) => {
       return c.json({ error: 'DID is required' }, 400)
     }
 
-    const [identity] = await db.select()
+    const [identity] = await db.select({
+      email: identities.email,
+      supabaseUserId: identities.supabaseUserId,
+    })
       .from(identities)
       .where(eq(identities.did, did))
       .limit(1)
@@ -307,11 +258,11 @@ app.post('/resend-verification', async (c) => {
       return c.json({ error: 'Identity not found' }, 404)
     }
 
-    if (identity.emailVerified) {
+    if (identity.supabaseUserId && await isEmailVerifiedAsync(identity.supabaseUserId)) {
       return c.json({ error: 'Email already verified' }, 400)
     }
 
-    await storeAndLogVerificationCode(did, identity.email)
+    await sendOtpAsync(identity.email)
 
     return c.json({ status: 'verification_sent' })
   } catch (error) {
@@ -333,7 +284,10 @@ app.post('/challenge', async (c) => {
     }
 
     // Check identity exists and is verified
-    const [identity] = await db.select({ id: identities.id, emailVerified: identities.emailVerified })
+    const [identity] = await db.select({
+      id: identities.id,
+      supabaseUserId: identities.supabaseUserId,
+    })
       .from(identities)
       .where(eq(identities.did, did))
       .limit(1)
@@ -342,7 +296,7 @@ app.post('/challenge', async (c) => {
       return c.json({ error: 'Identity not found' }, 404)
     }
 
-    if (!identity.emailVerified) {
+    if (!identity.supabaseUserId || !await isEmailVerifiedAsync(identity.supabaseUserId)) {
       return c.json({ error: 'Email not verified' }, 403)
     }
 
@@ -530,20 +484,16 @@ app.post('/recover-request', async (c) => {
       return c.json({ error: 'Email is required' }, 400)
     }
 
-    // Look up identity by email
     const [identity] = await db.select({
       id: identities.id,
-      did: identities.did,
-      email: identities.email,
-      emailVerified: identities.emailVerified,
+      supabaseUserId: identities.supabaseUserId,
     })
       .from(identities)
       .where(eq(identities.email, email))
       .limit(1)
 
-    if (identity && identity.emailVerified) {
-      // Send OTP for recovery verification
-      await storeAndLogVerificationCode(identity.did, email)
+    if (identity?.supabaseUserId && await isEmailVerifiedAsync(identity.supabaseUserId)) {
+      await sendOtpAsync(email)
     }
 
     // Always return success to avoid revealing account existence
@@ -566,6 +516,12 @@ app.post('/recover-verify', async (c) => {
       return c.json({ error: 'email and code are required' }, 400)
     }
 
+    // Verify OTP via GoTrue
+    const otpSession = await verifyOtpAsync(email, code)
+    if (!otpSession) {
+      return c.json({ error: 'Invalid verification code' }, 400)
+    }
+
     // Look up identity by email
     const [identity] = await db.select()
       .from(identities)
@@ -576,67 +532,19 @@ app.post('/recover-verify', async (c) => {
       return c.json({ error: 'Invalid verification code' }, 400)
     }
 
-    if (!identity.verificationCode || !identity.verificationCodeExpiresAt) {
-      return c.json({ error: 'No verification code pending' }, 400)
-    }
-
-    if (new Date() > identity.verificationCodeExpiresAt) {
-      return c.json({ error: 'Verification code expired' }, 400)
-    }
-
-    const codeHash = hashVerificationCode(code)
-    if (codeHash !== identity.verificationCode) {
-      return c.json({ error: 'Invalid verification code' }, 400)
-    }
-
-    // Clear the verification code after successful use
-    await db.update(identities)
-      .set({
-        verificationCode: null,
-        verificationCodeExpiresAt: null,
-        updatedAt: new Date(),
-      })
-      .where(eq(identities.id, identity.id))
-
     // Check if recovery key data exists
     if (!identity.encryptedPrivateKey || !identity.privateKeyNonce || !identity.privateKeySalt) {
       return c.json({ error: 'No recovery key stored for this account' }, 404)
     }
 
-    // Create a session since the user proved identity via OTP
-    // This avoids the need for challenge-response login after recovery
-    let session: { access_token: string; refresh_token: string; expires_in: number; expires_at: number } | null = null
-
-    if (identity.email && identity.supabaseUserId) {
-      const { data: linkData, error: linkError } = await supabaseAdmin.auth.admin.generateLink({
-        type: 'magiclink',
-        email: identity.email,
-      })
-
-      if (!linkError && linkData.properties?.hashed_token) {
-        const { data: sessionData, error: sessionError } = await supabaseAdmin.auth.verifyOtp({
-          token_hash: linkData.properties.hashed_token,
-          type: 'magiclink',
-        })
-
-        if (!sessionError && sessionData.session) {
-          session = {
-            access_token: sessionData.session.access_token,
-            refresh_token: sessionData.session.refresh_token,
-            expires_in: sessionData.session.expires_in,
-            expires_at: sessionData.session.expires_at ?? 0,
-          }
-        }
-      }
-    }
-
+    // Use the session from OTP verification directly
     return c.json({
       did: identity.did,
       publicKey: identity.publicKey,
       encryptedPrivateKey: identity.encryptedPrivateKey,
       privateKeyNonce: identity.privateKeyNonce,
       privateKeySalt: identity.privateKeySalt,
-      session,
+      session: otpSession,
       identity: {
         id: identity.id,
         did: identity.did,
