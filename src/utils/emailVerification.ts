@@ -17,6 +17,11 @@ export async function isEmailVerifiedAsync(supabaseUserId: string): Promise<bool
 export async function sendOtpAsync(email: string): Promise<void> {
   const { error } = await supabaseAdmin.auth.signInWithOtp({ email })
   if (error) {
+    // Rate limit means an OTP was already sent recently and is still valid — not an error
+    if (error.status === 429 || error.message.includes('security purposes')) {
+      console.log(`[OTP] Rate limited for ${email} — existing OTP still valid`)
+      return
+    }
     console.error(`[OTP] Failed to send OTP to ${email}:`, error.message)
     throw new Error(`Failed to send verification code: ${error.message}`)
   }
