@@ -518,11 +518,11 @@ app.post('/update-recovery', authMiddleware, async (c) => {
 })
 
 /**
- * POST /identity-auth/recover
- * Initiate key recovery for an email.
+ * POST /identity-auth/recover-request
+ * Initiate key recovery for an email by sending an OTP code.
  * Always returns success to avoid revealing account existence.
  */
-app.post('/recover', async (c) => {
+app.post('/recover-request', async (c) => {
   try {
     const { email } = await c.req.json<{ email: string }>()
 
@@ -530,20 +530,121 @@ app.post('/recover', async (c) => {
       return c.json({ error: 'Email is required' }, 400)
     }
 
-    // Look up identity (don't reveal if it exists)
-    const [identity] = await db.select({ id: identities.id })
+    // Look up identity by email
+    const [identity] = await db.select({
+      id: identities.id,
+      did: identities.did,
+      email: identities.email,
+      emailVerified: identities.emailVerified,
+    })
       .from(identities)
       .where(eq(identities.email, email))
       .limit(1)
 
-    if (identity) {
-      // TODO: Send email with encrypted key data
-      console.log(`Recovery requested for identity ${identity.id}`)
+    if (identity && identity.emailVerified) {
+      // Send OTP for recovery verification
+      await storeAndLogVerificationCode(identity.did, email)
     }
 
-    return c.json({ status: 'recovery_sent' })
+    // Always return success to avoid revealing account existence
+    return c.json({ status: 'otp_sent' })
   } catch (error) {
-    console.error('Recover error:', error)
+    console.error('Recover request error:', error)
+    return c.json({ error: 'Internal server error' }, 500)
+  }
+})
+
+/**
+ * POST /identity-auth/recover-verify
+ * Verify OTP code and return encrypted private key data for recovery.
+ */
+app.post('/recover-verify', async (c) => {
+  try {
+    const { email, code } = await c.req.json<{ email: string; code: string }>()
+
+    if (!email || !code) {
+      return c.json({ error: 'email and code are required' }, 400)
+    }
+
+    // Look up identity by email
+    const [identity] = await db.select()
+      .from(identities)
+      .where(eq(identities.email, email))
+      .limit(1)
+
+    if (!identity) {
+      return c.json({ error: 'Invalid verification code' }, 400)
+    }
+
+    if (!identity.verificationCode || !identity.verificationCodeExpiresAt) {
+      return c.json({ error: 'No verification code pending' }, 400)
+    }
+
+    if (new Date() > identity.verificationCodeExpiresAt) {
+      return c.json({ error: 'Verification code expired' }, 400)
+    }
+
+    const codeHash = hashVerificationCode(code)
+    if (codeHash !== identity.verificationCode) {
+      return c.json({ error: 'Invalid verification code' }, 400)
+    }
+
+    // Clear the verification code after successful use
+    await db.update(identities)
+      .set({
+        verificationCode: null,
+        verificationCodeExpiresAt: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(identities.id, identity.id))
+
+    // Check if recovery key data exists
+    if (!identity.encryptedPrivateKey || !identity.privateKeyNonce || !identity.privateKeySalt) {
+      return c.json({ error: 'No recovery key stored for this account' }, 404)
+    }
+
+    // Create a session since the user proved identity via OTP
+    // This avoids the need for challenge-response login after recovery
+    let session: { access_token: string; refresh_token: string; expires_in: number; expires_at: number } | null = null
+
+    if (identity.email && identity.supabaseUserId) {
+      const { data: linkData, error: linkError } = await supabaseAdmin.auth.admin.generateLink({
+        type: 'magiclink',
+        email: identity.email,
+      })
+
+      if (!linkError && linkData.properties?.hashed_token) {
+        const { data: sessionData, error: sessionError } = await supabaseAdmin.auth.verifyOtp({
+          token_hash: linkData.properties.hashed_token,
+          type: 'magiclink',
+        })
+
+        if (!sessionError && sessionData.session) {
+          session = {
+            access_token: sessionData.session.access_token,
+            refresh_token: sessionData.session.refresh_token,
+            expires_in: sessionData.session.expires_in,
+            expires_at: sessionData.session.expires_at ?? 0,
+          }
+        }
+      }
+    }
+
+    return c.json({
+      did: identity.did,
+      publicKey: identity.publicKey,
+      encryptedPrivateKey: identity.encryptedPrivateKey,
+      privateKeyNonce: identity.privateKeyNonce,
+      privateKeySalt: identity.privateKeySalt,
+      session,
+      identity: {
+        id: identity.id,
+        did: identity.did,
+        tier: identity.tier,
+      },
+    })
+  } catch (error) {
+    console.error('Recover verify error:', error)
     return c.json({ error: 'Internal server error' }, 500)
   }
 })
