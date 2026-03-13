@@ -16,7 +16,7 @@ vaultRoutes.post('/vault-key', zValidator('json', vaultKeySchema), async (c) => 
     return c.json({ error: 'Space tokens can only be used for push/pull operations' }, 403)
   }
   const user = c.get('user')
-  const { vaultId, encryptedVaultKey, encryptedVaultName, vaultKeySalt, vaultNameSalt, vaultKeyNonce, vaultNameNonce } = c.req.valid('json')
+  const { vaultId, encryptedVaultKey, encryptedVaultName, vaultKeySalt, ephemeralPublicKey, vaultKeyNonce, vaultNameNonce } = c.req.valid('json')
 
   try {
     // Check if vault key already exists
@@ -40,7 +40,7 @@ vaultRoutes.post('/vault-key', zValidator('json', vaultKeySchema), async (c) => 
         encryptedVaultKey,
         encryptedVaultName,
         vaultKeySalt,
-        vaultNameSalt,
+        ephemeralPublicKey,
         vaultKeyNonce,
         vaultNameNonce,
       } as NewVaultKey)
@@ -87,7 +87,7 @@ vaultRoutes.get('/vaults', async (c) => {
         vaultId: vault.vaultId,
         encryptedVaultName: vault.encryptedVaultName,
         vaultNameNonce: vault.vaultNameNonce,
-        vaultNameSalt: vault.vaultNameSalt, // Salt for server password decryption
+        ephemeralPublicKey: vault.ephemeralPublicKey,
         createdAt: vault.createdAt,
       })),
     })
@@ -108,7 +108,7 @@ vaultRoutes.patch('/vault-key/:vaultId', zValidator('json', updateVaultNameSchem
   }
   const user = c.get('user')
   const vaultId = c.req.param('vaultId')
-  const { encryptedVaultName, vaultNameNonce } = c.req.valid('json')
+  const { encryptedVaultName, vaultNameNonce, ephemeralPublicKey } = c.req.valid('json')
 
   try {
     // Check if vault key exists and belongs to user
@@ -129,6 +129,7 @@ vaultRoutes.patch('/vault-key/:vaultId', zValidator('json', updateVaultNameSchem
       .set({
         encryptedVaultName,
         vaultNameNonce,
+        ephemeralPublicKey,
         updatedAt: new Date(),
       })
       .where(
@@ -177,8 +178,8 @@ vaultRoutes.get('/vault-key/:vaultId', async (c) => {
         vaultId: vaultKey.vaultId,
         encryptedVaultKey: vaultKey.encryptedVaultKey,
         encryptedVaultName: vaultKey.encryptedVaultName,
-        vaultKeySalt: vaultKey.vaultKeySalt, // Salt for vault password decryption
-        vaultNameSalt: vaultKey.vaultNameSalt, // Salt for server password decryption
+        vaultKeySalt: vaultKey.vaultKeySalt,
+        ephemeralPublicKey: vaultKey.ephemeralPublicKey,
         vaultKeyNonce: vaultKey.vaultKeyNonce,
         vaultNameNonce: vaultKey.vaultNameNonce,
         createdAt: vaultKey.createdAt,

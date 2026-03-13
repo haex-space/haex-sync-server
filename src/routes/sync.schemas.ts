@@ -13,7 +13,7 @@ export const vaultKeySchema = z.object({
   encryptedVaultKey: z.string(),
   encryptedVaultName: z.string(),
   vaultKeySalt: z.string(), // Salt for vault password -> vault key encryption
-  vaultNameSalt: z.string(), // Salt for server password -> vault name encryption
+  ephemeralPublicKey: z.string(), // ECDH ephemeral public key for vault name decryption
   vaultKeyNonce: z.string(),
   vaultNameNonce: z.string(),
 })
@@ -21,6 +21,7 @@ export const vaultKeySchema = z.object({
 export const updateVaultNameSchema = z.object({
   encryptedVaultName: z.string(),
   vaultNameNonce: z.string(),
+  ephemeralPublicKey: z.string(),
 })
 
 export const pushChangeSchema = z.object({
