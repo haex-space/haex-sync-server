@@ -14,6 +14,7 @@ const app = new Hono()
 // ── Helpers ──────────────────────────────────────────────────────────
 
 const PRESENTATION_MAX_AGE_MS = 5 * 60 * 1000 // 5 minutes
+const PRESENTATION_FUTURE_TOLERANCE_MS = 30 * 1000 // 30 seconds clock skew tolerance
 const CHALLENGE_TTL_MS = 60 * 1000 // 60 seconds
 
 function generateRandomPassword(): string {
@@ -34,6 +35,7 @@ app.get('/requirements', (c) => {
       { type: 'name', required: false, label: 'Display name' },
     ],
     didMethods: ['did:key'],
+    serverTime: new Date().toISOString(),
   })
 })
 
@@ -58,7 +60,7 @@ app.post('/register', async (c) => {
 
     // Check presentation age
     const presentationAge = Date.now() - new Date(presentation.timestamp).getTime()
-    if (presentationAge < 0 || presentationAge > PRESENTATION_MAX_AGE_MS) {
+    if (presentationAge < -PRESENTATION_FUTURE_TOLERANCE_MS || presentationAge > PRESENTATION_MAX_AGE_MS) {
       return c.json({ error: 'Presentation expired or timestamp in the future' }, 400)
     }
 
