@@ -424,7 +424,7 @@ app.post('/verify', async (c) => {
       expires_in: sessionData.session.expires_in,
       expires_at: sessionData.session.expires_at ?? 0,
       identity: {
-        id: identity.id,
+        publicKey: identity.publicKey,
         did: identity.did,
         tier: identity.tier,
       },
@@ -548,7 +548,7 @@ app.post('/recover-verify', async (c) => {
       privateKeySalt: identity.privateKeySalt,
       session: otpSession,
       identity: {
-        id: identity.id,
+        publicKey: identity.publicKey,
         did: identity.did,
         tier: identity.tier,
       },
