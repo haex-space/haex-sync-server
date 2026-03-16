@@ -205,6 +205,46 @@ spacesRouter.get('/:spaceId', async (c) => {
   }
 })
 
+// PATCH /:spaceId – Update space name (admin only)
+const updateSpaceSchema = z.object({
+  encryptedName: z.string(),
+  nameNonce: z.string(),
+})
+
+spacesRouter.patch('/:spaceId', zValidator('json', updateSpaceSchema), async (c) => {
+  const spaceId = c.req.param('spaceId')
+  const user = c.get('user')
+  const body = c.req.valid('json')
+
+  if (!isValidUuid(spaceId)) {
+    return c.json({ error: 'Invalid space ID format' }, 400)
+  }
+
+  try {
+    const callerPublicKey = await resolveCallerPublicKey(user.userId)
+    if (!callerPublicKey) {
+      return c.json({ error: 'No keypair registered' }, 400)
+    }
+
+    const membership = await getCallerMembership(spaceId, callerPublicKey)
+    if (!membership || membership.role !== 'admin') {
+      return c.json({ error: 'Only admins can update the space' }, 403)
+    }
+
+    await db.update(spaces)
+      .set({
+        encryptedName: body.encryptedName,
+        nameNonce: body.nameNonce,
+      })
+      .where(eq(spaces.id, spaceId))
+
+    return c.json({ success: true })
+  } catch (error) {
+    console.error('Update space error:', error)
+    return c.json({ error: 'Internal server error' }, 500)
+  }
+})
+
 // DELETE /:spaceId – Delete space (admin only)
 spacesRouter.delete('/:spaceId', async (c) => {
   const spaceId = c.req.param('spaceId')
