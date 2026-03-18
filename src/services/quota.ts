@@ -31,7 +31,8 @@ export async function getUserQuotaAsync(supabaseUserId: string): Promise<QuotaIn
     .where(eq(tiers.name, identity.tier))
     .limit(1)
 
-  const maxBytes = tier ? parseInt(tier.maxStorageBytes) : 0
+  // If no tier entry found, treat as unlimited (operator hasn't configured limits)
+  const maxBytes = tier ? parseInt(tier.maxStorageBytes) : Number.MAX_SAFE_INTEGER
 
   // 3. Sum all storage owned by this user (personal vaults + space data they pushed)
   const [result] = await db.select({

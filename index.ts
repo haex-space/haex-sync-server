@@ -6,6 +6,7 @@ import syncRoutes from './src/routes/sync'
 import storageRoutes from './src/routes/storage'
 import spacesRoutes from './src/routes/spaces'
 import identityAuthRoutes from './src/routes/identity-auth'
+import { syncTiersFromEnvAsync } from './src/services/tierConfig'
 import packageJson from './package.json'
 
 const app = new Hono()
@@ -70,6 +71,9 @@ const port = parseInt(process.env.PORT || '3000')
 console.log(`🚀 ${packageJson.name} v${packageJson.version} starting on port ${port}`)
 console.log(`📝 Environment: ${process.env.NODE_ENV || 'development'}`)
 console.log(`🌐 CORS Origins: ${corsOrigin}`)
+
+// Sync tier configuration from environment variables on startup
+syncTiersFromEnvAsync().catch(err => console.error('Failed to sync tiers from env:', err))
 
 export default {
   port,
