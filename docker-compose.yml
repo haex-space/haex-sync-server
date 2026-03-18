@@ -150,6 +150,17 @@ services:
       meta:
         condition: service_started
 
+  # iroh Relay Server - P2P relay for NAT traversal
+  iroh-relay:
+    image: n0computer/iroh-relay:v0.96.1
+    container_name: haex-iroh-relay
+    restart: unless-stopped
+    ports:
+      - "${RELAY_PORT:-8002}:8080"
+    volumes:
+      - ./relay/config.toml:/etc/iroh-relay/config.toml:ro
+    command: ["--config-path", "/etc/iroh-relay/config.toml"]
+
   # HaexHub Sync Server
   sync-server:
     build:
