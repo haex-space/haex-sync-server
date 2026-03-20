@@ -1,5 +1,5 @@
 import { db } from '../db'
-import { identities, syncChanges, tiers } from '../db/schema'
+import { identities, syncChanges, tiers, vaultKeys, spaces } from '../db/schema'
 import { eq, sql } from 'drizzle-orm'
 
 export interface QuotaInfo {
@@ -8,6 +8,13 @@ export interface QuotaInfo {
   usedBytes: number
   remainingBytes: number
   isOverQuota: boolean
+}
+
+export interface PartitionQuotaInfo {
+  tier: string
+  maxPartitions: number
+  usedPartitions: number
+  canCreate: boolean
 }
 
 /**
@@ -49,5 +56,48 @@ export async function getUserQuotaAsync(supabaseUserId: string): Promise<QuotaIn
     usedBytes,
     remainingBytes: Math.max(0, maxBytes - usedBytes),
     isOverQuota: usedBytes > maxBytes,
+  }
+}
+
+/**
+ * Check if a user can create a new partition (vault or space).
+ * Counts vault_keys (user's vaults) + spaces (user is owner) against tier limit.
+ */
+export async function getPartitionQuotaAsync(supabaseUserId: string): Promise<PartitionQuotaInfo> {
+  const [identity] = await db.select()
+    .from(identities)
+    .where(eq(identities.supabaseUserId, supabaseUserId))
+    .limit(1)
+
+  if (!identity) {
+    throw new Error('Identity not found')
+  }
+
+  const [tier] = await db.select()
+    .from(tiers)
+    .where(eq(tiers.name, identity.tier))
+    .limit(1)
+
+  const maxPartitions = tier?.maxSpaces ?? 3
+
+  const [vaultCount] = await db.select({
+    count: sql<number>`cast(count(*) as int)`,
+  })
+    .from(vaultKeys)
+    .where(eq(vaultKeys.userId, supabaseUserId))
+
+  const [spaceCount] = await db.select({
+    count: sql<number>`cast(count(*) as int)`,
+  })
+    .from(spaces)
+    .where(eq(spaces.ownerId, supabaseUserId))
+
+  const usedPartitions = (vaultCount?.count ?? 0) + (spaceCount?.count ?? 0)
+
+  return {
+    tier: identity.tier,
+    maxPartitions,
+    usedPartitions,
+    canCreate: usedPartitions < maxPartitions,
   }
 }

@@ -1,8 +1,9 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { db, vaultKeys, syncChanges, type NewVaultKey } from '../db'
-import { eq, and } from 'drizzle-orm'
+import { eq, and, sql } from 'drizzle-orm'
 import { vaultKeySchema, updateVaultNameSchema } from './sync.schemas'
+import { getPartitionQuotaAsync } from '../services/quota'
 
 const vaultRoutes = new Hono()
 
@@ -264,6 +265,74 @@ vaultRoutes.delete('/vaults', async (c) => {
     return c.json({ message: 'All vault data deleted successfully' })
   } catch (error) {
     console.error('Delete all vaults error:', error)
+    return c.json({ error: 'Internal server error' }, 500)
+  }
+})
+
+/**
+ * POST /partitions/create
+ * Create a new sync_changes partition with a server-generated UUID.
+ * The partition is created and committed before the response is sent,
+ * ensuring Supabase Realtime can see it when the client subscribes.
+ *
+ * Used for both vaults and spaces — each gets its own partition.
+ * Respects the user's tier limit for max partitions.
+ */
+vaultRoutes.post('/partitions/create', async (c) => {
+  const spaceToken = c.get('spaceToken')
+  if (spaceToken) {
+    return c.json({ error: 'Space tokens cannot create partitions' }, 403)
+  }
+  const user = c.get('user')
+
+  try {
+    // Check quota
+    const quota = await getPartitionQuotaAsync(user.userId)
+    if (!quota.canCreate) {
+      return c.json({
+        error: 'Partition limit reached',
+        tier: quota.tier,
+        maxPartitions: quota.maxPartitions,
+        usedPartitions: quota.usedPartitions,
+      }, 403)
+    }
+
+    const partitionId = crypto.randomUUID()
+    const partitionName = 'sync_changes_' + partitionId.replace(/-/g, '_')
+
+    // Create partition + RLS + replica identity in one statement
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS ${sql.raw(`public."${partitionName}"`)}
+        PARTITION OF public.sync_changes FOR VALUES IN (${partitionId})
+    `)
+    await db.execute(sql`
+      ALTER TABLE ${sql.raw(`public."${partitionName}"`)} ENABLE ROW LEVEL SECURITY
+    `)
+    await db.execute(sql`
+      CREATE POLICY "Users can only access their own sync changes"
+        ON ${sql.raw(`public."${partitionName}"`)} FOR SELECT
+        USING ((select auth.uid()) = user_id)
+    `)
+    await db.execute(sql`
+      CREATE POLICY "Users can only insert their own sync changes"
+        ON ${sql.raw(`public."${partitionName}"`)} FOR INSERT
+        WITH CHECK ((select auth.uid()) = user_id)
+    `)
+    await db.execute(sql`
+      ALTER TABLE ${sql.raw(`public."${partitionName}"`)} REPLICA IDENTITY FULL
+    `)
+    await db.execute(sql`
+      ALTER PUBLICATION supabase_realtime ADD TABLE ${sql.raw(`public."${partitionName}"`)}
+    `)
+
+    console.log(`[Partitions] Created ${partitionName} for user ${user.userId} (${quota.usedPartitions + 1}/${quota.maxPartitions})`)
+
+    return c.json({ partitionId }, 201)
+  } catch (error: any) {
+    if (error?.message?.includes('already exists')) {
+      return c.json({ error: 'Partition already exists' }, 409)
+    }
+    console.error('Create partition error:', error)
     return c.json({ error: 'Internal server error' }, 500)
   }
 })

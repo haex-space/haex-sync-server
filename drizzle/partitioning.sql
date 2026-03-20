@@ -207,18 +207,11 @@ BEGIN
         EXECUTE format('ALTER TABLE public.%I REPLICA IDENTITY FULL', partition_name);
 
         -- Add to supabase_realtime publication if it exists
+        -- Note: Partitions should be pre-created via the /partitions/create API endpoint
+        -- so that Realtime has time to pick them up before the first subscription.
+        -- This trigger is a fallback for partitions created via vault_keys INSERT.
         IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
             EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE public.%I', partition_name);
-
-            -- Force Realtime to re-read the publication by terminating its
-            -- replication connections. Realtime auto-reconnects and picks up
-            -- the new partition — without this, subscriptions to the new
-            -- partition fail with "mismatch between server and client bindings".
-            PERFORM pg_terminate_backend(pid)
-            FROM pg_stat_activity
-            WHERE datname = current_database()
-              AND application_name LIKE '%realtime%'
-              AND pid != pg_backend_pid();
         END IF;
 
         RAISE NOTICE 'Created partition % for new vault % (with RLS, policies, and Realtime enabled)', partition_name, NEW.vault_id;
