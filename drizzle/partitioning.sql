@@ -203,12 +203,16 @@ BEGIN
             partition_name
         );
 
-        -- Set REPLICA IDENTITY FULL for the partition (required for Realtime CDC)
+        -- Configure Realtime for the new partition
         EXECUTE format('ALTER TABLE public.%I REPLICA IDENTITY FULL', partition_name);
 
-        -- Note: No need to add partition to publication individually.
-        -- The parent table sync_changes is in the publication with publish_via_partition_root=true,
-        -- so all partition changes are automatically published under the parent table name.
+        -- Add to supabase_realtime publication if it exists
+        -- Note: Partitions should be pre-created via the /partitions/create API endpoint
+        -- so that Realtime has time to pick them up before the first subscription.
+        -- This trigger is a fallback for partitions created via vault_keys INSERT.
+        IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
+            EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE public.%I', partition_name);
+        END IF;
 
         RAISE NOTICE 'Created partition % for new vault % (with RLS, policies, and Realtime enabled)', partition_name, NEW.vault_id;
     END IF;
@@ -364,8 +368,9 @@ BEGIN
 
     EXECUTE format('ALTER TABLE public.%I REPLICA IDENTITY FULL', partition_name);
 
-    -- No need to add partition to publication individually.
-    -- publish_via_partition_root=true on the parent table handles this.
+    IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
+      EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE public.%I', partition_name);
+    END IF;
   END IF;
 
   RETURN NEW;
