@@ -321,9 +321,8 @@ vaultRoutes.post('/partitions/create', async (c) => {
     await db.execute(sql`
       ALTER TABLE ${sql.raw(`public."${partitionName}"`)} REPLICA IDENTITY FULL
     `)
-    await db.execute(sql`
-      ALTER PUBLICATION supabase_realtime ADD TABLE ${sql.raw(`public."${partitionName}"`)}
-    `)
+    // No need to add partition to publication individually.
+    // The parent table sync_changes uses publish_via_partition_root=true.
 
     console.log(`[Partitions] Created ${partitionName} for user ${user.userId} (${quota.usedPartitions + 1}/${quota.maxPartitions})`)
 
