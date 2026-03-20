@@ -414,40 +414,54 @@ CREATE TRIGGER drop_space_partition_trigger
 -- tables to ALL existing and future child partitions.
 -- ============================================================================
 
-CREATE OR REPLACE FUNCTION public.broadcast_sync_changes()
-RETURNS trigger
-SECURITY DEFINER SET search_path = ''
-AS $$
-BEGIN
-    PERFORM realtime.broadcast_changes(
-        'sync:' || COALESCE(NEW.vault_id, OLD.vault_id)::text,
-        TG_OP,
-        TG_OP,
-        TG_TABLE_NAME,
-        TG_TABLE_SCHEMA,
-        NEW,
-        OLD
-    );
-    RETURN NULL;
-END;
-$$ LANGUAGE plpgsql;
-
-DROP TRIGGER IF EXISTS broadcast_sync_changes_trigger ON public.sync_changes;
-CREATE TRIGGER broadcast_sync_changes_trigger
-    AFTER INSERT OR UPDATE OR DELETE ON public.sync_changes
-    FOR EACH ROW
-    EXECUTE FUNCTION public.broadcast_sync_changes();
-
--- RLS policy so authenticated users can receive broadcast messages
+-- Only create broadcast trigger if Supabase Realtime is available (not in E2E/test environments)
 DO $$
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_policies
-        WHERE schemaname = 'realtime' AND tablename = 'messages'
-        AND policyname = 'authenticated can receive broadcasts'
-    ) THEN
-        EXECUTE 'CREATE POLICY "authenticated can receive broadcasts"
-            ON realtime.messages FOR SELECT TO authenticated USING (true)';
+    IF EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'broadcast_changes'
+               AND pronamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'realtime')) THEN
+
+        -- Create trigger function
+        EXECUTE '
+            CREATE OR REPLACE FUNCTION public.broadcast_sync_changes()
+            RETURNS trigger
+            SECURITY DEFINER SET search_path = ''''
+            AS $fn$
+            BEGIN
+                PERFORM realtime.broadcast_changes(
+                    ''sync:'' || COALESCE(NEW.vault_id, OLD.vault_id)::text,
+                    TG_OP,
+                    TG_OP,
+                    TG_TABLE_NAME,
+                    TG_TABLE_SCHEMA,
+                    NEW,
+                    OLD
+                );
+                RETURN NULL;
+            END;
+            $fn$ LANGUAGE plpgsql';
+
+        -- Create trigger on parent table (auto-cloned to all partitions by PG15)
+        DROP TRIGGER IF EXISTS broadcast_sync_changes_trigger ON public.sync_changes;
+        CREATE TRIGGER broadcast_sync_changes_trigger
+            AFTER INSERT OR UPDATE OR DELETE ON public.sync_changes
+            FOR EACH ROW
+            EXECUTE FUNCTION public.broadcast_sync_changes();
+
+        RAISE NOTICE 'Realtime broadcast trigger created on sync_changes';
+    ELSE
+        RAISE NOTICE 'Skipping broadcast trigger: realtime.broadcast_changes() not available';
+    END IF;
+
+    -- RLS policy for broadcast messages (only if realtime schema exists)
+    IF EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'realtime') THEN
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_policies
+            WHERE schemaname = 'realtime' AND tablename = 'messages'
+            AND policyname = 'authenticated can receive broadcasts'
+        ) THEN
+            EXECUTE 'CREATE POLICY "authenticated can receive broadcasts"
+                ON realtime.messages FOR SELECT TO authenticated USING (true)';
+        END IF;
     END IF;
 END
 $$;
