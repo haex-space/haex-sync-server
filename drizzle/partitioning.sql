@@ -401,3 +401,53 @@ CREATE TRIGGER drop_space_partition_trigger
   BEFORE DELETE ON spaces
   FOR EACH ROW
   EXECUTE FUNCTION drop_space_partition();
+
+-- ============================================================================
+-- Realtime Broadcast Trigger
+-- ============================================================================
+-- Instead of using postgres_changes (which requires each partition to be in
+-- the supabase_realtime publication and causes cache staleness issues),
+-- we use realtime.broadcast_changes() which writes to realtime.messages.
+-- This table is ALWAYS in the Realtime publication — no restart needed.
+--
+-- PostgreSQL 15+ automatically clones row triggers on partitioned parent
+-- tables to ALL existing and future child partitions.
+-- ============================================================================
+
+CREATE OR REPLACE FUNCTION public.broadcast_sync_changes()
+RETURNS trigger
+SECURITY DEFINER SET search_path = ''
+AS $$
+BEGIN
+    PERFORM realtime.broadcast_changes(
+        'sync:' || COALESCE(NEW.vault_id, OLD.vault_id)::text,
+        TG_OP,
+        TG_OP,
+        TG_TABLE_NAME,
+        TG_TABLE_SCHEMA,
+        NEW,
+        OLD
+    );
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS broadcast_sync_changes_trigger ON public.sync_changes;
+CREATE TRIGGER broadcast_sync_changes_trigger
+    AFTER INSERT OR UPDATE OR DELETE ON public.sync_changes
+    FOR EACH ROW
+    EXECUTE FUNCTION public.broadcast_sync_changes();
+
+-- RLS policy so authenticated users can receive broadcast messages
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies
+        WHERE schemaname = 'realtime' AND tablename = 'messages'
+        AND policyname = 'authenticated can receive broadcasts'
+    ) THEN
+        EXECUTE 'CREATE POLICY "authenticated can receive broadcasts"
+            ON realtime.messages FOR SELECT TO authenticated USING (true)';
+    END IF;
+END
+$$;
