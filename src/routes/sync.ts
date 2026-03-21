@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
-import { db, syncChanges, spaces, identities, type NewSyncChange } from '../db'
+import { db, syncChanges, vaultKeys, spaces, identities, type NewSyncChange } from '../db'
 import { authMiddleware } from '../middleware/auth'
 import { spaceTokenAuthMiddleware } from '../middleware/spaceTokenAuth'
 import { verifySpaceChallengeAsync } from '@haex-space/vault-sdk'
@@ -81,6 +81,21 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
 
       spaceAuthenticatedPublicKey = authenticatedPublicKey
       spaceRole = role
+    }
+
+    // For personal vaults (not spaces), verify the user owns this vault
+    if (!isSpaceSync && user) {
+      const hasVaultKey = await db.select({ id: vaultKeys.id })
+        .from(vaultKeys)
+        .where(and(
+          eq(vaultKeys.userId, user.userId),
+          eq(vaultKeys.vaultId, vaultId),
+        ))
+        .limit(1)
+
+      if (hasVaultKey.length === 0) {
+        return c.json({ error: 'Access denied: no vault key for this vault' }, 403)
+      }
     }
 
     // Validate batch completeness if batch metadata is present
