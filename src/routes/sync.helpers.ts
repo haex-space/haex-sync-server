@@ -106,10 +106,11 @@ export async function validateSpacePush(
         }
       }
 
-      // Data modification: only owner or collaborative (applies to updates and deletes)
+      // Data modification: owner, collaborative, or space admin/owner
       const isOwner = change.signedBy === existing.recordOwner
       const isCollaborative = existing.collaborative === true
-      if (!isOwner && !isCollaborative) {
+      const isSpaceAdmin = role === 'admin' || role === 'owner'
+      if (!isOwner && !isCollaborative && !isSpaceAdmin) {
         return { valid: false, error: `Cannot modify record owned by ${existing.recordOwner}` }
       }
     }
