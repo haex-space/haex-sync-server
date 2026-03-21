@@ -452,8 +452,12 @@ BEGIN
         RAISE NOTICE 'Skipping broadcast trigger: realtime.broadcast_changes() not available';
     END IF;
 
-    -- RLS policy for broadcast messages (only if realtime schema exists)
-    IF EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'realtime') THEN
+    -- RLS policy for broadcast messages (only if realtime.messages table exists)
+    IF EXISTS (
+        SELECT 1 FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'realtime' AND c.relname = 'messages'
+    ) THEN
         IF NOT EXISTS (
             SELECT 1 FROM pg_policies
             WHERE schemaname = 'realtime' AND tablename = 'messages'
