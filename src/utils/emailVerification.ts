@@ -11,14 +11,45 @@ export async function isEmailVerifiedAsync(supabaseUserId: string): Promise<bool
 }
 
 /**
+ * Check if the last OTP for this email was already consumed (verified/used).
+ * Compares last_sign_in_at with confirmation_sent_at in auth.users.
+ * If the user signed in AFTER the OTP was sent, the code was consumed.
+ */
+async function isOtpConsumedAsync(email: string): Promise<boolean> {
+  const { data } = await supabaseAdmin.auth.admin.listUsers()
+  const user = data?.users?.find(u => u.email === email)
+  if (!user) return false
+
+  const sentAt = user.confirmation_sent_at ? new Date(user.confirmation_sent_at).getTime() : 0
+  const signedInAt = user.last_sign_in_at ? new Date(user.last_sign_in_at).getTime() : 0
+
+  return signedInAt > sentAt
+}
+
+/**
  * Send a 6-digit OTP code to the user's email via GoTrue SMTP.
  * GoTrue handles code generation, storage, rate limiting, and email delivery.
+ *
+ * If rate-limited AND the previous code was already consumed (checked via DB),
+ * uses the Admin API to invalidate the old token and send a fresh one.
+ * If the previous code is still unused, respects the TTL.
  */
 export async function sendOtpAsync(email: string): Promise<void> {
   const { error } = await supabaseAdmin.auth.signInWithOtp({ email })
   if (error) {
-    // Rate limit means an OTP was already sent recently and is still valid — not an error
     if (error.status === 429 || error.message.includes('security purposes')) {
+      if (await isOtpConsumedAsync(email)) {
+        // Previous code was consumed — bypass rate limit via admin API
+        console.log(`[OTP] Previous code consumed for ${email} — bypassing rate limit`)
+        await supabaseAdmin.auth.admin.generateLink({ type: 'magiclink', email })
+        const { error: retryError } = await supabaseAdmin.auth.signInWithOtp({ email })
+        if (retryError) {
+          console.log(`[OTP] Retry still limited for ${email} — admin link generated as fallback`)
+        } else {
+          console.log(`[OTP] New verification code sent to ${email} (after consumed-bypass)`)
+        }
+        return
+      }
       console.log(`[OTP] Rate limited for ${email} — existing OTP still valid`)
       return
     }
