@@ -89,28 +89,29 @@ try {
   console.log('✅ Realtime configuration applied successfully')
 
   // Ensure broadcast trigger exists — the partitioning.sql creates it only if
-  // realtime.broadcast_changes() is available. Due to a race condition (Realtime
-  // container may not have finished tenant seeding when migrations run), the trigger
-  // may have been skipped. Retry with backoff to handle this.
+  // realtime.messages table exists. Due to a race condition (Realtime container
+  // may not have finished creating the messages table when migrations run), the
+  // trigger may have been skipped. Retry with backoff to handle this.
   const hasTrigger = await migrationClient`
     SELECT 1 FROM pg_trigger WHERE tgname = 'broadcast_sync_changes_trigger'
   `
   if (hasTrigger.length === 0) {
-    console.log('⏳ Broadcast trigger not found, waiting for realtime.broadcast_changes()...')
+    console.log('⏳ Broadcast trigger not found, waiting for realtime.messages table...')
     const partSQL = readFileSync(join(import.meta.dir, '../drizzle/partitioning.sql'), 'utf-8')
     for (let attempt = 1; attempt <= 10; attempt++) {
-      const fn = await migrationClient`
-        SELECT 1 FROM pg_proc WHERE proname = 'broadcast_changes'
-        AND pronamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'realtime')
+      const tbl = await migrationClient`
+        SELECT 1 FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'realtime' AND c.relname = 'messages'
       `
-      if (fn.length > 0) {
-        console.log(`✅ realtime.broadcast_changes() found after ${attempt} attempt(s), re-applying partitioning...`)
+      if (tbl.length > 0) {
+        console.log(`✅ realtime.messages found after ${attempt} attempt(s), re-applying partitioning...`)
         await migrationClient.unsafe(partSQL)
         console.log('✅ Broadcast trigger created')
         break
       }
       if (attempt === 10) {
-        console.warn('⚠️ realtime.broadcast_changes() not available after 10 attempts — broadcast will not work')
+        console.warn('⚠️ realtime.messages table not available after 10 attempts — broadcast will not work')
       } else {
         await new Promise(r => setTimeout(r, 2000))
       }
