@@ -442,7 +442,7 @@ BEGIN
                 'broadcast',
                 TG_OP,
                 jsonb_build_object('op', TG_OP),
-                false
+                true
             );
             RETURN NULL;
         END;
@@ -456,6 +456,37 @@ BEGIN
             EXECUTE FUNCTION public.broadcast_sync_changes();
 
         RAISE NOTICE 'Realtime broadcast trigger created on sync_changes';
+
+        -- RLS policies for private broadcast channels.
+        -- Channel topic is 'sync:{vault_id}', where vault_id can be either
+        -- a personal vault or a shared space.
+        --
+        -- Access is granted if:
+        -- 1. User owns a vault_key for this vault_id (personal vault), OR
+        -- 2. User is a member of this space (shared space, via identities → space_members join)
+        DROP POLICY IF EXISTS "authenticated can receive broadcasts" ON realtime.messages;
+        DROP POLICY IF EXISTS "vault owner can receive sync broadcasts" ON realtime.messages;
+        CREATE POLICY "sync participant can receive broadcasts"
+            ON realtime.messages FOR SELECT TO authenticated
+            USING (
+                realtime.messages.extension = 'broadcast'
+                AND (
+                    -- Personal vault: user has a vault_key for this vault
+                    EXISTS (
+                        SELECT 1 FROM public.vault_keys
+                        WHERE vault_keys.user_id = (select auth.uid())
+                        AND vault_keys.vault_id = split_part(realtime.topic(), ':', 2)
+                    )
+                    OR
+                    -- Shared space: user's identity is a member of this space
+                    EXISTS (
+                        SELECT 1 FROM public.identities
+                        JOIN public.space_members ON space_members.public_key = identities.public_key
+                        WHERE identities.supabase_user_id = (select auth.uid())
+                        AND space_members.space_id = (split_part(realtime.topic(), ':', 2))::uuid
+                    )
+                )
+            );
     ELSE
         RAISE NOTICE 'Skipping broadcast trigger: realtime.messages table not available';
     END IF;
