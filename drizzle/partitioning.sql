@@ -432,18 +432,16 @@ BEGIN
         SECURITY DEFINER SET search_path = ''
         AS $fn$
         BEGIN
+            -- Only send a minimal notification — no record data.
+            -- The app uses this purely as a trigger to pull changes
+            -- from the server. All actual data is E2E-encrypted and
+            -- delivered via the pull endpoint.
             INSERT INTO realtime.messages (topic, extension, event, payload, private)
             VALUES (
                 'sync:' || COALESCE(NEW.vault_id, OLD.vault_id)::text,
                 'broadcast',
                 TG_OP,
-                jsonb_build_object(
-                    'schema', TG_TABLE_SCHEMA,
-                    'table', TG_TABLE_NAME,
-                    'operation', TG_OP,
-                    'record', CASE WHEN TG_OP = 'DELETE' THEN to_jsonb(OLD) ELSE to_jsonb(NEW) END,
-                    'old_record', CASE WHEN TG_OP = 'UPDATE' THEN to_jsonb(OLD) ELSE NULL END
-                ),
+                jsonb_build_object('op', TG_OP),
                 false
             );
             RETURN NULL;
