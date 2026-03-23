@@ -457,34 +457,64 @@ BEGIN
 
         RAISE NOTICE 'Realtime broadcast trigger created on sync_changes';
 
-        -- RLS policies for private broadcast channels.
-        -- Channel topic is 'sync:{vault_id}', where vault_id can be either
-        -- a personal vault or a shared space.
-        --
-        -- Access is granted if:
-        -- 1. User owns a vault_key for this vault_id (personal vault), OR
-        -- 2. User is a member of this space (shared space, via identities → space_members join)
+        -- Helper function for broadcast authorization.
+        -- SECURITY DEFINER bypasses RLS on vault_keys/space_members
+        -- to avoid infinite recursion (space_members has its own RLS
+        -- that self-references, causing recursion when called from
+        -- another RLS policy).
+        CREATE OR REPLACE FUNCTION public.can_access_sync_channel(
+            p_user_id uuid,
+            p_channel_topic text
+        ) RETURNS boolean
+        SECURITY DEFINER SET search_path = 'public'
+        AS $authfn$
+        DECLARE
+            v_vault_id text;
+        BEGIN
+            v_vault_id := split_part(p_channel_topic, ':', 2);
+            IF v_vault_id = '' OR v_vault_id IS NULL THEN
+                RETURN false;
+            END IF;
+
+            -- Check 1: personal vault ownership
+            IF EXISTS (
+                SELECT 1 FROM vault_keys
+                WHERE user_id = p_user_id
+                AND vault_id = v_vault_id
+            ) THEN
+                RETURN true;
+            END IF;
+
+            -- Check 2: shared space membership (via identity → space_members)
+            IF EXISTS (
+                SELECT 1 FROM identities i
+                JOIN space_members sm ON sm.public_key = i.public_key
+                WHERE i.supabase_user_id = p_user_id
+                AND sm.space_id = v_vault_id::uuid
+            ) THEN
+                RETURN true;
+            END IF;
+
+            RETURN false;
+        EXCEPTION
+            -- uuid cast may fail for non-uuid vault_ids (personal vaults)
+            WHEN invalid_text_representation THEN
+                RETURN false;
+        END;
+        $authfn$ LANGUAGE plpgsql;
+
+        -- RLS policy for private broadcast channels.
+        -- Uses the SECURITY DEFINER helper to avoid RLS recursion.
         DROP POLICY IF EXISTS "authenticated can receive broadcasts" ON realtime.messages;
         DROP POLICY IF EXISTS "vault owner can receive sync broadcasts" ON realtime.messages;
+        DROP POLICY IF EXISTS "sync participant can receive broadcasts" ON realtime.messages;
         CREATE POLICY "sync participant can receive broadcasts"
             ON realtime.messages FOR SELECT TO authenticated
             USING (
                 realtime.messages.extension = 'broadcast'
-                AND (
-                    -- Personal vault: user has a vault_key for this vault
-                    EXISTS (
-                        SELECT 1 FROM public.vault_keys
-                        WHERE vault_keys.user_id = (select auth.uid())
-                        AND vault_keys.vault_id = split_part(realtime.topic(), ':', 2)
-                    )
-                    OR
-                    -- Shared space: user's identity is a member of this space
-                    EXISTS (
-                        SELECT 1 FROM public.identities
-                        JOIN public.space_members ON space_members.public_key = identities.public_key
-                        WHERE identities.supabase_user_id = (select auth.uid())
-                        AND space_members.space_id = (split_part(realtime.topic(), ':', 2))::uuid
-                    )
+                AND public.can_access_sync_channel(
+                    (select auth.uid()),
+                    realtime.topic()
                 )
             );
     ELSE
