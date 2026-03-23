@@ -33,7 +33,9 @@ export const vaultKeys = pgTable(
     userId: uuid("user_id")
       .notNull()
       .references(() => authUsers.id, { onDelete: "cascade" }),
-    vaultId: text("vault_id").notNull(),
+    spaceId: uuid("space_id")
+      .notNull()
+      .references(() => spaces.id, { onDelete: "cascade" }),
     encryptedVaultKey: text("encrypted_vault_key").notNull(), // Base64 of AES-GCM encrypted key
     encryptedVaultName: text("encrypted_vault_name").notNull(), // Base64 of AES-GCM encrypted vault name
     vaultKeySalt: text("vault_key_salt").notNull(), // For PBKDF2 key derivation (vault password -> vault key encryption)
@@ -44,7 +46,7 @@ export const vaultKeys = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    uniqueIndex("vault_keys_user_vault_idx").on(table.userId, table.vaultId),
+    uniqueIndex("vault_keys_user_space_idx").on(table.userId, table.spaceId),
     index("vault_keys_user_idx").on(table.userId),
   ]
 );
@@ -75,7 +77,9 @@ export const syncChanges = pgTable(
     userId: uuid("user_id")
       .notNull()
       .references(() => authUsers.id, { onDelete: "cascade" }),
-    vaultId: text("vault_id").notNull(),
+    spaceId: uuid("space_id")
+      .notNull()
+      .references(() => spaces.id, { onDelete: "cascade" }),
 
     // Unencrypted CRDT metadata (required for server-side deduplication)
     tableName: text("table_name").notNull(),
@@ -100,12 +104,12 @@ export const syncChanges = pgTable(
   (table) => [
     // Composite unique index to ensure only one entry per (vault, table, row, column)
     uniqueIndex("sync_changes_unique_cell").on(
-      table.vaultId,
+      table.spaceId,
       table.tableName,
       table.rowPks,
       table.columnName
     ),
-    index("sync_changes_user_vault_idx").on(table.userId, table.vaultId),
+    index("sync_changes_user_space_idx").on(table.userId, table.spaceId),
     index("sync_changes_hlc_idx").on(table.hlcTimestamp),
     index("sync_changes_updated_idx").on(table.updatedAt),
     index("sync_changes_device_idx").on(table.deviceId),
@@ -177,11 +181,12 @@ export type NewUserStorageCredential = typeof userStorageCredentials.$inferInser
  */
 export const spaces = pgTable("spaces", {
   id: uuid("id").primaryKey().defaultRandom(),
+  type: text("type").notNull().default("shared"),
   ownerId: uuid("owner_id")
     .notNull()
-    .references(() => authUsers.id),
-  encryptedName: text("encrypted_name").notNull(),
-  nameNonce: text("name_nonce").notNull(),
+    .references(() => authUsers.id, { onDelete: "cascade" }),
+  encryptedName: text("encrypted_name"),
+  nameNonce: text("name_nonce"),
   currentKeyGeneration: integer("current_key_generation").notNull().default(1),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
