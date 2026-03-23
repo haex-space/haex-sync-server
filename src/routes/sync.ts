@@ -1,12 +1,12 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
-import { db, syncChanges, vaultKeys, spaces, identities, type NewSyncChange } from '../db'
+import { db, syncChanges, spaces, identities, type NewSyncChange } from '../db'
 import { authMiddleware } from '../middleware/auth'
 import { spaceTokenAuthMiddleware } from '../middleware/spaceTokenAuth'
 import { verifySpaceChallengeAsync } from '@haex-space/vault-sdk'
 import { eq, and, ne, sql, max, asc, or } from 'drizzle-orm'
 import { pushChangesSchema, pullChangesSchema, pullColumnsSchema, SpacePushValidationError, type PushChange } from './sync.schemas'
-import { isSpacePartition, getUserPublicKey, getCallerRoleByUserId, validateSpacePush } from './sync.helpers'
+import { getSpaceType, getUserPublicKey, getCallerRoleByUserId, validateSpacePush } from './sync.helpers'
 import { getUserQuotaAsync } from '../services/quota'
 import vaultRoutes from './sync.vaults'
 
@@ -32,14 +32,14 @@ sync.route('/', vaultRoutes)
 sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
   const spaceToken = c.get('spaceToken')
   const user = spaceToken ? null : c.get('user')
-  const { vaultId, changes: rawChanges } = c.req.valid('json')
+  const { spaceId, changes: rawChanges } = c.req.valid('json')
 
   // Cast to mutable type so validateSpacePush can set recordOwner
   const changes = rawChanges as PushChange[]
 
   try {
-    // Validate space token matches target vault
-    if (spaceToken && spaceToken.spaceId !== vaultId) {
+    // Validate space token matches target space
+    if (spaceToken && spaceToken.spaceId !== spaceId) {
       return c.json({ error: 'Space token does not match target vault' }, 403)
     }
 
@@ -52,7 +52,7 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
       }
 
       const challenge = await verifySpaceChallengeAsync(
-        vaultId, challengeTimestamp, challengeSignature, spaceToken.publicKey,
+        spaceId, challengeTimestamp, challengeSignature, spaceToken.publicKey,
       )
       if (!challenge.valid) {
         return c.json({ error: challenge.error }, 401)
@@ -60,7 +60,8 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
     }
 
     // Space-scoped push validation
-    const isSpaceSync = !!spaceToken || await isSpacePartition(vaultId)
+    const spaceType = await getSpaceType(spaceId)
+    const isSpaceSync = !!spaceToken || spaceType === 'shared'
     let spaceAuthenticatedPublicKey: string | undefined
     let spaceRole: string | undefined
 
@@ -70,7 +71,7 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
         : await getUserPublicKey(user!.userId)
       const role = spaceToken
         ? spaceToken.role
-        : await getCallerRoleByUserId(vaultId, user!.userId)
+        : await getCallerRoleByUserId(spaceId, user!.userId)
 
       if (!authenticatedPublicKey) {
         return c.json({ error: 'User has no registered keypair' }, 400)
@@ -83,19 +84,18 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
       spaceRole = role
     }
 
-    // For personal vaults (not spaces), verify the user owns this vault
-    if (!isSpaceSync && user) {
-      const hasVaultKey = await db.select({ id: vaultKeys.id })
-        .from(vaultKeys)
-        .where(and(
-          eq(vaultKeys.userId, user.userId),
-          eq(vaultKeys.vaultId, vaultId),
-        ))
+    // For personal vaults, verify the user owns this space
+    if (spaceType === 'vault' && user) {
+      const isOwner = await db.select({ id: spaces.id })
+        .from(spaces)
+        .where(and(eq(spaces.id, spaceId), eq(spaces.ownerId, user.userId)))
         .limit(1)
-
-      if (hasVaultKey.length === 0) {
-        return c.json({ error: 'Access denied: no vault key for this vault' }, 403)
+      if (isOwner.length === 0) {
+        return c.json({ error: 'Access denied: not the vault owner' }, 403)
       }
+    }
+    if (!spaceType && !spaceToken) {
+      return c.json({ error: 'Unknown space' }, 404)
     }
 
     // Validate batch completeness if batch metadata is present
@@ -168,7 +168,7 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
         // Federated user: no local account
         const space = await db.select({ ownerId: spaces.ownerId })
           .from(spaces)
-          .where(eq(spaces.id, vaultId))
+          .where(eq(spaces.id, spaceId))
           .limit(1)
         if (!space[0]) {
           return c.json({ error: 'Space not found' }, 404)
@@ -195,7 +195,7 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
     const result = await db.transaction(async (tx) => {
       // Validate space push inside transaction to prevent TOCTOU races
       if (isSpaceSync) {
-        const validation = await validateSpacePush(changes, vaultId, spaceAuthenticatedPublicKey!, spaceRole!, tx)
+        const validation = await validateSpacePush(changes, spaceId, spaceAuthenticatedPublicKey!, spaceRole!, tx)
         if (!validation.valid) {
           throw new SpacePushValidationError(validation.error ?? 'Space push validation failed')
         }
@@ -212,7 +212,7 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
           .values(
             chunk.map((change) => ({
               userId: effectiveUserId,
-              vaultId,
+              spaceId,
               tableName: change.tableName,
               rowPks: change.rowPks,
               columnName: change.columnName,
@@ -230,7 +230,7 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
             } as NewSyncChange))
           )
           .onConflictDoUpdate({
-            target: [syncChanges.vaultId, syncChanges.tableName, syncChanges.rowPks, syncChanges.columnName],
+            target: [syncChanges.spaceId, syncChanges.tableName, syncChanges.rowPks, syncChanges.columnName],
             set: {
               // Use CASE to only update if incoming HLC is newer (Last-Write-Wins)
               hlcTimestamp: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.hlc_timestamp ELSE sync_changes.hlc_timestamp END`,
@@ -287,15 +287,16 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
 sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
   const spaceToken = c.get('spaceToken')
   const user = spaceToken ? null : c.get('user')
-  const { vaultId, excludeDeviceId, afterUpdatedAt, afterTableName, afterRowPks, limit } = c.req.valid('query')
+  const { spaceId, excludeDeviceId, afterUpdatedAt, afterTableName, afterRowPks, limit } = c.req.valid('query')
 
   try {
     // Determine if this is a space sync
-    const isSpaceSync = !!spaceToken || await isSpacePartition(vaultId)
+    const spaceType = await getSpaceType(spaceId)
+    const isSpaceSync = !!spaceToken || spaceType === 'shared'
 
     if (spaceToken) {
-      // Space token: validate token matches target vault
-      if (spaceToken.spaceId !== vaultId) {
+      // Space token: validate token matches target space
+      if (spaceToken.spaceId !== spaceId) {
         return c.json({ error: 'Space token does not match target vault' }, 403)
       }
 
@@ -307,24 +308,24 @@ sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
       }
 
       const challenge = await verifySpaceChallengeAsync(
-        vaultId, challengeTimestamp, challengeSignature, spaceToken.publicKey,
+        spaceId, challengeTimestamp, challengeSignature, spaceToken.publicKey,
       )
       if (!challenge.valid) {
         return c.json({ error: challenge.error }, 401)
       }
     } else if (isSpaceSync) {
       // JWT user pulling from a space: verify membership
-      const role = await getCallerRoleByUserId(vaultId, user!.userId)
+      const role = await getCallerRoleByUserId(spaceId, user!.userId)
       if (!role) {
         return c.json({ error: 'Not a member of this space' }, 403)
       }
     }
 
-    // For spaces: query by vaultId only (multiple users write to the same space)
-    // For personal vaults: query by userId + vaultId (scoped to owner)
+    // For spaces: query by spaceId only (multiple users write to the same space)
+    // For personal vaults: query by userId + spaceId (scoped to owner)
     const scopeFilter = isSpaceSync
-      ? eq(syncChanges.vaultId, vaultId)
-      : and(eq(syncChanges.userId, user!.userId), eq(syncChanges.vaultId, vaultId))
+      ? eq(syncChanges.spaceId, spaceId)
+      : and(eq(syncChanges.userId, user!.userId), eq(syncChanges.spaceId, spaceId))
 
     // Step 1: Find rows to return using GROUP BY with HAVING for cursor-based pagination
     // Uses (maxUpdatedAt, tableName, rowPks) for stable cursor - works even with bulk imports
@@ -438,13 +439,14 @@ sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
 sync.post('/pull-columns', zValidator('json', pullColumnsSchema), async (c) => {
   const spaceToken = c.get('spaceToken')
   const user = spaceToken ? null : c.get('user')
-  const { vaultId, columns, limit, afterRowPks, afterTableName } = c.req.valid('json')
+  const { spaceId, columns, limit, afterRowPks, afterTableName } = c.req.valid('json')
 
   try {
-    const isSpaceSync = !!spaceToken || await isSpacePartition(vaultId)
+    const spaceType = await getSpaceType(spaceId)
+    const isSpaceSync = !!spaceToken || spaceType === 'shared'
 
     if (spaceToken) {
-      if (spaceToken.spaceId !== vaultId) {
+      if (spaceToken.spaceId !== spaceId) {
         return c.json({ error: 'Space token does not match target vault' }, 403)
       }
 
@@ -456,21 +458,21 @@ sync.post('/pull-columns', zValidator('json', pullColumnsSchema), async (c) => {
       }
 
       const challenge = await verifySpaceChallengeAsync(
-        vaultId, challengeTimestamp, challengeSignature, spaceToken.publicKey,
+        spaceId, challengeTimestamp, challengeSignature, spaceToken.publicKey,
       )
       if (!challenge.valid) {
         return c.json({ error: challenge.error }, 401)
       }
     } else if (isSpaceSync) {
-      const role = await getCallerRoleByUserId(vaultId, user!.userId)
+      const role = await getCallerRoleByUserId(spaceId, user!.userId)
       if (!role) {
         return c.json({ error: 'Not a member of this space' }, 403)
       }
     }
 
     const scopeFilter = isSpaceSync
-      ? eq(syncChanges.vaultId, vaultId)
-      : and(eq(syncChanges.userId, user!.userId), eq(syncChanges.vaultId, vaultId))
+      ? eq(syncChanges.spaceId, spaceId)
+      : and(eq(syncChanges.userId, user!.userId), eq(syncChanges.spaceId, spaceId))
 
     // Build conditions for each (tableName, columnName) pair
     const columnConditions = columns.map(

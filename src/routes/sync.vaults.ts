@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
-import { db, vaultKeys, syncChanges, type NewVaultKey } from '../db'
+import { db, vaultKeys, spaces, type NewVaultKey } from '../db'
 import { eq, and, sql } from 'drizzle-orm'
 import { vaultKeySchema, updateVaultNameSchema } from './sync.schemas'
 import { getPartitionQuotaAsync } from '../services/quota'
@@ -17,14 +17,14 @@ vaultRoutes.post('/vault-key', zValidator('json', vaultKeySchema), async (c) => 
     return c.json({ error: 'Space tokens can only be used for push/pull operations' }, 403)
   }
   const user = c.get('user')
-  const { vaultId, encryptedVaultKey, encryptedVaultName, vaultKeySalt, ephemeralPublicKey, vaultKeyNonce, vaultNameNonce } = c.req.valid('json')
+  const { spaceId, encryptedVaultKey, encryptedVaultName, vaultKeySalt, ephemeralPublicKey, vaultKeyNonce, vaultNameNonce } = c.req.valid('json')
 
   try {
     // Check if vault key already exists
     const existing = await db.query.vaultKeys.findFirst({
       where: and(
         eq(vaultKeys.userId, user.userId),
-        eq(vaultKeys.vaultId, vaultId)
+        eq(vaultKeys.spaceId, spaceId)
       ),
     })
 
@@ -32,32 +32,41 @@ vaultRoutes.post('/vault-key', zValidator('json', vaultKeySchema), async (c) => 
       return c.json({ error: 'Vault key already exists for this vault' }, 409)
     }
 
-    // Insert vault key
-    const insertedKeys = await db
-      .insert(vaultKeys)
-      .values({
-        userId: user.userId,
-        vaultId,
-        encryptedVaultKey,
-        encryptedVaultName,
-        vaultKeySalt,
-        ephemeralPublicKey,
-        vaultKeyNonce,
-        vaultNameNonce,
-      } as NewVaultKey)
-      .returning()
+    // Insert space first, then vault key in a transaction
+    const result = await db.transaction(async (tx) => {
+      await tx.insert(spaces).values({
+        id: spaceId,
+        type: 'vault',
+        ownerId: user.userId,
+      })
 
-    const newVaultKey = insertedKeys[0]
-    if (!newVaultKey) {
+      const insertedKeys = await tx
+        .insert(vaultKeys)
+        .values({
+          userId: user.userId,
+          spaceId,
+          encryptedVaultKey,
+          encryptedVaultName,
+          vaultKeySalt,
+          ephemeralPublicKey,
+          vaultKeyNonce,
+          vaultNameNonce,
+        } as NewVaultKey)
+        .returning()
+
+      return insertedKeys[0]
+    })
+
+    if (!result) {
       return c.json({ error: 'Failed to insert vault key' }, 500)
     }
 
     return c.json({
       message: 'Vault key stored successfully',
       vaultKey: {
-        id: newVaultKey.id,
-        vaultId: newVaultKey.vaultId,
-        createdAt: newVaultKey.createdAt,
+        id: result.id,
+        spaceId: result.spaceId,
+        createdAt: result.createdAt,
       },
     }, 201)
   } catch (error) {
@@ -78,14 +87,27 @@ vaultRoutes.get('/vaults', async (c) => {
   const user = c.get('user')
 
   try {
-    const userVaults = await db.query.vaultKeys.findMany({
-      where: eq(vaultKeys.userId, user.userId),
-      orderBy: vaultKeys.createdAt,
+    const userVaults = await db.select({
+      spaceId: vaultKeys.spaceId,
+      encryptedVaultName: vaultKeys.encryptedVaultName,
+      vaultNameNonce: vaultKeys.vaultNameNonce,
+      ephemeralPublicKey: vaultKeys.ephemeralPublicKey,
+      createdAt: vaultKeys.createdAt,
     })
+      .from(spaces)
+      .innerJoin(vaultKeys, and(
+        eq(vaultKeys.spaceId, spaces.id),
+        eq(vaultKeys.userId, user.userId),
+      ))
+      .where(and(
+        eq(spaces.type, 'vault'),
+        eq(spaces.ownerId, user.userId),
+      ))
+      .orderBy(vaultKeys.createdAt)
 
     return c.json({
       vaults: userVaults.map((vault) => ({
-        vaultId: vault.vaultId,
+        spaceId: vault.spaceId,
         encryptedVaultName: vault.encryptedVaultName,
         vaultNameNonce: vault.vaultNameNonce,
         ephemeralPublicKey: vault.ephemeralPublicKey,
@@ -99,16 +121,16 @@ vaultRoutes.get('/vaults', async (c) => {
 })
 
 /**
- * PATCH /vault-key/:vaultId
+ * PATCH /vault-key/:spaceId
  * Update encrypted vault name for a vault
  */
-vaultRoutes.patch('/vault-key/:vaultId', zValidator('json', updateVaultNameSchema), async (c) => {
+vaultRoutes.patch('/vault-key/:spaceId', zValidator('json', updateVaultNameSchema), async (c) => {
   const spaceToken = c.get('spaceToken')
   if (spaceToken) {
     return c.json({ error: 'Space tokens can only be used for push/pull operations' }, 403)
   }
   const user = c.get('user')
-  const vaultId = c.req.param('vaultId')
+  const spaceId = c.req.param('spaceId')
   const { encryptedVaultName, vaultNameNonce, ephemeralPublicKey } = c.req.valid('json')
 
   try {
@@ -116,7 +138,7 @@ vaultRoutes.patch('/vault-key/:vaultId', zValidator('json', updateVaultNameSchem
     const existing = await db.query.vaultKeys.findFirst({
       where: and(
         eq(vaultKeys.userId, user.userId),
-        eq(vaultKeys.vaultId, vaultId)
+        eq(vaultKeys.spaceId, spaceId)
       ),
     })
 
@@ -136,13 +158,13 @@ vaultRoutes.patch('/vault-key/:vaultId', zValidator('json', updateVaultNameSchem
       .where(
         and(
           eq(vaultKeys.userId, user.userId),
-          eq(vaultKeys.vaultId, vaultId)
+          eq(vaultKeys.spaceId, spaceId)
         )
       )
 
     return c.json({
       message: 'Vault name updated successfully',
-      vaultId,
+      spaceId,
     })
   } catch (error) {
     console.error('Update vault name error:', error)
@@ -151,22 +173,22 @@ vaultRoutes.patch('/vault-key/:vaultId', zValidator('json', updateVaultNameSchem
 })
 
 /**
- * GET /vault-key/:vaultId
+ * GET /vault-key/:spaceId
  * Retrieve encrypted vault key for a user
  */
-vaultRoutes.get('/vault-key/:vaultId', async (c) => {
+vaultRoutes.get('/vault-key/:spaceId', async (c) => {
   const spaceToken = c.get('spaceToken')
   if (spaceToken) {
     return c.json({ error: 'Space tokens can only be used for push/pull operations' }, 403)
   }
   const user = c.get('user')
-  const vaultId = c.req.param('vaultId')
+  const spaceId = c.req.param('spaceId')
 
   try {
     const vaultKey = await db.query.vaultKeys.findFirst({
       where: and(
         eq(vaultKeys.userId, user.userId),
-        eq(vaultKeys.vaultId, vaultId)
+        eq(vaultKeys.spaceId, spaceId)
       ),
     })
 
@@ -176,7 +198,7 @@ vaultRoutes.get('/vault-key/:vaultId', async (c) => {
 
     return c.json({
       vaultKey: {
-        vaultId: vaultKey.vaultId,
+        spaceId: vaultKey.spaceId,
         encryptedVaultKey: vaultKey.encryptedVaultKey,
         encryptedVaultName: vaultKey.encryptedVaultName,
         vaultKeySalt: vaultKey.vaultKeySalt,
@@ -193,50 +215,51 @@ vaultRoutes.get('/vault-key/:vaultId', async (c) => {
 })
 
 /**
- * DELETE /vault/:vaultId
+ * DELETE /vault/:spaceId
  * Delete a vault and all its associated data from the server
  * This includes:
  * - All CRDT changes (sync_changes table) - via FK CASCADE + partition drop trigger
- * - Vault key and configuration (vault_keys table)
+ * - Vault key and configuration (vault_keys table) - via FK CASCADE
  *
- * With partitioning enabled, deleting the vault_key triggers:
- * 1. FK CASCADE deletes sync_changes (if any in default partition)
- * 2. Trigger drops the vault's partition table (instant, no row-by-row delete)
+ * Deleting from spaces cascades to vault_keys and sync_changes.
  */
-vaultRoutes.delete('/vault/:vaultId', async (c) => {
+vaultRoutes.delete('/vault/:spaceId', async (c) => {
   const spaceToken = c.get('spaceToken')
   if (spaceToken) {
     return c.json({ error: 'Space tokens can only be used for push/pull operations' }, 403)
   }
   const user = c.get('user')
-  const vaultId = c.req.param('vaultId')
+  const spaceId = c.req.param('spaceId')
 
   try {
     // Check if vault belongs to user
-    const vaultKey = await db.query.vaultKeys.findFirst({
-      where: and(
-        eq(vaultKeys.userId, user.userId),
-        eq(vaultKeys.vaultId, vaultId)
-      ),
-    })
+    const space = await db.select({ id: spaces.id })
+      .from(spaces)
+      .where(and(
+        eq(spaces.id, spaceId),
+        eq(spaces.ownerId, user.userId),
+        eq(spaces.type, 'vault'),
+      ))
+      .limit(1)
 
-    if (!vaultKey) {
+    if (space.length === 0) {
       return c.json({ error: 'Vault not found or access denied' }, 404)
     }
 
-    // Delete vault key - this cascades to sync_changes and drops the partition
+    // Delete from spaces - CASCADE handles vault_keys and sync_changes
     await db
-      .delete(vaultKeys)
+      .delete(spaces)
       .where(
         and(
-          eq(vaultKeys.userId, user.userId),
-          eq(vaultKeys.vaultId, vaultId)
+          eq(spaces.id, spaceId),
+          eq(spaces.ownerId, user.userId),
+          eq(spaces.type, 'vault'),
         )
       )
 
     return c.json({
       message: 'Vault deleted successfully',
-      vaultId,
+      spaceId,
     })
   } catch (error) {
     console.error('Delete vault error:', error)
@@ -247,7 +270,7 @@ vaultRoutes.delete('/vault/:vaultId', async (c) => {
 /**
  * DELETE /vaults
  * Delete ALL vault data for the authenticated user.
- * This removes all vault keys and sync changes but keeps the account (identity, spaces, etc.).
+ * This removes all vault spaces (cascades to vault_keys and sync_changes) but keeps the account.
  */
 vaultRoutes.delete('/vaults', async (c) => {
   const spaceToken = c.get('spaceToken')
@@ -257,10 +280,12 @@ vaultRoutes.delete('/vaults', async (c) => {
   const user = c.get('user')
 
   try {
-    await db.transaction(async (tx) => {
-      await tx.delete(vaultKeys).where(eq(vaultKeys.userId, user.userId))
-      await tx.delete(syncChanges).where(eq(syncChanges.userId, user.userId))
-    })
+    await db.delete(spaces).where(
+      and(
+        eq(spaces.ownerId, user.userId),
+        eq(spaces.type, 'vault'),
+      )
+    )
 
     return c.json({ message: 'All vault data deleted successfully' })
   } catch (error) {
@@ -275,7 +300,7 @@ vaultRoutes.delete('/vaults', async (c) => {
  * The partition is created and committed before the response is sent,
  * ensuring Supabase Realtime can see it when the client subscribes.
  *
- * Used for both vaults and spaces — each gets its own partition.
+ * Creates a space (type='vault') and a corresponding partition.
  * Respects the user's tier limit for max partitions.
  */
 vaultRoutes.post('/partitions/create', async (c) => {
@@ -300,7 +325,14 @@ vaultRoutes.post('/partitions/create', async (c) => {
     const partitionId = crypto.randomUUID()
     const partitionName = 'sync_changes_' + partitionId.replace(/-/g, '_')
 
-    // Create partition + RLS + replica identity in one statement
+    // Insert space record (type='vault') — trigger creates partition
+    await db.insert(spaces).values({
+      id: partitionId,
+      type: 'vault',
+      ownerId: user.userId,
+    })
+
+    // Create partition + RLS + replica identity
     await db.execute(sql`
       CREATE TABLE IF NOT EXISTS ${sql.raw(`public."${partitionName}"`)}
         PARTITION OF public.sync_changes FOR VALUES IN (${partitionId})

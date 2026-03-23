@@ -3,13 +3,13 @@ import { verifyRecordSignatureAsync } from '@haex-space/vault-sdk'
 import { eq, and } from 'drizzle-orm'
 import type { PushChange } from './sync.schemas'
 
-/** Check if a vaultId corresponds to a space */
-export async function isSpacePartition(vaultId: string): Promise<boolean> {
-  const result = await db.select({ id: spaces.id })
+/** Look up the type of a space */
+export async function getSpaceType(spaceId: string): Promise<'vault' | 'shared' | null> {
+  const result = await db.select({ type: spaces.type })
     .from(spaces)
-    .where(eq(spaces.id, vaultId))
+    .where(eq(spaces.id, spaceId))
     .limit(1)
-  return result.length > 0
+  return (result[0]?.type as 'vault' | 'shared') ?? null
 }
 
 /** Look up a user's public key from the identities table */
@@ -81,7 +81,7 @@ export async function validateSpacePush(
       collaborative: syncChanges.collaborative,
     }).from(syncChanges)
       .where(and(
-        eq(syncChanges.vaultId, spaceId),
+        eq(syncChanges.spaceId, spaceId),
         eq(syncChanges.tableName, change.tableName),
         eq(syncChanges.rowPks, change.rowPks),
       ))

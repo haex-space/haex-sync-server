@@ -9,7 +9,7 @@ export class SpacePushValidationError extends Error {
 
 // Validation schemas
 export const vaultKeySchema = z.object({
-  vaultId: z.string().uuid(),
+  spaceId: z.string().uuid(),
   encryptedVaultKey: z.string(),
   encryptedVaultName: z.string(),
   vaultKeySalt: z.string(), // Salt for vault password -> vault key encryption
@@ -46,12 +46,12 @@ export type PushChange = z.infer<typeof pushChangeSchema> & {
 }
 
 export const pushChangesSchema = z.object({
-  vaultId: z.string(),
+  spaceId: z.string(),
   changes: z.array(pushChangeSchema),
 })
 
 export const pullChangesSchema = z.object({
-  vaultId: z.string(),
+  spaceId: z.string(),
   excludeDeviceId: z.string().optional(), // Exclude changes from this device ID
   afterUpdatedAt: z.string().optional(), // Pull changes after this server timestamp (ISO 8601)
   afterTableName: z.string().optional(), // Secondary cursor for stable pagination (table name)
@@ -60,7 +60,7 @@ export const pullChangesSchema = z.object({
 })
 
 export const pullColumnsSchema = z.object({
-  vaultId: z.string(),
+  spaceId: z.string(),
   columns: z.array(
     z.object({
       tableName: z.string(),
