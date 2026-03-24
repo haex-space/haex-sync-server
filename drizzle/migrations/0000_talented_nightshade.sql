@@ -8,10 +8,6 @@ CREATE TABLE "auth_challenges" (
 	CONSTRAINT "auth_challenges_nonce_unique" UNIQUE("nonce")
 );
 --> statement-breakpoint
-CREATE TABLE "auth"."users" (
-	"id" uuid PRIMARY KEY NOT NULL
-);
---> statement-breakpoint
 CREATE TABLE "identities" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"did" text NOT NULL,
