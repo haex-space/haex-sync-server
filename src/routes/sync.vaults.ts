@@ -333,9 +333,11 @@ vaultRoutes.post('/partitions/create', async (c) => {
     })
 
     // Create partition + RLS + replica identity
+    // DDL statements don't support parameterized values, so we use sql.raw()
+    // partitionId is crypto.randomUUID() — safe from injection
     await db.execute(sql`
       CREATE TABLE IF NOT EXISTS ${sql.raw(`public."${partitionName}"`)}
-        PARTITION OF public.sync_changes FOR VALUES IN (${partitionId})
+        PARTITION OF public.sync_changes FOR VALUES IN (${sql.raw(`'${partitionId}'`)})
     `)
     await db.execute(sql`
       ALTER TABLE ${sql.raw(`public."${partitionName}"`)} ENABLE ROW LEVEL SECURITY
