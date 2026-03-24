@@ -1,1 +1,0 @@
-ALTER TABLE "vault_keys" RENAME COLUMN "vault_name_salt" TO "ephemeral_public_key";

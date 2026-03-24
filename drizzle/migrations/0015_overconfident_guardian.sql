@@ -1,1 +1,0 @@
-ALTER TABLE "user_keypairs" ALTER COLUMN "created_at" SET NOT NULL;
