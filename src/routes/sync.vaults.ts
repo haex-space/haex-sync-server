@@ -10,7 +10,12 @@ const vaultRoutes = new Hono()
  * POST /vault-key
  * Store encrypted vault key for a user (Hybrid-Ansatz)
  */
-vaultRoutes.post('/vault-key', zValidator('json', vaultKeySchema), async (c) => {
+vaultRoutes.post('/vault-key', zValidator('json', vaultKeySchema, (result, c) => {
+  if (!result.success) {
+    console.error('Vault key validation failed:', JSON.stringify(result.error.issues, null, 2))
+    return c.json({ error: result.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join(', ') }, 400)
+  }
+}), async (c) => {
   const spaceToken = c.get('spaceToken')
   if (spaceToken) {
     return c.json({ error: 'Space tokens can only be used for push/pull operations' }, 403)
