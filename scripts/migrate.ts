@@ -58,6 +58,8 @@ try {
   console.log('🔒 Applying RLS policies...')
   const rlsPoliciesSQL = readFileSync(join(import.meta.dir, '../drizzle/rls-policies.sql'), 'utf-8')
   await migrationClient.unsafe(rlsPoliciesSQL)
+  const rlsSpacesSQL = readFileSync(join(import.meta.dir, '../drizzle/rls-spaces.sql'), 'utf-8')
+  await migrationClient.unsafe(rlsSpacesSQL)
   console.log('✅ RLS policies applied successfully')
 
   // Apply Storage Bucket configuration (if file exists)

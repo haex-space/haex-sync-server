@@ -19,8 +19,11 @@ const dbUrl: string = DATABASE_URL
 async function applyRlsPoliciesAsync() {
   console.log('🔒 Applying RLS policies to Supabase...')
 
-  // Read SQL file
-  const sql = readFileSync('./drizzle/rls-policies.sql', 'utf-8')
+  // Read SQL files
+  const sql = [
+    readFileSync('./drizzle/rls-policies.sql', 'utf-8'),
+    readFileSync('./drizzle/rls-spaces.sql', 'utf-8'),
+  ].join('\n')
 
   // Connect to database
   const db = postgres(dbUrl)
