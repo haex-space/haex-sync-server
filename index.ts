@@ -5,6 +5,7 @@ import authRoutes from './src/routes/auth'
 import syncRoutes from './src/routes/sync'
 import storageRoutes from './src/routes/storage'
 import spacesRoutes from './src/routes/spaces'
+import mlsRoutes from './src/routes/mls'
 import identityAuthRoutes from './src/routes/identity-auth'
 import { syncTiersFromEnvAsync } from './src/services/tierConfig'
 import packageJson from './package.json'
@@ -48,6 +49,8 @@ app.route('/sync', syncRoutes)
 app.route('/storage', storageRoutes)
 // Space routes for shared encrypted spaces
 app.route('/spaces', spacesRoutes)
+// MLS Delivery Service routes (nested under /spaces/:spaceId/mls/*)
+app.route('/spaces', mlsRoutes)
 
 // 404 handler
 app.notFound((c) => {

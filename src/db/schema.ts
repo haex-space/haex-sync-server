@@ -9,7 +9,16 @@ import {
   integer,
   boolean,
   primaryKey,
+  bigserial,
+  bigint,
+  customType,
 } from "drizzle-orm/pg-core";
+
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType() {
+    return "bytea";
+  },
+});
 
 // Define Supabase auth schema
 const authSchema = pgSchema("auth");
@@ -332,3 +341,111 @@ export const tiers = pgTable('tiers', {
   maxSpaces: integer('max_spaces').notNull().default(3),
   description: text('description'),
 })
+
+// ============================================
+// MLS (Message Layer Security) - Delivery Service
+// ============================================
+
+/**
+ * MLS Key Packages
+ * Pre-published credential+public-key bundles. Single-use.
+ * Members upload KeyPackages so others can add them to groups.
+ */
+export const mlsKeyPackages = pgTable(
+  "mls_key_packages",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    spaceId: uuid("space_id")
+      .notNull()
+      .references(() => spaces.id, { onDelete: "cascade" }),
+    identityPublicKey: text("identity_public_key").notNull(),
+    keyPackage: bytea("key_package").notNull(),
+    consumed: boolean("consumed").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("mls_key_packages_space_identity_idx").on(table.spaceId, table.identityPublicKey),
+  ]
+);
+
+export type MlsKeyPackage = typeof mlsKeyPackages.$inferSelect;
+export type NewMlsKeyPackage = typeof mlsKeyPackages.$inferInsert;
+
+/**
+ * Space Invites
+ * 2-Step invite flow: Owner creates invite → User accepts → MLS Add happens.
+ * Protects KeyPackages from DoS (only consumed after explicit accept).
+ */
+export const spaceInvites = pgTable(
+  "space_invites",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    spaceId: uuid("space_id")
+      .notNull()
+      .references(() => spaces.id, { onDelete: "cascade" }),
+    inviterPublicKey: text("inviter_public_key").notNull(),
+    inviteeDid: text("invitee_did").notNull(),
+    status: text("status").notNull().default("pending"), // 'pending' | 'accepted' | 'declined'
+    includeHistory: boolean("include_history").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    respondedAt: timestamp("responded_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("space_invites_unique_idx").on(table.spaceId, table.inviteeDid),
+    index("space_invites_invitee_idx").on(table.inviteeDid),
+  ]
+);
+
+export type SpaceInvite = typeof spaceInvites.$inferSelect;
+export type NewSpaceInvite = typeof spaceInvites.$inferInsert;
+
+/**
+ * MLS Messages
+ * Ordered message queue per space. BIGSERIAL id guarantees monotonic ordering.
+ * Server stores opaque blobs — no MLS understanding needed.
+ */
+export const mlsMessages = pgTable(
+  "mls_messages",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    spaceId: uuid("space_id")
+      .notNull()
+      .references(() => spaces.id, { onDelete: "cascade" }),
+    senderPublicKey: text("sender_public_key").notNull(),
+    messageType: text("message_type").notNull(), // 'commit' | 'application'
+    payload: bytea("payload").notNull(),
+    epoch: bigint("epoch", { mode: "number" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("mls_messages_space_id_idx").on(table.spaceId, table.id),
+  ]
+);
+
+export type MlsMessage = typeof mlsMessages.$inferSelect;
+export type NewMlsMessage = typeof mlsMessages.$inferInsert;
+
+/**
+ * MLS Welcome Messages
+ * Targeted at specific recipients when they are added to a group.
+ * Single-use: consumed after retrieval.
+ */
+export const mlsWelcomeMessages = pgTable(
+  "mls_welcome_messages",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    spaceId: uuid("space_id")
+      .notNull()
+      .references(() => spaces.id, { onDelete: "cascade" }),
+    recipientPublicKey: text("recipient_public_key").notNull(),
+    payload: bytea("payload").notNull(),
+    consumed: boolean("consumed").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("mls_welcome_recipient_idx").on(table.spaceId, table.recipientPublicKey),
+  ]
+);
+
+export type MlsWelcomeMessage = typeof mlsWelcomeMessages.$inferSelect;
+export type NewMlsWelcomeMessage = typeof mlsWelcomeMessages.$inferInsert;
