@@ -2,27 +2,21 @@ import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { db, spaceMembers, identities, mlsKeyPackages, mlsMessages, mlsWelcomeMessages, spaceInvites } from '../db'
-import { authMiddleware } from '../middleware/auth'
+import { authDispatcher } from '../middleware/authDispatcher'
+import { requireCapability } from '../middleware/ucanAuth'
+import { resolveDidIdentity } from '../middleware/didAuth'
 import { eq, and, gt } from 'drizzle-orm'
 
 const mlsRouter = new Hono()
 
-mlsRouter.use('/*', authMiddleware)
+mlsRouter.use('/*', authDispatcher)
 
-async function resolveCallerIdentity(userId: string) {
-  const [identity] = await db.select()
-    .from(identities)
-    .where(eq(identities.supabaseUserId, userId))
-    .limit(1)
-  return identity ?? null
-}
-
-async function requireMembership(spaceId: string, publicKey: string) {
-  const [member] = await db.select({ role: spaceMembers.role })
-    .from(spaceMembers)
-    .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.publicKey, publicKey)))
-    .limit(1)
-  return member ?? null
+function getCallerDid(c: any): string | null {
+  const ucan = c.get('ucan')
+  if (ucan) return ucan.issuerDid
+  const didAuth = c.get('didAuth')
+  if (didAuth) return didAuth.did
+  return null
 }
 
 // ============================================
@@ -36,22 +30,20 @@ const createInviteSchema = z.object({
 })
 
 mlsRouter.post('/:spaceId/invites', zValidator('json', createInviteSchema), async (c) => {
-  const user = c.get('user')
   const spaceId = c.req.param('spaceId')
   const body = c.req.valid('json')
 
-  try {
-    const caller = await resolveCallerIdentity(user.userId)
-    if (!caller) return c.json({ error: 'No keypair registered' }, 400)
+  const error = requireCapability(c, spaceId, 'space/invite')
+  if (error) return error
 
-    const membership = await requireMembership(spaceId, caller.publicKey)
-    if (!membership || !['admin', 'owner'].includes(membership.role)) {
-      return c.json({ error: 'Only admin or owner can invite members' }, 403)
-    }
+  try {
+    const callerDid = getCallerDid(c)!
+    const identity = await resolveDidIdentity(callerDid)
+    if (!identity) return c.json({ error: 'Identity not found' }, 404)
 
     const [invite] = await db.insert(spaceInvites).values({
       spaceId,
-      inviterPublicKey: caller.publicKey,
+      inviterPublicKey: identity.publicKey,
       inviteeDid: body.inviteeDid,
       includeHistory: body.includeHistory,
     }).onConflictDoNothing().returning()
@@ -69,14 +61,20 @@ mlsRouter.post('/:spaceId/invites', zValidator('json', createInviteSchema), asyn
 
 // GET /:spaceId/invites — List invites (for space members: all invites; for non-members: own invites)
 mlsRouter.get('/:spaceId/invites', async (c) => {
-  const user = c.get('user')
   const spaceId = c.req.param('spaceId')
 
-  try {
-    const caller = await resolveCallerIdentity(user.userId)
-    if (!caller) return c.json({ error: 'No keypair registered' }, 400)
+  const capError = requireCapability(c, spaceId, 'space/read')
+  if (capError) return capError
 
-    const membership = await requireMembership(spaceId, caller.publicKey)
+  try {
+    const callerDid = getCallerDid(c)!
+    const identity = await resolveDidIdentity(callerDid)
+    if (!identity) return c.json({ error: 'Identity not found' }, 404)
+
+    const [membership] = await db.select({ role: spaceMembers.role })
+      .from(spaceMembers)
+      .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.publicKey, identity.publicKey)))
+      .limit(1)
 
     let invites
     if (membership) {
@@ -86,7 +84,7 @@ mlsRouter.get('/:spaceId/invites', async (c) => {
     } else {
       // Non-members see only their own invites
       invites = await db.select().from(spaceInvites)
-        .where(and(eq(spaceInvites.spaceId, spaceId), eq(spaceInvites.inviteeDid, caller.did)))
+        .where(and(eq(spaceInvites.spaceId, spaceId), eq(spaceInvites.inviteeDid, identity.did)))
     }
 
     return c.json({
@@ -112,20 +110,22 @@ const acceptInviteSchema = z.object({
 })
 
 mlsRouter.post('/:spaceId/invites/:inviteId/accept', zValidator('json', acceptInviteSchema), async (c) => {
-  const user = c.get('user')
   const spaceId = c.req.param('spaceId')
   const inviteId = c.req.param('inviteId')
   const body = c.req.valid('json')
 
+  const didAuth = c.get('didAuth')
+  if (!didAuth) return c.json({ error: 'Invite accept requires DID-Auth' }, 401)
+
   try {
-    const caller = await resolveCallerIdentity(user.userId)
-    if (!caller) return c.json({ error: 'No keypair registered' }, 400)
+    const identity = await resolveDidIdentity(didAuth.did)
+    if (!identity) return c.json({ error: 'Identity not found' }, 404)
 
     const [invite] = await db.select().from(spaceInvites)
       .where(and(
         eq(spaceInvites.id, inviteId),
         eq(spaceInvites.spaceId, spaceId),
-        eq(spaceInvites.inviteeDid, caller.did),
+        eq(spaceInvites.inviteeDid, identity.did),
         eq(spaceInvites.status, 'pending'),
       ))
       .limit(1)
@@ -141,7 +141,7 @@ mlsRouter.post('/:spaceId/invites/:inviteId/accept', zValidator('json', acceptIn
       // Upload KeyPackages in the same transaction
       const values = body.keyPackages.map((kp) => ({
         spaceId,
-        identityPublicKey: caller.publicKey,
+        identityPublicKey: identity.publicKey,
         keyPackage: Buffer.from(kp, 'base64'),
       }))
       await tx.insert(mlsKeyPackages).values(values)
@@ -156,19 +156,21 @@ mlsRouter.post('/:spaceId/invites/:inviteId/accept', zValidator('json', acceptIn
 
 // POST /:spaceId/invites/:inviteId/decline — Decline invite
 mlsRouter.post('/:spaceId/invites/:inviteId/decline', async (c) => {
-  const user = c.get('user')
   const spaceId = c.req.param('spaceId')
   const inviteId = c.req.param('inviteId')
 
+  const callerDid = getCallerDid(c)
+  if (!callerDid) return c.json({ error: 'Auth required' }, 401)
+
   try {
-    const caller = await resolveCallerIdentity(user.userId)
-    if (!caller) return c.json({ error: 'No keypair registered' }, 400)
+    const identity = await resolveDidIdentity(callerDid)
+    if (!identity) return c.json({ error: 'Identity not found' }, 404)
 
     const [invite] = await db.select().from(spaceInvites)
       .where(and(
         eq(spaceInvites.id, inviteId),
         eq(spaceInvites.spaceId, spaceId),
-        eq(spaceInvites.inviteeDid, caller.did),
+        eq(spaceInvites.inviteeDid, identity.did),
         eq(spaceInvites.status, 'pending'),
       ))
       .limit(1)
@@ -188,19 +190,13 @@ mlsRouter.post('/:spaceId/invites/:inviteId/decline', async (c) => {
 
 // DELETE /:spaceId/invites/:inviteId — Withdraw invite (by inviter/admin)
 mlsRouter.delete('/:spaceId/invites/:inviteId', async (c) => {
-  const user = c.get('user')
   const spaceId = c.req.param('spaceId')
   const inviteId = c.req.param('inviteId')
 
+  const capError = requireCapability(c, spaceId, 'space/invite')
+  if (capError) return capError
+
   try {
-    const caller = await resolveCallerIdentity(user.userId)
-    if (!caller) return c.json({ error: 'No keypair registered' }, 400)
-
-    const membership = await requireMembership(spaceId, caller.publicKey)
-    if (!membership || !['admin', 'owner'].includes(membership.role)) {
-      return c.json({ error: 'Only admin or owner can withdraw invites' }, 403)
-    }
-
     const [deleted] = await db.delete(spaceInvites)
       .where(and(eq(spaceInvites.id, inviteId), eq(spaceInvites.spaceId, spaceId)))
       .returning()
@@ -224,30 +220,20 @@ const uploadKeyPackagesSchema = z.object({
 })
 
 mlsRouter.post('/:spaceId/mls/key-packages', zValidator('json', uploadKeyPackagesSchema), async (c) => {
-  const user = c.get('user')
   const spaceId = c.req.param('spaceId')
   const body = c.req.valid('json')
 
-  try {
-    const caller = await resolveCallerIdentity(user.userId)
-    if (!caller) return c.json({ error: 'No keypair registered' }, 400)
+  const capError = requireCapability(c, spaceId, 'space/read')
+  if (capError) return capError
 
-    // Allow upload if member OR if accepted invite exists (pre-join upload)
-    const membership = await requireMembership(spaceId, caller.publicKey)
-    if (!membership) {
-      const [acceptedInvite] = await db.select().from(spaceInvites)
-        .where(and(
-          eq(spaceInvites.spaceId, spaceId),
-          eq(spaceInvites.inviteeDid, caller.did),
-          eq(spaceInvites.status, 'accepted'),
-        ))
-        .limit(1)
-      if (!acceptedInvite) return c.json({ error: 'Not a member and no accepted invite' }, 403)
-    }
+  try {
+    const callerDid = getCallerDid(c)!
+    const identity = await resolveDidIdentity(callerDid)
+    if (!identity) return c.json({ error: 'Identity not found' }, 404)
 
     const values = body.keyPackages.map((kp) => ({
       spaceId,
-      identityPublicKey: caller.publicKey,
+      identityPublicKey: identity.publicKey,
       keyPackage: Buffer.from(kp, 'base64'),
     }))
 
@@ -262,19 +248,13 @@ mlsRouter.post('/:spaceId/mls/key-packages', zValidator('json', uploadKeyPackage
 
 // GET /:spaceId/mls/key-packages/:did — Get one unconsumed KeyPackage (protected by accepted invite)
 mlsRouter.get('/:spaceId/mls/key-packages/:did', async (c) => {
-  const user = c.get('user')
   const spaceId = c.req.param('spaceId')
   const targetDid = decodeURIComponent(c.req.param('did'))
 
+  const capError = requireCapability(c, spaceId, 'space/invite')
+  if (capError) return capError
+
   try {
-    const caller = await resolveCallerIdentity(user.userId)
-    if (!caller) return c.json({ error: 'No keypair registered' }, 400)
-
-    const membership = await requireMembership(spaceId, caller.publicKey)
-    if (!membership || !['admin', 'owner'].includes(membership.role)) {
-      return c.json({ error: 'Only admin or owner can fetch key packages' }, 403)
-    }
-
     // Verify accepted invite exists for the target DID
     const [acceptedInvite] = await db.select().from(spaceInvites)
       .where(and(
@@ -332,20 +312,20 @@ const sendMessageSchema = z.object({
 })
 
 mlsRouter.post('/:spaceId/mls/messages', zValidator('json', sendMessageSchema), async (c) => {
-  const user = c.get('user')
   const spaceId = c.req.param('spaceId')
   const body = c.req.valid('json')
 
-  try {
-    const caller = await resolveCallerIdentity(user.userId)
-    if (!caller) return c.json({ error: 'No keypair registered' }, 400)
+  const capError = requireCapability(c, spaceId, 'space/write')
+  if (capError) return capError
 
-    const membership = await requireMembership(spaceId, caller.publicKey)
-    if (!membership) return c.json({ error: 'Not a member of this space' }, 403)
+  try {
+    const callerDid = getCallerDid(c)!
+    const identity = await resolveDidIdentity(callerDid)
+    if (!identity) return c.json({ error: 'Identity not found' }, 404)
 
     const rows = await db.insert(mlsMessages).values({
       spaceId,
-      senderPublicKey: caller.publicKey,
+      senderPublicKey: identity.publicKey,
       messageType: body.messageType,
       payload: Buffer.from(body.payload, 'base64'),
       epoch: body.epoch ?? null,
@@ -360,18 +340,14 @@ mlsRouter.post('/:spaceId/mls/messages', zValidator('json', sendMessageSchema), 
 
 // GET /:spaceId/mls/messages — Fetch ordered messages (polling)
 mlsRouter.get('/:spaceId/mls/messages', async (c) => {
-  const user = c.get('user')
   const spaceId = c.req.param('spaceId')
   const after = parseInt(c.req.query('after') ?? '0')
   const limit = Math.min(parseInt(c.req.query('limit') ?? '100'), 1000)
 
+  const capError = requireCapability(c, spaceId, 'space/read')
+  if (capError) return capError
+
   try {
-    const caller = await resolveCallerIdentity(user.userId)
-    if (!caller) return c.json({ error: 'No keypair registered' }, 400)
-
-    const membership = await requireMembership(spaceId, caller.publicKey)
-    if (!membership) return c.json({ error: 'Not a member of this space' }, 403)
-
     const messages = await db.select()
       .from(mlsMessages)
       .where(and(
@@ -408,19 +384,13 @@ const sendWelcomeSchema = z.object({
 })
 
 mlsRouter.post('/:spaceId/mls/welcome', zValidator('json', sendWelcomeSchema), async (c) => {
-  const user = c.get('user')
   const spaceId = c.req.param('spaceId')
   const body = c.req.valid('json')
 
+  const capError = requireCapability(c, spaceId, 'space/invite')
+  if (capError) return capError
+
   try {
-    const caller = await resolveCallerIdentity(user.userId)
-    if (!caller) return c.json({ error: 'No keypair registered' }, 400)
-
-    const membership = await requireMembership(spaceId, caller.publicKey)
-    if (!membership || !['admin', 'owner'].includes(membership.role)) {
-      return c.json({ error: 'Only admin or owner can send welcomes' }, 403)
-    }
-
     // Resolve recipient DID to public key
     const [recipient] = await db.select().from(identities)
       .where(eq(identities.did, body.recipientDid))
@@ -443,18 +413,21 @@ mlsRouter.post('/:spaceId/mls/welcome', zValidator('json', sendWelcomeSchema), a
 
 // GET /:spaceId/mls/welcome — Fetch own unconsumed Welcome messages
 mlsRouter.get('/:spaceId/mls/welcome', async (c) => {
-  const user = c.get('user')
   const spaceId = c.req.param('spaceId')
 
+  const capError = requireCapability(c, spaceId, 'space/read')
+  if (capError) return capError
+
   try {
-    const caller = await resolveCallerIdentity(user.userId)
-    if (!caller) return c.json({ error: 'No keypair registered' }, 400)
+    const callerDid = getCallerDid(c)!
+    const identity = await resolveDidIdentity(callerDid)
+    if (!identity) return c.json({ error: 'Identity not found' }, 404)
 
     const welcomes = await db.select()
       .from(mlsWelcomeMessages)
       .where(and(
         eq(mlsWelcomeMessages.spaceId, spaceId),
-        eq(mlsWelcomeMessages.recipientPublicKey, caller.publicKey),
+        eq(mlsWelcomeMessages.recipientPublicKey, identity.publicKey),
         eq(mlsWelcomeMessages.consumed, false),
       ))
 
