@@ -102,7 +102,7 @@ export const syncChanges = pgTable(
     nonce: text("nonce"), // IV for AES-GCM, NULL for DELETE
 
     // Space-specific metadata (unencrypted, for server-side validation)
-    signature: text("signature"), // ECDSA P-256 signature (Base64)
+    signature: text("signature"), // Ed25519 signature (Base64)
     signedBy: text("signed_by"), // Public key of signer (Base64 SPKI)
     recordOwner: text("record_owner"), // Public key of record creator (set by server, immutable)
     collaborative: boolean("collaborative").default(false), // Can others modify this record?

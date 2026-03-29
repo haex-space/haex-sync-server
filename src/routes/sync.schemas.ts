@@ -36,7 +36,7 @@ export const pushChangeSchema = z.object({
   batchSeq: z.number().int().positive().optional(), // 1-based sequence within batch
   batchTotal: z.number().int().positive().optional(), // Total changes in this batch
   // Space-specific fields (required for space pushes, ignored for personal vaults)
-  signature: z.string().optional(), // ECDSA P-256 signature (Base64)
+  signature: z.string().optional(), // Ed25519 signature (Base64)
   signedBy: z.string().optional(), // Public key of signer (Base64 SPKI)
   collaborative: z.boolean().optional(), // Can others modify this record?
 })
