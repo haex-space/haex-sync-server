@@ -84,39 +84,5 @@ CREATE POLICY "Members can read their space members"
   ON space_members FOR SELECT
   USING (is_space_member(space_id));
 
--- ============================================================================
--- 6. SPACE_KEY_GRANTS — encrypted space keys per member
--- ============================================================================
-
-ALTER TABLE space_key_grants ENABLE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS "Users can read their own key grants" ON space_key_grants;
-CREATE POLICY "Users can read their own key grants"
-  ON space_key_grants FOR SELECT
-  USING (
-    EXISTS (
-      SELECT 1 FROM public.identities i
-      WHERE i.supabase_user_id = (select auth.uid())
-      AND i.public_key = space_key_grants.public_key
-    )
-  );
-
--- ============================================================================
--- 7. SPACE_ACCESS_TOKENS — scoped tokens for space access
--- ============================================================================
-
-ALTER TABLE space_access_tokens ENABLE ROW LEVEL SECURITY;
-
--- Only space admins can view tokens (matches server-side authorization)
-DROP POLICY IF EXISTS "Space admins can read tokens" ON space_access_tokens;
-CREATE POLICY "Space admins can read tokens"
-  ON space_access_tokens FOR SELECT
-  USING (
-    EXISTS (
-      SELECT 1 FROM public.identities i
-      JOIN public.space_members sm ON sm.public_key = i.public_key
-      WHERE i.supabase_user_id = (select auth.uid())
-      AND sm.space_id = space_access_tokens.space_id
-      AND sm.role = 'admin'
-    )
-  );
+-- Tables space_key_grants and space_access_tokens were removed in Phase 3
+-- (replaced by MLS + UCAN). No RLS policies needed.
