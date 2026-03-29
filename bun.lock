@@ -4,6 +4,7 @@
     "": {
       "name": "haex-sync-server",
       "dependencies": {
+        "@haex-space/ucan": "0.1.1",
         "@haex-space/vault-sdk": "^2.7.0",
         "@hono/zod-validator": "^0.7.4",
         "@supabase/supabase-js": "^2.79.0",
@@ -80,6 +81,8 @@
     "@esbuild/win32-ia32": ["@esbuild/win32-ia32@0.25.12", "", { "os": "win32", "cpu": "ia32" }, "sha512-HkqnmmBoCbCwxUKKNPBixiWDGCpQGVsrQfJoVGYLPT41XWF8lHuE5N6WhVia2n4o5QK5M4tYr21827fNhi4byQ=="],
 
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.25.12", "", { "os": "win32", "cpu": "x64" }, "sha512-alJC0uCZpTFrSL0CCDjcgleBXPnCrEAhTBILpeAp7M/OFgoqtAetfBzX0xM00MUsVVPpVjlPuMbREqnZCXaTnA=="],
+
+    "@haex-space/ucan": ["@haex-space/ucan@0.1.1", "", {}, "sha512-4D9/HzBGlwr8M7F8jC4ceaWc8ruX20HI5txuN0qa8HrZ0VwtQV4mCFAOhbd+b05i064+XEMJnf+nFnze4+w6VQ=="],
 
     "@haex-space/vault-sdk": ["@haex-space/vault-sdk@2.7.0", "", { "dependencies": { "archiver": "^7.0.1", "commander": "^14.0.3", "drizzle-orm": "^0.45.1", "jszip": "^3.10.1" }, "peerDependencies": { "@nuxt/kit": "^3.0.0 || ^4.0.0", "react": "^18.0.0 || ^19.0.0", "svelte": "^4.0.0 || ^5.0.0", "vite": "^5.0.0 || ^6.0.0 || ^7.0.0", "vue": "^3.0.0" }, "optionalPeers": ["@nuxt/kit", "react", "svelte", "vite", "vue"], "bin": { "haex": "dist/cli/index.js" } }, "sha512-Ohf9b0P9NmbpGljBEzgzheJLUpMz6qEak0yHwK2LfqTUzQCahr/3NiekezDiKyiP1Rkp8CpqOt+NcUf9oSY+FA=="],
 
