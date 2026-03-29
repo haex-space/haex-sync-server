@@ -27,6 +27,7 @@ function getCallerDid(c: any): string | null {
 // POST /:spaceId/invites — Create pending invite (direct, DID known)
 const createInviteSchema = z.object({
   inviteeDid: z.string().min(1),
+  ucan: z.string().min(1), // Delegated UCAN token with capabilities for the invitee
   includeHistory: z.boolean().optional().default(false),
   expiresInSeconds: z.number().int().min(60).max(60 * 60 * 24 * 90).optional().default(60 * 60 * 24 * 7), // default 7 days
 })
@@ -49,6 +50,7 @@ mlsRouter.post('/:spaceId/invites', zValidator('json', createInviteSchema), asyn
       spaceId,
       inviterPublicKey: identity.publicKey,
       inviteeDid: body.inviteeDid,
+      ucan: body.ucan,
       includeHistory: body.includeHistory,
       expiresAt,
     }).onConflictDoNothing().returning()
@@ -95,13 +97,26 @@ mlsRouter.get('/:spaceId/invites', async (c) => {
         .where(and(eq(spaceInvites.spaceId, spaceId), eq(spaceInvites.inviteeDid, identity.did)))
     }
 
+    // For token-based invites, resolve capability from the linked token
+    const tokenIds = [...new Set(invites.map((i) => i.tokenId).filter(Boolean))] as string[]
+    const tokenMap = new Map<string, string>()
+    if (tokenIds.length > 0) {
+      const tokens = await db.select({ id: spaceInviteTokens.id, capability: spaceInviteTokens.capability })
+        .from(spaceInviteTokens)
+        .where(sql`${spaceInviteTokens.id} IN ${tokenIds}`)
+      for (const t of tokens) tokenMap.set(t.id, t.capability)
+    }
+
     return c.json({
       invites: invites.map((i) => ({
         id: i.id,
         inviterPublicKey: i.inviterPublicKey,
         inviteeDid: i.inviteeDid,
+        ucan: i.ucan,
+        capability: i.tokenId ? tokenMap.get(i.tokenId) ?? null : null,
         status: i.status,
         includeHistory: i.includeHistory,
+        expiresAt: i.expiresAt?.toISOString() ?? null,
         createdAt: i.createdAt.toISOString(),
         respondedAt: i.respondedAt?.toISOString() ?? null,
       })),
@@ -195,6 +210,40 @@ mlsRouter.post('/:spaceId/invites/:inviteId/decline', async (c) => {
     return c.json({ success: true })
   } catch (error) {
     console.error('Decline invite error:', error)
+    return c.json({ error: 'Internal server error' }, 500)
+  }
+})
+
+// PATCH /:spaceId/invites/:inviteId/ucan — Set UCAN on invite (admin, during finalization of token invites)
+const setInviteUcanSchema = z.object({
+  ucan: z.string().min(1),
+})
+
+mlsRouter.patch('/:spaceId/invites/:inviteId/ucan', zValidator('json', setInviteUcanSchema), async (c) => {
+  const spaceId = c.req.param('spaceId')
+  const inviteId = c.req.param('inviteId')
+  const body = c.req.valid('json')
+
+  const capError = await requireCapability(c, spaceId, 'space/invite')
+  if (capError) return capError
+
+  try {
+    // Only allow setting UCAN once (immutable after set — prevents manipulation)
+    const [existing] = await db.select({ ucan: spaceInvites.ucan })
+      .from(spaceInvites)
+      .where(and(eq(spaceInvites.id, inviteId), eq(spaceInvites.spaceId, spaceId)))
+      .limit(1)
+
+    if (!existing) return c.json({ error: 'Invite not found' }, 404)
+    if (existing.ucan) return c.json({ error: 'UCAN already set and is immutable' }, 409)
+
+    await db.update(spaceInvites)
+      .set({ ucan: body.ucan })
+      .where(eq(spaceInvites.id, inviteId))
+
+    return c.json({ success: true })
+  } catch (error) {
+    console.error('Set invite UCAN error:', error)
     return c.json({ error: 'Internal server error' }, 500)
   }
 })

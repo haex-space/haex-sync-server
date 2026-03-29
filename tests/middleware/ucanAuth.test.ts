@@ -92,9 +92,9 @@ function createApp() {
     const ucan = c.get('ucan')
     return c.json({ issuerDid: ucan?.issuerDid ?? null })
   })
-  app.get('/space/:spaceId', (c) => {
+  app.get('/space/:spaceId', async (c) => {
     const spaceId = c.req.param('spaceId')
-    const error = requireCapability(c, spaceId, 'space/write')
+    const error = await requireCapability(c, spaceId, 'space/write')
     if (error) return error
     return c.json({ ok: true })
   })
@@ -218,9 +218,9 @@ describe('ucanAuthMiddleware - attack scenarios', () => {
 
     const app = new Hono()
     app.use('*', ucanAuthMiddleware)
-    app.get('/space/:spaceId', (c) => {
+    app.get('/space/:spaceId', async (c) => {
       const spaceId = c.req.param('spaceId')
-      const error = requireCapability(c, spaceId, 'space/admin')
+      const error = await requireCapability(c, spaceId, 'space/admin')
       if (error) return error
       return c.json({ ok: true })
     })

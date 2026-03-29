@@ -1,0 +1,1 @@
+ALTER TABLE "space_invites" ADD COLUMN "ucan" text;

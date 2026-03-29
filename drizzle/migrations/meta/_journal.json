@@ -57,6 +57,13 @@
       "when": 1774818340615,
       "tag": "0007_fluffy_white_queen",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1774822533289,
+      "tag": "0008_bumpy_cloak",
+      "breakpoints": true
     }
   ]
 }

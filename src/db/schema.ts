@@ -327,6 +327,7 @@ export const spaceInvites = pgTable(
     inviteeDid: text("invitee_did").notNull(),
     status: text("status").notNull().default("pending"), // 'pending' | 'accepted' | 'declined'
     includeHistory: boolean("include_history").notNull().default(false),
+    ucan: text("ucan"), // Delegated UCAN token (Ed25519-signed, capability for the invitee)
     tokenId: uuid("token_id").references(() => spaceInviteTokens.id, { onDelete: "set null" }),
     expiresAt: timestamp("expires_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
