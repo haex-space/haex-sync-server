@@ -1,28 +1,8 @@
 import { timingSafeEqual } from 'crypto'
 import { Hono } from 'hono'
-import type { StorageConfig } from '@haex-space/vault-sdk'
 import { supabaseAdmin } from '../utils/supabase'
-import { getOrCreateStorageCredentials } from '../services/storageCredentials'
-import { getUserBucket } from '../services/minioAdmin'
 
 const app = new Hono()
-
-/**
- * Creates the storage config for S3 proxy access.
- * Includes real S3 credentials that work with any S3-compatible client.
- */
-async function createStorageConfig(serverUrl: string, userId: string): Promise<StorageConfig> {
-  // Get or create S3 credentials for this user
-  const credentials = await getOrCreateStorageCredentials(userId)
-
-  return {
-    endpoint: `${serverUrl.replace(/\/$/, '')}/storage/s3`,
-    bucket: getUserBucket(userId),
-    region: 'auto',
-    accessKeyId: credentials.accessKeyId,
-    secretAccessKey: credentials.secretAccessKey,
-  }
-}
 
 /**
  * POST /auth/admin/create-user
@@ -97,41 +77,6 @@ app.post('/admin/create-user', async (c) => {
     }, 201)
   } catch (error) {
     console.error('Admin create user endpoint error:', error)
-    return c.json({ error: 'Internal server error' }, 500)
-  }
-})
-
-/**
- * GET /auth/storage-credentials
- *
- * Get S3 storage credentials for the authenticated user.
- * Uses the Bearer token from the Authorization header.
- */
-app.get('/storage-credentials', async (c) => {
-  try {
-    const authHeader = c.req.header('Authorization')
-
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return c.json({ error: 'Authorization header required' }, 401)
-    }
-
-    const token = authHeader.substring(7)
-
-    // Verify the token and get user
-    const { data: { user }, error } = await supabaseAdmin.auth.getUser(token)
-
-    if (error || !user) {
-      return c.json({ error: 'Invalid or expired token' }, 401)
-    }
-
-    // Get server URL from request for storage config
-    const serverUrl = new URL(c.req.url).origin
-
-    const storageConfig = await createStorageConfig(serverUrl, user.id)
-
-    return c.json(storageConfig)
-  } catch (error) {
-    console.error('Storage credentials endpoint error:', error)
     return c.json({ error: 'Internal server error' }, 500)
   }
 })

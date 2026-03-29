@@ -6,7 +6,10 @@ import type { SignedClaimPresentation } from '@haex-space/vault-sdk'
 import { isEmailVerifiedAsync, sendOtpAsync, verifyOtpAsync } from '../utils/emailVerification'
 import { supabaseAdmin } from '../utils/supabase'
 import { db, identities, authChallenges } from '../db'
-import { authMiddleware } from '../middleware/auth'
+import { getOrCreateStorageCredentials } from '../services/storageCredentials'
+import { getUserBucket } from '../services/minioAdmin'
+import { authDispatcher } from '../middleware/authDispatcher'
+import { resolveDidIdentity } from '../middleware/didAuth'
 import packageJson from '../../package.json'
 
 const app = new Hono()
@@ -437,11 +440,13 @@ app.post('/verify', async (c) => {
 
 /**
  * POST /identity-auth/update-recovery
- * Update encrypted private key backup (requires JWT auth).
+ * Update encrypted private key backup (requires DID-Auth).
  */
-app.post('/update-recovery', authMiddleware, async (c) => {
+app.post('/update-recovery', authDispatcher, async (c) => {
   try {
-    const user = c.get('user')
+    const didAuth = c.get('didAuth')
+    if (!didAuth) return c.json({ error: 'DID-Auth required' }, 401)
+
     const { encryptedPrivateKey, privateKeyNonce, privateKeySalt } = await c.req.json<{
       encryptedPrivateKey: string
       privateKeyNonce: string
@@ -459,7 +464,7 @@ app.post('/update-recovery', authMiddleware, async (c) => {
         privateKeySalt,
         updatedAt: new Date(),
       })
-      .where(eq(identities.supabaseUserId, user.userId))
+      .where(eq(identities.did, didAuth.did))
       .returning({ id: identities.id })
 
     if (result.length === 0) {
@@ -555,6 +560,34 @@ app.post('/recover-verify', async (c) => {
     })
   } catch (error) {
     console.error('Recover verify error:', error)
+    return c.json({ error: 'Internal server error' }, 500)
+  }
+})
+
+/**
+ * GET /identity-auth/storage-credentials
+ * Get S3 storage credentials for the authenticated user (DID-Auth).
+ */
+app.get('/storage-credentials', authDispatcher, async (c) => {
+  try {
+    const didAuth = c.get('didAuth')
+    if (!didAuth) return c.json({ error: 'DID-Auth required' }, 401)
+
+    const identity = await resolveDidIdentity(didAuth.did)
+    if (!identity?.supabaseUserId) return c.json({ error: 'Identity not found' }, 404)
+
+    const serverUrl = new URL(c.req.url).origin
+    const credentials = await getOrCreateStorageCredentials(identity.supabaseUserId)
+
+    return c.json({
+      endpoint: `${serverUrl.replace(/\/$/, '')}/storage/s3`,
+      bucket: getUserBucket(identity.supabaseUserId),
+      region: 'auto',
+      accessKeyId: credentials.accessKeyId,
+      secretAccessKey: credentials.secretAccessKey,
+    })
+  } catch (error) {
+    console.error('Storage credentials error:', error)
     return c.json({ error: 'Internal server error' }, 500)
   }
 })
