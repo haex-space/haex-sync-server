@@ -186,6 +186,7 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
               deviceId: change.deviceId,
               encryptedValue: change.encryptedValue,
               nonce: change.nonce,
+              epoch: change.epoch ?? null,
               // Space-specific columns
               ...(isSpaceSync ? {
                 signature: change.signature,
@@ -203,6 +204,7 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
               deviceId: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.device_id ELSE sync_changes.device_id END`,
               encryptedValue: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.encrypted_value ELSE sync_changes.encrypted_value END`,
               nonce: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.nonce ELSE sync_changes.nonce END`,
+              epoch: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.epoch ELSE sync_changes.epoch END`,
               // Space-specific columns: only include when syncing a space to avoid overwriting with NULLs
               ...(isSpaceSync ? {
                 signature: sql`CASE WHEN EXCLUDED.hlc_timestamp > sync_changes.hlc_timestamp THEN EXCLUDED.signature ELSE sync_changes.signature END`,
@@ -369,6 +371,7 @@ sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
         encryptedValue: change.encryptedValue,
         nonce: change.nonce,
         deviceId: change.deviceId,
+        epoch: change.epoch,
         updatedAt: change.updatedAt.toISOString(),
         // Space-specific fields for attribution and ownership verification
         ...(isSpaceSync ? {
@@ -477,6 +480,7 @@ sync.post('/pull-columns', zValidator('json', pullColumnsSchema), async (c) => {
         encryptedValue: change.encryptedValue,
         nonce: change.nonce,
         deviceId: change.deviceId,
+        epoch: change.epoch,
         // Space-specific fields
         ...(isSpaceSync ? {
           signature: change.signature,

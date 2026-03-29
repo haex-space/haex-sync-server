@@ -64,7 +64,7 @@ export const ucanAuthMiddleware = async (c: Context, next: Next) => {
 /**
  * Check if the authenticated UCAN has a sufficient capability for a space.
  *
- * @returns A 403 Response if insufficient, or null if the capability is satisfied.
+ * @returns A 403 Response if insufficient, or undefined if the capability is satisfied.
  *
  * Usage in route handlers:
  * ```ts
@@ -76,7 +76,7 @@ export async function requireCapability(
   c: Context,
   spaceId: string,
   required: Capability,
-): Promise<Response | null> {
+): Promise<Response | undefined> {
   const ucan = c.get('ucan') as UcanContext | null
 
   // If UCAN is present, check capabilities from the token
@@ -90,7 +90,7 @@ export async function requireCapability(
         403,
       )
     }
-    return null
+    return undefined
   }
 
   // For DID-Auth: the space owner is the root authority — all capabilities are implicit
@@ -103,7 +103,7 @@ export async function requireCapability(
       .limit(1)
 
     if (space && space.ownerId === didAuth.did) {
-      return null // Owner is root authority — no UCAN needed
+      return undefined
     }
 
     return c.json({ error: 'Forbidden - Non-owners must provide a UCAN' }, 403)

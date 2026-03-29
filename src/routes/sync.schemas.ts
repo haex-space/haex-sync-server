@@ -35,6 +35,8 @@ export const pushChangeSchema = z.object({
   batchId: z.string().optional(), // UUID for grouping related changes
   batchSeq: z.number().int().positive().optional(), // 1-based sequence within batch
   batchTotal: z.number().int().positive().optional(), // Total changes in this batch
+  // MLS epoch (for shared spaces with epoch-key encryption)
+  epoch: z.number().int().nonnegative().optional().nullable(),
   // Space-specific fields (required for space pushes, ignored for personal vaults)
   signature: z.string().optional(), // Ed25519 signature (Base64)
   signedBy: z.string().optional(), // Public key of signer (Base64 SPKI)

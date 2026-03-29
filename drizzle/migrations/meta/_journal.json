@@ -43,6 +43,13 @@
       "when": 1774808054706,
       "tag": "0005_quiet_albert_cleary",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1774816092885,
+      "tag": "0006_organic_scourge",
+      "breakpoints": true
     }
   ]
 }

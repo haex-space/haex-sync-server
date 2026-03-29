@@ -27,30 +27,30 @@ function createDispatcherApp() {
   })
 
   // UCAN-protected space endpoint with capability check
-  app.get('/spaces/:spaceId', (c) => {
+  app.get('/spaces/:spaceId', async (c) => {
     const spaceId = c.req.param('spaceId')
-    const error = requireCapability(c, spaceId, 'space/read')
+    const error = await requireCapability(c, spaceId, 'space/read')
     if (error) return error
     return c.json({ ok: true, spaceId })
   })
 
-  app.put('/spaces/:spaceId', (c) => {
+  app.put('/spaces/:spaceId', async (c) => {
     const spaceId = c.req.param('spaceId')
-    const error = requireCapability(c, spaceId, 'space/write')
+    const error = await requireCapability(c, spaceId, 'space/write')
     if (error) return error
     return c.json({ ok: true, spaceId })
   })
 
-  app.post('/spaces/:spaceId/invite', (c) => {
+  app.post('/spaces/:spaceId/invite', async (c) => {
     const spaceId = c.req.param('spaceId')
-    const error = requireCapability(c, spaceId, 'space/invite')
+    const error = await requireCapability(c, spaceId, 'space/invite')
     if (error) return error
     return c.json({ ok: true, spaceId })
   })
 
-  app.delete('/spaces/:spaceId', (c) => {
+  app.delete('/spaces/:spaceId', async (c) => {
     const spaceId = c.req.param('spaceId')
-    const error = requireCapability(c, spaceId, 'space/admin')
+    const error = await requireCapability(c, spaceId, 'space/admin')
     if (error) return error
     return c.json({ ok: true, spaceId })
   })

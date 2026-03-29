@@ -1,0 +1,1 @@
+ALTER TABLE "sync_changes" ADD COLUMN "epoch" integer;

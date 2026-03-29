@@ -101,6 +101,9 @@ export const syncChanges = pgTable(
     encryptedValue: text("encrypted_value"), // NULL for DELETE operations
     nonce: text("nonce"), // IV for AES-GCM, NULL for DELETE
 
+    // MLS epoch (for epoch-key encrypted changes in shared spaces)
+    epoch: integer("epoch"), // MLS epoch that encrypted this change (NULL = vaultKey encrypted)
+
     // Space-specific metadata (unencrypted, for server-side validation)
     signature: text("signature"), // Ed25519 signature (Base64)
     signedBy: text("signed_by"), // Public key of signer (Base64 SPKI)
