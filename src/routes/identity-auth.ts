@@ -375,13 +375,13 @@ app.post('/verify', async (c) => {
       return c.json({ error: 'Identity not found' }, 404)
     }
 
-    // Verify ECDSA signature over the nonce
+    // Verify Ed25519 signature over the nonce
     const publicKey = await importUserPublicKeyAsync(identity.publicKey)
     const data = new TextEncoder().encode(nonce)
     const sigBytes = Uint8Array.from(atob(signature), ch => ch.charCodeAt(0))
 
     const valid = await crypto.subtle.verify(
-      { name: 'ECDSA', hash: 'SHA-256' },
+      'Ed25519',
       publicKey,
       sigBytes,
       data,
