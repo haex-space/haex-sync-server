@@ -1,11 +1,11 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { db, spaceMembers, identities, mlsKeyPackages, mlsMessages, mlsWelcomeMessages, spaceInvites } from '../db'
+import { db, spaceMembers, identities, mlsKeyPackages, mlsMessages, mlsWelcomeMessages, spaceInvites, spaceInviteTokens } from '../db'
 import { authDispatcher } from '../middleware/authDispatcher'
 import { requireCapability } from '../middleware/ucanAuth'
 import { resolveDidIdentity } from '../middleware/didAuth'
-import { eq, and, gt } from 'drizzle-orm'
+import { eq, and, gt, sql } from 'drizzle-orm'
 import { broadcastToSpace, sendToDid } from './ws'
 
 const mlsRouter = new Hono()
@@ -24,17 +24,18 @@ function getCallerDid(c: any): string | null {
 // INVITES (2-Step: Invite → Accept → MLS Add)
 // ============================================
 
-// POST /:spaceId/invites — Create pending invite
+// POST /:spaceId/invites — Create pending invite (direct, DID known)
 const createInviteSchema = z.object({
   inviteeDid: z.string().min(1),
   includeHistory: z.boolean().optional().default(false),
+  expiresInSeconds: z.number().int().min(60).max(60 * 60 * 24 * 90).optional().default(60 * 60 * 24 * 7), // default 7 days
 })
 
 mlsRouter.post('/:spaceId/invites', zValidator('json', createInviteSchema), async (c) => {
   const spaceId = c.req.param('spaceId')
   const body = c.req.valid('json')
 
-  const error = requireCapability(c, spaceId, 'space/invite')
+  const error = await requireCapability(c, spaceId, 'space/invite')
   if (error) return error
 
   try {
@@ -42,11 +43,14 @@ mlsRouter.post('/:spaceId/invites', zValidator('json', createInviteSchema), asyn
     const identity = await resolveDidIdentity(callerDid)
     if (!identity) return c.json({ error: 'Identity not found' }, 404)
 
+    const expiresAt = new Date(Date.now() + body.expiresInSeconds * 1000)
+
     const [invite] = await db.insert(spaceInvites).values({
       spaceId,
       inviterPublicKey: identity.publicKey,
       inviteeDid: body.inviteeDid,
       includeHistory: body.includeHistory,
+      expiresAt,
     }).onConflictDoNothing().returning()
 
     if (!invite) {
@@ -67,7 +71,7 @@ mlsRouter.post('/:spaceId/invites', zValidator('json', createInviteSchema), asyn
 mlsRouter.get('/:spaceId/invites', async (c) => {
   const spaceId = c.req.param('spaceId')
 
-  const capError = requireCapability(c, spaceId, 'space/read')
+  const capError = await requireCapability(c, spaceId, 'space/read')
   if (capError) return capError
 
   try {
@@ -200,7 +204,7 @@ mlsRouter.delete('/:spaceId/invites/:inviteId', async (c) => {
   const spaceId = c.req.param('spaceId')
   const inviteId = c.req.param('inviteId')
 
-  const capError = requireCapability(c, spaceId, 'space/invite')
+  const capError = await requireCapability(c, spaceId, 'space/invite')
   if (capError) return capError
 
   try {
@@ -230,7 +234,7 @@ mlsRouter.post('/:spaceId/mls/key-packages', zValidator('json', uploadKeyPackage
   const spaceId = c.req.param('spaceId')
   const body = c.req.valid('json')
 
-  const capError = requireCapability(c, spaceId, 'space/read')
+  const capError = await requireCapability(c, spaceId, 'space/read')
   if (capError) return capError
 
   try {
@@ -258,7 +262,7 @@ mlsRouter.get('/:spaceId/mls/key-packages/:did', async (c) => {
   const spaceId = c.req.param('spaceId')
   const targetDid = decodeURIComponent(c.req.param('did'))
 
-  const capError = requireCapability(c, spaceId, 'space/invite')
+  const capError = await requireCapability(c, spaceId, 'space/invite')
   if (capError) return capError
 
   try {
@@ -322,7 +326,7 @@ mlsRouter.post('/:spaceId/mls/messages', zValidator('json', sendMessageSchema), 
   const spaceId = c.req.param('spaceId')
   const body = c.req.valid('json')
 
-  const capError = requireCapability(c, spaceId, 'space/write')
+  const capError = await requireCapability(c, spaceId, 'space/write')
   if (capError) return capError
 
   try {
@@ -354,7 +358,7 @@ mlsRouter.get('/:spaceId/mls/messages', async (c) => {
   const after = parseInt(c.req.query('after') ?? '0')
   const limit = Math.min(parseInt(c.req.query('limit') ?? '100'), 1000)
 
-  const capError = requireCapability(c, spaceId, 'space/read')
+  const capError = await requireCapability(c, spaceId, 'space/read')
   if (capError) return capError
 
   try {
@@ -397,7 +401,7 @@ mlsRouter.post('/:spaceId/mls/welcome', zValidator('json', sendWelcomeSchema), a
   const spaceId = c.req.param('spaceId')
   const body = c.req.valid('json')
 
-  const capError = requireCapability(c, spaceId, 'space/invite')
+  const capError = await requireCapability(c, spaceId, 'space/invite')
   if (capError) return capError
 
   try {
@@ -425,7 +429,7 @@ mlsRouter.post('/:spaceId/mls/welcome', zValidator('json', sendWelcomeSchema), a
 mlsRouter.get('/:spaceId/mls/welcome', async (c) => {
   const spaceId = c.req.param('spaceId')
 
-  const capError = requireCapability(c, spaceId, 'space/read')
+  const capError = await requireCapability(c, spaceId, 'space/read')
   if (capError) return capError
 
   try {
@@ -458,6 +462,171 @@ mlsRouter.get('/:spaceId/mls/welcome', async (c) => {
     })
   } catch (error) {
     console.error('Fetch welcomes error:', error)
+    return c.json({ error: 'Internal server error' }, 500)
+  }
+})
+
+// ============================================
+// INVITE TOKENS (link/QR code invites)
+// ============================================
+
+// POST /:spaceId/invite-tokens — Create an invite token (link or QR code)
+const createTokenSchema = z.object({
+  capability: z.enum(['space/admin', 'space/write', 'space/read']).default('space/write'),
+  maxUses: z.number().int().min(1).max(1000).default(1),
+  expiresInSeconds: z.number().int().min(60).max(60 * 60 * 24 * 90), // 1 min to 90 days
+  label: z.string().max(200).optional(),
+})
+
+mlsRouter.post('/:spaceId/invite-tokens', zValidator('json', createTokenSchema), async (c) => {
+  const spaceId = c.req.param('spaceId')
+  const body = c.req.valid('json')
+
+  const capError = await requireCapability(c, spaceId, 'space/invite')
+  if (capError) return capError
+
+  try {
+    const callerDid = getCallerDid(c)!
+    const expiresAt = new Date(Date.now() + body.expiresInSeconds * 1000)
+
+    const [token] = await db.insert(spaceInviteTokens).values({
+      spaceId,
+      createdByDid: callerDid,
+      capability: body.capability,
+      maxUses: body.maxUses,
+      label: body.label,
+      expiresAt,
+    }).returning()
+
+    return c.json({
+      token: {
+        id: token!.id,
+        capability: token!.capability,
+        maxUses: token!.maxUses,
+        expiresAt: token!.expiresAt.toISOString(),
+        label: token!.label,
+      },
+    }, 201)
+  } catch (error) {
+    console.error('Create invite token error:', error)
+    return c.json({ error: 'Internal server error' }, 500)
+  }
+})
+
+// GET /:spaceId/invite-tokens — List active tokens for this space
+mlsRouter.get('/:spaceId/invite-tokens', async (c) => {
+  const spaceId = c.req.param('spaceId')
+
+  const capError = await requireCapability(c, spaceId, 'space/invite')
+  if (capError) return capError
+
+  try {
+    const tokens = await db.select().from(spaceInviteTokens)
+      .where(and(
+        eq(spaceInviteTokens.spaceId, spaceId),
+        gt(spaceInviteTokens.expiresAt, new Date()),
+      ))
+
+    return c.json({
+      tokens: tokens.map((t) => ({
+        id: t.id,
+        capability: t.capability,
+        maxUses: t.maxUses,
+        usedCount: t.usedCount,
+        label: t.label,
+        expiresAt: t.expiresAt.toISOString(),
+        createdAt: t.createdAt.toISOString(),
+      })),
+    })
+  } catch (error) {
+    console.error('List invite tokens error:', error)
+    return c.json({ error: 'Internal server error' }, 500)
+  }
+})
+
+// DELETE /:spaceId/invite-tokens/:tokenId — Revoke a token
+mlsRouter.delete('/:spaceId/invite-tokens/:tokenId', async (c) => {
+  const spaceId = c.req.param('spaceId')
+  const tokenId = c.req.param('tokenId')
+
+  const capError = await requireCapability(c, spaceId, 'space/invite')
+  if (capError) return capError
+
+  try {
+    const [deleted] = await db.delete(spaceInviteTokens)
+      .where(and(eq(spaceInviteTokens.id, tokenId), eq(spaceInviteTokens.spaceId, spaceId)))
+      .returning()
+
+    if (!deleted) return c.json({ error: 'Token not found' }, 404)
+    return c.json({ success: true })
+  } catch (error) {
+    console.error('Delete invite token error:', error)
+    return c.json({ error: 'Internal server error' }, 500)
+  }
+})
+
+// POST /:spaceId/invite-tokens/:tokenId/claim — Claim a token (no auth required, token IS the auth)
+const claimTokenSchema = z.object({
+  keyPackages: z.array(z.string()).min(1).max(20),
+})
+
+mlsRouter.post('/:spaceId/invite-tokens/:tokenId/claim', zValidator('json', claimTokenSchema), async (c) => {
+  const spaceId = c.req.param('spaceId')
+  const tokenId = c.req.param('tokenId')
+  const body = c.req.valid('json')
+
+  // Claim requires DID-Auth (we need to know who's claiming)
+  const didAuth = c.get('didAuth')
+  if (!didAuth) return c.json({ error: 'Token claim requires DID-Auth' }, 401)
+
+  try {
+    const identity = await resolveDidIdentity(didAuth.did)
+    if (!identity) return c.json({ error: 'Identity not found' }, 404)
+
+    // Validate token: exists, not expired, not exhausted
+    const [token] = await db.select().from(spaceInviteTokens)
+      .where(and(
+        eq(spaceInviteTokens.id, tokenId),
+        eq(spaceInviteTokens.spaceId, spaceId),
+        gt(spaceInviteTokens.expiresAt, new Date()),
+      ))
+      .limit(1)
+
+    if (!token) return c.json({ error: 'Invalid or expired invite token' }, 404)
+    if (token.usedCount >= token.maxUses) return c.json({ error: 'Invite token has been fully used' }, 410)
+
+    await db.transaction(async (tx) => {
+      // Increment usage counter
+      await tx.update(spaceInviteTokens)
+        .set({ usedCount: sql`${spaceInviteTokens.usedCount} + 1` })
+        .where(eq(spaceInviteTokens.id, tokenId))
+
+      // Create accepted invite (skip pending state — token is pre-authorization)
+      await tx.insert(spaceInvites).values({
+        spaceId,
+        inviterPublicKey: token.createdByDid,
+        inviteeDid: identity.did,
+        status: 'accepted',
+        tokenId,
+        expiresAt: token.expiresAt,
+        respondedAt: new Date(),
+      }).onConflictDoNothing()
+
+      // Upload KeyPackages
+      const values = body.keyPackages.map((kp) => ({
+        spaceId,
+        identityPublicKey: identity.publicKey,
+        keyPackage: Buffer.from(kp, 'base64'),
+      }))
+      await tx.insert(mlsKeyPackages).values(values)
+    })
+
+    // Notify space members
+    broadcastToSpace(spaceId, { type: 'membership', spaceId })
+
+    return c.json({ success: true, capability: token.capability })
+  } catch (error) {
+    console.error('Claim invite token error:', error)
     return c.json({ error: 'Internal server error' }, 500)
   }
 })

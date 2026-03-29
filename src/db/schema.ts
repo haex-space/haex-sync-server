@@ -327,6 +327,8 @@ export const spaceInvites = pgTable(
     inviteeDid: text("invitee_did").notNull(),
     status: text("status").notNull().default("pending"), // 'pending' | 'accepted' | 'declined'
     includeHistory: boolean("include_history").notNull().default(false),
+    tokenId: uuid("token_id").references(() => spaceInviteTokens.id, { onDelete: "set null" }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     respondedAt: timestamp("responded_at", { withTimezone: true }),
   },
@@ -338,6 +340,40 @@ export const spaceInvites = pgTable(
 
 export type SpaceInvite = typeof spaceInvites.$inferSelect;
 export type NewSpaceInvite = typeof spaceInvites.$inferInsert;
+
+/**
+ * Space Invite Tokens
+ * Reusable invite links/QR codes for joining spaces without knowing the invitee's DID upfront.
+ *
+ * Three modes:
+ * - Direct (maxUses=1, inviteeDid set): targeted invite for a known contact
+ * - Personal link (maxUses=1, no inviteeDid): shareable link for one person
+ * - Open invite (maxUses=N, no inviteeDid): conference QR code, anyone can join
+ *
+ * All tokens are time-limited (expiresAt is required).
+ */
+export const spaceInviteTokens = pgTable(
+  "space_invite_tokens",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    spaceId: uuid("space_id")
+      .notNull()
+      .references(() => spaces.id, { onDelete: "cascade" }),
+    createdByDid: text("created_by_did").notNull(),
+    capability: text("capability").notNull().default("space/write"), // space/admin, space/write, space/read
+    maxUses: integer("max_uses").notNull().default(1),
+    usedCount: integer("used_count").notNull().default(0),
+    label: text("label"), // optional description ("Konferenz März 2026")
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("space_invite_tokens_space_idx").on(table.spaceId),
+  ]
+);
+
+export type SpaceInviteToken = typeof spaceInviteTokens.$inferSelect;
+export type NewSpaceInviteToken = typeof spaceInviteTokens.$inferInsert;
 
 /**
  * MLS Messages
