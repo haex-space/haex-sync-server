@@ -86,3 +86,64 @@ CREATE POLICY "Members can read their space members"
 
 -- Tables space_key_grants and space_access_tokens were removed in Phase 3
 -- (replaced by MLS + UCAN). No RLS policies needed.
+
+-- ============================================================================
+-- 6. SPACE_INVITES — 2-step invite flow
+-- ============================================================================
+
+ALTER TABLE space_invites ENABLE ROW LEVEL SECURITY;
+
+-- Members see all invites for their space; non-members see only their own
+DROP POLICY IF EXISTS "Users can read relevant invites" ON space_invites;
+CREATE POLICY "Users can read relevant invites"
+  ON space_invites FOR SELECT
+  USING (
+    is_space_member(space_id)
+    OR EXISTS (
+      SELECT 1 FROM public.identities i
+      WHERE i.supabase_user_id = (SELECT auth.uid())
+      AND i.did = space_invites.invitee_did
+    )
+  );
+
+-- ============================================================================
+-- 7. MLS_KEY_PACKAGES — pre-published credentials (opaque blobs)
+-- ============================================================================
+
+ALTER TABLE mls_key_packages ENABLE ROW LEVEL SECURITY;
+
+-- Only space members can see key packages for their space
+DROP POLICY IF EXISTS "Members can read key packages" ON mls_key_packages;
+CREATE POLICY "Members can read key packages"
+  ON mls_key_packages FOR SELECT
+  USING (is_space_member(space_id));
+
+-- ============================================================================
+-- 8. MLS_MESSAGES — ordered message queue (opaque blobs)
+-- ============================================================================
+
+ALTER TABLE mls_messages ENABLE ROW LEVEL SECURITY;
+
+-- Only space members can read messages
+DROP POLICY IF EXISTS "Members can read MLS messages" ON mls_messages;
+CREATE POLICY "Members can read MLS messages"
+  ON mls_messages FOR SELECT
+  USING (is_space_member(space_id));
+
+-- ============================================================================
+-- 9. MLS_WELCOME_MESSAGES — targeted welcome messages (opaque blobs)
+-- ============================================================================
+
+ALTER TABLE mls_welcome_messages ENABLE ROW LEVEL SECURITY;
+
+-- Only the recipient can read their welcome messages
+DROP POLICY IF EXISTS "Recipients can read their welcomes" ON mls_welcome_messages;
+CREATE POLICY "Recipients can read their welcomes"
+  ON mls_welcome_messages FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.identities i
+      WHERE i.supabase_user_id = (SELECT auth.uid())
+      AND i.public_key = mls_welcome_messages.recipient_public_key
+    )
+  );
