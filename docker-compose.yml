@@ -19,7 +19,13 @@ services:
       POSTGRES_PORT: 5432
     volumes:
       - db_data:/var/lib/postgresql/data:Z
-      - ./docker/db/init-roles.sql:/docker-entrypoint-initdb.d/00-init-roles.sql:ro
+      - ../haex-sync-supabase/volumes/db/realtime.sql:/docker-entrypoint-initdb.d/migrations/99-realtime.sql:Z
+      - ../haex-sync-supabase/volumes/db/webhooks.sql:/docker-entrypoint-initdb.d/init-scripts/98-webhooks.sql:Z
+      - ../haex-sync-supabase/volumes/db/roles.sql:/docker-entrypoint-initdb.d/init-scripts/99-roles.sql:Z
+      - ../haex-sync-supabase/volumes/db/jwt.sql:/docker-entrypoint-initdb.d/init-scripts/99-jwt.sql:Z
+      - ../haex-sync-supabase/volumes/db/_supabase.sql:/docker-entrypoint-initdb.d/migrations/97-_supabase.sql:Z
+      - ../haex-sync-supabase/volumes/db/logs.sql:/docker-entrypoint-initdb.d/migrations/99-logs.sql:Z
+      - ../haex-sync-supabase/volumes/db/pooler.sql:/docker-entrypoint-initdb.d/migrations/99-pooler.sql:Z
     healthcheck:
       test: pg_isready -U postgres -h localhost
       interval: 5s
