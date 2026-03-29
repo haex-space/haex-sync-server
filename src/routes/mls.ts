@@ -6,6 +6,7 @@ import { authDispatcher } from '../middleware/authDispatcher'
 import { requireCapability } from '../middleware/ucanAuth'
 import { resolveDidIdentity } from '../middleware/didAuth'
 import { eq, and, gt } from 'drizzle-orm'
+import { broadcastToSpace, sendToDid } from './ws'
 
 const mlsRouter = new Hono()
 
@@ -51,6 +52,9 @@ mlsRouter.post('/:spaceId/invites', zValidator('json', createInviteSchema), asyn
     if (!invite) {
       return c.json({ error: 'Invite already exists for this user' }, 409)
     }
+
+    // Notify the invitee about the new invite
+    sendToDid(body.inviteeDid, { type: 'invite', spaceId, inviteId: invite.id })
 
     return c.json({ success: true, invite: { id: invite.id, status: invite.status } }, 201)
   } catch (error) {
@@ -146,6 +150,9 @@ mlsRouter.post('/:spaceId/invites/:inviteId/accept', zValidator('json', acceptIn
       }))
       await tx.insert(mlsKeyPackages).values(values)
     })
+
+    // Notify space members about the new membership
+    broadcastToSpace(spaceId, { type: 'membership', spaceId })
 
     return c.json({ success: true })
   } catch (error) {
@@ -330,6 +337,9 @@ mlsRouter.post('/:spaceId/mls/messages', zValidator('json', sendMessageSchema), 
       payload: Buffer.from(body.payload, 'base64'),
       epoch: body.epoch ?? null,
     }).returning({ id: mlsMessages.id })
+
+    // Notify space members about the new MLS message
+    broadcastToSpace(spaceId, { type: 'mls', spaceId }, callerDid)
 
     return c.json({ success: true, messageId: rows[0]!.id }, 201)
   } catch (error) {

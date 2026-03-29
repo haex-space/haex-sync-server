@@ -9,6 +9,7 @@ import { pushChangesSchema, pullChangesSchema, pullColumnsSchema, SpacePushValid
 import { getSpaceType, validateSpacePush } from './sync.helpers'
 import { getUserQuotaAsync } from '../services/quota'
 import vaultRoutes from './sync.vaults'
+import { broadcastToSpace } from './ws'
 
 // Re-export sync utilities
 export { validateBatches, type SyncChange, type BatchValidationError } from '../utils/syncUtils'
@@ -222,6 +223,9 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
 
       return allInsertedChanges
     })
+
+    // Notify connected space members about the new changes
+    broadcastToSpace(spaceId, { type: 'sync', spaceId }, callerDid)
 
     return c.json({
       message: 'Changes pushed successfully',

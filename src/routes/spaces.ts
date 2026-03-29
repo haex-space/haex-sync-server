@@ -6,6 +6,7 @@ import { authDispatcher } from '../middleware/authDispatcher'
 import { requireCapability } from '../middleware/ucanAuth'
 import { resolveDidIdentity } from '../middleware/didAuth'
 import { eq, and } from 'drizzle-orm'
+import { broadcastToSpace, updateMembershipCache } from './ws'
 
 const spacesRouter = new Hono()
 
@@ -346,6 +347,10 @@ spacesRouter.delete('/:spaceId/members/:memberDid', async (c) => {
     if (result) {
       return c.json({ error: result.error }, result.status)
     }
+
+    // Notify space members about the membership change
+    broadcastToSpace(spaceId, { type: 'membership', spaceId })
+    updateMembershipCache(targetDid, spaceId, 'remove')
 
     return c.json({ success: true })
   } catch (error) {
