@@ -1,11 +1,6 @@
-import type { VerifiedUcan, Capabilities } from '@haex-space/ucan'
+import type { UcanContext } from '@haex-space/ucan'
 
-export interface UcanContext {
-  issuerDid: string
-  publicKey: string
-  capabilities: Capabilities
-  verifiedUcan: VerifiedUcan
-}
+export type { UcanContext }
 
 export interface DidContext {
   did: string
