@@ -1,4 +1,4 @@
-import { db, syncChanges, spaces, spaceMembers, identities } from '../db'
+import { db, syncChanges, spaces } from '../db'
 import { verifyRecordSignatureAsync } from '@haex-space/vault-sdk'
 import { eq, and } from 'drizzle-orm'
 import type { PushChange } from './sync.schemas'
@@ -10,29 +10,6 @@ export async function getSpaceType(spaceId: string): Promise<'vault' | 'shared' 
     .where(eq(spaces.id, spaceId))
     .limit(1)
   return (result[0]?.type as 'vault' | 'shared') ?? null
-}
-
-/** Look up a user's public key from the identities table */
-export async function getUserPublicKey(userId: string): Promise<string | null> {
-  const [identity] = await db.select()
-    .from(identities)
-    .where(eq(identities.supabaseUserId, userId))
-    .limit(1)
-  return identity?.publicKey ?? null
-}
-
-/** Look up a user's role in a space by resolving their publicKey */
-export async function getCallerRoleByUserId(spaceId: string, userId: string): Promise<string | null> {
-  const publicKey = await getUserPublicKey(userId)
-  if (!publicKey) return null
-  const result = await db.select({ role: spaceMembers.role })
-    .from(spaceMembers)
-    .where(and(
-      eq(spaceMembers.spaceId, spaceId),
-      eq(spaceMembers.publicKey, publicKey),
-    ))
-    .limit(1)
-  return result[0]?.role ?? null
 }
 
 /** Validate all changes in a space push (signatures, ownership, roles) */

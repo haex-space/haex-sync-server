@@ -3,6 +3,7 @@ import { zValidator } from '@hono/zod-validator'
 import { db, vaultKeys, spaces, type NewVaultKey } from '../db'
 import { eq, and } from 'drizzle-orm'
 import { vaultKeySchema, updateVaultNameSchema } from './sync.schemas'
+import { resolveDidIdentity } from '../middleware/didAuth'
 
 const vaultRoutes = new Hono()
 
@@ -16,18 +17,17 @@ vaultRoutes.post('/vault-key', zValidator('json', vaultKeySchema, (result, c) =>
     return c.json({ error: result.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join(', ') }, 400)
   }
 }), async (c) => {
-  const spaceToken = c.get('spaceToken')
-  if (spaceToken) {
-    return c.json({ error: 'Space tokens can only be used for push/pull operations' }, 403)
-  }
-  const user = c.get('user')
+  const didAuth = c.get('didAuth')
+  if (!didAuth) return c.json({ error: 'Vault operations require DID-Auth' }, 401)
+  const identity = await resolveDidIdentity(didAuth.did)
+  if (!identity?.supabaseUserId) return c.json({ error: 'Identity not found' }, 404)
   const { spaceId, encryptedVaultKey, encryptedVaultName, vaultKeySalt, ephemeralPublicKey, vaultKeyNonce, vaultNameNonce } = c.req.valid('json')
 
   try {
     // Check if vault key already exists
     const existing = await db.query.vaultKeys.findFirst({
       where: and(
-        eq(vaultKeys.userId, user.userId),
+        eq(vaultKeys.userId, identity.supabaseUserId),
         eq(vaultKeys.spaceId, spaceId)
       ),
     })
@@ -41,13 +41,13 @@ vaultRoutes.post('/vault-key', zValidator('json', vaultKeySchema, (result, c) =>
       await tx.insert(spaces).values({
         id: spaceId,
         type: 'vault',
-        ownerId: user.userId,
+        ownerId: identity.supabaseUserId!,
       })
 
       const insertedKeys = await tx
         .insert(vaultKeys)
         .values({
-          userId: user.userId,
+          userId: identity.supabaseUserId!,
           spaceId,
           encryptedVaultKey,
           encryptedVaultName,
@@ -84,11 +84,10 @@ vaultRoutes.post('/vault-key', zValidator('json', vaultKeySchema, (result, c) =>
  * Retrieve all vaults for the authenticated user
  */
 vaultRoutes.get('/vaults', async (c) => {
-  const spaceToken = c.get('spaceToken')
-  if (spaceToken) {
-    return c.json({ error: 'Space tokens can only be used for push/pull operations' }, 403)
-  }
-  const user = c.get('user')
+  const didAuth = c.get('didAuth')
+  if (!didAuth) return c.json({ error: 'Vault operations require DID-Auth' }, 401)
+  const identity = await resolveDidIdentity(didAuth.did)
+  if (!identity?.supabaseUserId) return c.json({ error: 'Identity not found' }, 404)
 
   try {
     const userVaults = await db.select({
@@ -101,11 +100,11 @@ vaultRoutes.get('/vaults', async (c) => {
       .from(spaces)
       .innerJoin(vaultKeys, and(
         eq(vaultKeys.spaceId, spaces.id),
-        eq(vaultKeys.userId, user.userId),
+        eq(vaultKeys.userId, identity.supabaseUserId),
       ))
       .where(and(
         eq(spaces.type, 'vault'),
-        eq(spaces.ownerId, user.userId),
+        eq(spaces.ownerId, identity.supabaseUserId),
       ))
       .orderBy(vaultKeys.createdAt)
 
@@ -129,11 +128,10 @@ vaultRoutes.get('/vaults', async (c) => {
  * Update encrypted vault name for a vault
  */
 vaultRoutes.patch('/vault-key/:spaceId', zValidator('json', updateVaultNameSchema), async (c) => {
-  const spaceToken = c.get('spaceToken')
-  if (spaceToken) {
-    return c.json({ error: 'Space tokens can only be used for push/pull operations' }, 403)
-  }
-  const user = c.get('user')
+  const didAuth = c.get('didAuth')
+  if (!didAuth) return c.json({ error: 'Vault operations require DID-Auth' }, 401)
+  const identity = await resolveDidIdentity(didAuth.did)
+  if (!identity?.supabaseUserId) return c.json({ error: 'Identity not found' }, 404)
   const spaceId = c.req.param('spaceId')
   const { encryptedVaultName, vaultNameNonce, ephemeralPublicKey } = c.req.valid('json')
 
@@ -141,7 +139,7 @@ vaultRoutes.patch('/vault-key/:spaceId', zValidator('json', updateVaultNameSchem
     // Check if vault key exists and belongs to user
     const existing = await db.query.vaultKeys.findFirst({
       where: and(
-        eq(vaultKeys.userId, user.userId),
+        eq(vaultKeys.userId, identity.supabaseUserId),
         eq(vaultKeys.spaceId, spaceId)
       ),
     })
@@ -161,7 +159,7 @@ vaultRoutes.patch('/vault-key/:spaceId', zValidator('json', updateVaultNameSchem
       })
       .where(
         and(
-          eq(vaultKeys.userId, user.userId),
+          eq(vaultKeys.userId, identity.supabaseUserId),
           eq(vaultKeys.spaceId, spaceId)
         )
       )
@@ -181,17 +179,16 @@ vaultRoutes.patch('/vault-key/:spaceId', zValidator('json', updateVaultNameSchem
  * Retrieve encrypted vault key for a user
  */
 vaultRoutes.get('/vault-key/:spaceId', async (c) => {
-  const spaceToken = c.get('spaceToken')
-  if (spaceToken) {
-    return c.json({ error: 'Space tokens can only be used for push/pull operations' }, 403)
-  }
-  const user = c.get('user')
+  const didAuth = c.get('didAuth')
+  if (!didAuth) return c.json({ error: 'Vault operations require DID-Auth' }, 401)
+  const identity = await resolveDidIdentity(didAuth.did)
+  if (!identity?.supabaseUserId) return c.json({ error: 'Identity not found' }, 404)
   const spaceId = c.req.param('spaceId')
 
   try {
     const vaultKey = await db.query.vaultKeys.findFirst({
       where: and(
-        eq(vaultKeys.userId, user.userId),
+        eq(vaultKeys.userId, identity.supabaseUserId),
         eq(vaultKeys.spaceId, spaceId)
       ),
     })
@@ -228,11 +225,10 @@ vaultRoutes.get('/vault-key/:spaceId', async (c) => {
  * Deleting from spaces cascades to vault_keys and sync_changes.
  */
 vaultRoutes.delete('/vault/:spaceId', async (c) => {
-  const spaceToken = c.get('spaceToken')
-  if (spaceToken) {
-    return c.json({ error: 'Space tokens can only be used for push/pull operations' }, 403)
-  }
-  const user = c.get('user')
+  const didAuth = c.get('didAuth')
+  if (!didAuth) return c.json({ error: 'Vault operations require DID-Auth' }, 401)
+  const identity = await resolveDidIdentity(didAuth.did)
+  if (!identity?.supabaseUserId) return c.json({ error: 'Identity not found' }, 404)
   const spaceId = c.req.param('spaceId')
 
   try {
@@ -241,7 +237,7 @@ vaultRoutes.delete('/vault/:spaceId', async (c) => {
       .from(spaces)
       .where(and(
         eq(spaces.id, spaceId),
-        eq(spaces.ownerId, user.userId),
+        eq(spaces.ownerId, identity.supabaseUserId),
         eq(spaces.type, 'vault'),
       ))
       .limit(1)
@@ -256,7 +252,7 @@ vaultRoutes.delete('/vault/:spaceId', async (c) => {
       .where(
         and(
           eq(spaces.id, spaceId),
-          eq(spaces.ownerId, user.userId),
+          eq(spaces.ownerId, identity.supabaseUserId),
           eq(spaces.type, 'vault'),
         )
       )
@@ -277,16 +273,15 @@ vaultRoutes.delete('/vault/:spaceId', async (c) => {
  * This removes all vault spaces (cascades to vault_keys and sync_changes) but keeps the account.
  */
 vaultRoutes.delete('/vaults', async (c) => {
-  const spaceToken = c.get('spaceToken')
-  if (spaceToken) {
-    return c.json({ error: 'Space tokens can only be used for push/pull operations' }, 403)
-  }
-  const user = c.get('user')
+  const didAuth = c.get('didAuth')
+  if (!didAuth) return c.json({ error: 'Vault operations require DID-Auth' }, 401)
+  const identity = await resolveDidIdentity(didAuth.did)
+  if (!identity?.supabaseUserId) return c.json({ error: 'Identity not found' }, 404)
 
   try {
     await db.delete(spaces).where(
       and(
-        eq(spaces.ownerId, user.userId),
+        eq(spaces.ownerId, identity.supabaseUserId),
         eq(spaces.type, 'vault'),
       )
     )
