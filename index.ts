@@ -7,6 +7,7 @@ import storageRoutes from './src/routes/storage'
 import spacesRoutes from './src/routes/spaces'
 import mlsRoutes from './src/routes/mls'
 import identityAuthRoutes from './src/routes/identity-auth'
+import { wsApp, websocket } from './src/routes/ws'
 import { syncTiersFromEnvAsync } from './src/services/tierConfig'
 import packageJson from './package.json'
 
@@ -51,6 +52,8 @@ app.route('/storage', storageRoutes)
 app.route('/spaces', spacesRoutes)
 // MLS Delivery Service routes (nested under /spaces/:spaceId/mls/*)
 app.route('/spaces', mlsRoutes)
+// WebSocket endpoint for real-time push notifications
+app.route('/', wsApp)
 
 // 404 handler
 app.notFound((c) => {
@@ -81,4 +84,5 @@ syncTiersFromEnvAsync().catch(err => console.error('Failed to sync tiers from en
 export default {
   port,
   fetch: app.fetch,
+  websocket,
 }
