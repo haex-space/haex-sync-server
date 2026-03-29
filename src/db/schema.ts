@@ -216,9 +216,10 @@ export const spaceMembers = pgTable(
     spaceId: uuid("space_id")
       .notNull()
       .references(() => spaces.id, { onDelete: "cascade" }),
-    publicKey: text("public_key").notNull(), // ECDSA P-256 public key (Base64 SPKI)
+    publicKey: text("public_key").notNull(), // Ed25519 public key (hex)
+    did: text("did").notNull(), // did:key:z... of the member
     label: text("label").notNull(), // Human-readable name assigned by the inviter
-    role: text("role").notNull(), // 'admin' | 'owner' | 'member' | 'reader'
+    role: text("role").notNull(), // 'admin' | 'owner' | 'member' | 'reader' — server-side cache, UCAN is authoritative
     invitedBy: text("invited_by"), // Public key of the inviter (null for space creator)
     joinedAt: timestamp("joined_at", { withTimezone: true }).notNull().defaultNow(),
   },
