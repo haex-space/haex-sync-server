@@ -19,6 +19,7 @@ services:
       POSTGRES_PORT: 5432
     volumes:
       - db_data:/var/lib/postgresql/data:Z
+      - ./docker/db/init-roles.sql:/docker-entrypoint-initdb.d/00-init-roles.sql:ro
     healthcheck:
       test: pg_isready -U postgres -h localhost
       interval: 5s
