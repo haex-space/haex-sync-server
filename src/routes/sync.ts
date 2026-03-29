@@ -6,6 +6,7 @@ import { requireCapability } from '../middleware/ucanAuth'
 import { resolveDidIdentity } from '../middleware/didAuth'
 import { eq, and, ne, sql, max, asc, or } from 'drizzle-orm'
 import { pushChangesSchema, pullChangesSchema, pullColumnsSchema, SpacePushValidationError, type PushChange } from './sync.schemas'
+import { spaceResource, type Capability } from '@haex-space/ucan'
 import { getSpaceType, validateSpacePush } from './sync.helpers'
 import { getUserQuotaAsync } from '../services/quota'
 import vaultRoutes from './sync.vaults'
@@ -76,7 +77,7 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
 
     // Space-scoped push validation
     let spaceAuthenticatedPublicKey: string | undefined
-    let spaceRole: string | undefined
+    let spaceCapability: Capability | undefined
 
     if (isSpaceSync) {
       const authenticatedPublicKey = identity!.publicKey
@@ -84,9 +85,11 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
         return c.json({ error: 'User has no registered keypair' }, 400)
       }
 
-      // Role comes from UCAN capabilities; extract from UCAN
       const ucan = c.get('ucan')
-      spaceRole = ucan?.capability?.role ?? 'writer'
+      spaceCapability = ucan?.capabilities?.[spaceResource(spaceId)]
+      if (!spaceCapability) {
+        return c.json({ error: 'No capability for this space' }, 403)
+      }
       spaceAuthenticatedPublicKey = authenticatedPublicKey
     }
 
@@ -159,7 +162,7 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
     const result = await db.transaction(async (tx) => {
       // Validate space push inside transaction to prevent TOCTOU races
       if (isSpaceSync) {
-        const validation = await validateSpacePush(changes, spaceId, spaceAuthenticatedPublicKey!, spaceRole!, tx)
+        const validation = await validateSpacePush(changes, spaceId, spaceAuthenticatedPublicKey!, spaceCapability!, tx)
         if (!validation.valid) {
           throw new SpacePushValidationError(validation.error ?? 'Space push validation failed')
         }

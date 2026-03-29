@@ -1,5 +1,6 @@
 import { db, syncChanges, spaces } from '../db'
 import { verifyRecordSignatureAsync } from '@haex-space/vault-sdk'
+import { satisfies, type Capability } from '@haex-space/ucan'
 import { eq, and } from 'drizzle-orm'
 import type { PushChange } from './sync.schemas'
 
@@ -12,17 +13,17 @@ export async function getSpaceType(spaceId: string): Promise<'vault' | 'shared' 
   return (result[0]?.type as 'vault' | 'shared') ?? null
 }
 
-/** Validate all changes in a space push (signatures, ownership, roles) */
+/** Validate all changes in a space push (signatures, ownership, capabilities) */
 export async function validateSpacePush(
   changes: PushChange[],
   spaceId: string,
   authenticatedPublicKey: string,
-  role: string,
+  capability: Capability,
   tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
 ): Promise<{ valid: boolean; error?: string }> {
-  // 1. Role check
-  if (role === 'reader') {
-    return { valid: false, error: 'Readers cannot push changes' }
+  // 1. Capability check: need at least space/write to push
+  if (!satisfies(capability, 'space/write')) {
+    return { valid: false, error: 'Insufficient capability: need space/write to push changes' }
   }
 
   for (const change of changes) {
@@ -83,11 +84,11 @@ export async function validateSpacePush(
         }
       }
 
-      // Data modification: owner, collaborative, or space admin/owner
-      const isOwner = change.signedBy === existing.recordOwner
+      // Data modification: owner, collaborative, or space admin/invite (management capabilities)
+      const isRecordOwner = change.signedBy === existing.recordOwner
       const isCollaborative = existing.collaborative === true
-      const isSpaceAdmin = role === 'admin' || role === 'owner'
-      if (!isOwner && !isCollaborative && !isSpaceAdmin) {
+      const canManageSpace = satisfies(capability, 'space/invite')
+      if (!isRecordOwner && !isCollaborative && !canManageSpace) {
         return { valid: false, error: `Cannot modify record owned by ${existing.recordOwner}` }
       }
     }
