@@ -191,9 +191,7 @@ export type NewUserStorageCredential = typeof userStorageCredentials.$inferInser
 export const spaces = pgTable("spaces", {
   id: uuid("id").primaryKey().defaultRandom(),
   type: text("type").notNull().default("shared"),
-  ownerId: uuid("owner_id")
-    .notNull()
-    .references(() => authUsers.id, { onDelete: "cascade" }),
+  ownerId: text("owner_id").notNull(), // DID of the space creator (root authority)
   encryptedName: text("encrypted_name"),
   nameNonce: text("name_nonce"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

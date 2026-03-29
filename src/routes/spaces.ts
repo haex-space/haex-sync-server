@@ -57,7 +57,7 @@ spacesRouter.post('/', zValidator('json', createSpaceSchema), async (c) => {
     await db.transaction(async (tx) => {
       await tx.insert(spaces).values({
         id: body.id,
-        ownerId: identity.supabaseUserId!,
+        ownerId: didAuth.did,
         encryptedName: body.encryptedName,
         nameNonce: body.nameNonce,
       })
@@ -142,7 +142,7 @@ spacesRouter.get('/:spaceId', async (c) => {
     return c.json({ error: 'Invalid space ID format' }, 400)
   }
 
-  const error = requireCapability(c, spaceId, 'space/read')
+  const error = await requireCapability(c, spaceId, 'space/read')
   if (error) return error
 
   try {
@@ -190,7 +190,7 @@ spacesRouter.patch('/:spaceId', zValidator('json', updateSpaceSchema), async (c)
     return c.json({ error: 'Invalid space ID format' }, 400)
   }
 
-  const error = requireCapability(c, spaceId, 'space/admin')
+  const error = await requireCapability(c, spaceId, 'space/admin')
   if (error) return error
 
   try {
@@ -216,7 +216,7 @@ spacesRouter.delete('/:spaceId', async (c) => {
     return c.json({ error: 'Invalid space ID format' }, 400)
   }
 
-  const error = requireCapability(c, spaceId, 'space/admin')
+  const error = await requireCapability(c, spaceId, 'space/admin')
   if (error) return error
 
   try {
@@ -244,7 +244,7 @@ spacesRouter.post('/:spaceId/members', zValidator('json', inviteMemberSchema), a
     return c.json({ error: 'Invalid space ID format' }, 400)
   }
 
-  const capError = requireCapability(c, spaceId, 'space/invite')
+  const capError = await requireCapability(c, spaceId, 'space/invite')
   if (capError) return capError
 
   const callerDid = getCallerDid(c)
@@ -302,7 +302,7 @@ spacesRouter.delete('/:spaceId/members/:memberDid', async (c) => {
 
   // If not self-leave, require admin capability
   if (!isSelf) {
-    const capError = requireCapability(c, spaceId, 'space/admin')
+    const capError = await requireCapability(c, spaceId, 'space/admin')
     if (capError) return capError
   }
 
@@ -372,7 +372,7 @@ spacesRouter.post('/:spaceId/transfer-admin', zValidator('json', transferAdminSc
     return c.json({ error: 'Invalid space ID format' }, 400)
   }
 
-  const capError = requireCapability(c, spaceId, 'space/admin')
+  const capError = await requireCapability(c, spaceId, 'space/admin')
   if (capError) return capError
 
   const callerDid = getCallerDid(c)

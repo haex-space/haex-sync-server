@@ -54,6 +54,12 @@ try {
   `)
   console.log('✅ FK constraints verified')
 
+  // Apply Partitioning BEFORE RLS — sync_changes must exist before enabling RLS on it
+  console.log('📊 Applying Partitioning configuration...')
+  const partitioningSQL = readFileSync(join(import.meta.dir, '../drizzle/partitioning.sql'), 'utf-8')
+  await migrationClient.unsafe(partitioningSQL)
+  console.log('✅ Partitioning configuration applied successfully')
+
   // Apply RLS policies (these need to be reapplied after schema changes)
   console.log('🔒 Applying RLS policies...')
   const rlsPoliciesSQL = readFileSync(join(import.meta.dir, '../drizzle/rls-policies.sql'), 'utf-8')
@@ -75,13 +81,6 @@ try {
       throw e
     }
   }
-
-  // Apply Partitioning configuration (converts sync_changes to partitioned table)
-  // This is idempotent - it checks if table is already partitioned
-  console.log('📊 Applying Partitioning configuration...')
-  const partitioningSQL = readFileSync(join(import.meta.dir, '../drizzle/partitioning.sql'), 'utf-8')
-  await migrationClient.unsafe(partitioningSQL)
-  console.log('✅ Partitioning configuration applied successfully')
 
   // Apply Realtime configuration (adds sync_changes partitions to supabase_realtime publication)
   // This must run AFTER partitioning to ensure all partitions are included

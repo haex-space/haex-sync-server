@@ -4,7 +4,7 @@
     "": {
       "name": "haex-sync-server",
       "dependencies": {
-        "@haex-space/ucan": "0.1.1",
+        "@haex-space/ucan": "0.1.2",
         "@haex-space/vault-sdk": "2.8.0",
         "@hono/zod-validator": "^0.7.4",
         "@supabase/supabase-js": "^2.79.0",
@@ -85,7 +85,7 @@
 
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.25.12", "", { "os": "win32", "cpu": "x64" }, "sha512-alJC0uCZpTFrSL0CCDjcgleBXPnCrEAhTBILpeAp7M/OFgoqtAetfBzX0xM00MUsVVPpVjlPuMbREqnZCXaTnA=="],
 
-    "@haex-space/ucan": ["@haex-space/ucan@0.1.1", "", {}, "sha512-4D9/HzBGlwr8M7F8jC4ceaWc8ruX20HI5txuN0qa8HrZ0VwtQV4mCFAOhbd+b05i064+XEMJnf+nFnze4+w6VQ=="],
+    "@haex-space/ucan": ["@haex-space/ucan@0.1.2", "", {}, "sha512-ybOdoshckyBKncsrs4jx4mW80s3pdSk9kBlvkFSmATy4bp+GP0IMYl7q5J7Ipq/LkPEckOTxEG/dAyYXghHA9Q=="],
 
     "@haex-space/vault-sdk": ["@haex-space/vault-sdk@2.8.0", "", { "dependencies": { "archiver": "7.0.1", "commander": "14.0.3", "drizzle-orm": "0.45.1", "jszip": "3.10.1" }, "bin": { "haex": "dist/cli/index.js" } }, "sha512-kDcnqTA79TnJ/WxPRnDy5XcMtkmxYnCk3mNZt1S/9hPSeiO4gSx1rzXYDCg1ivr8M6oCJpYl9VsNrPR0b5hO4A=="],
 

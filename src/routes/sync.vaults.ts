@@ -41,7 +41,7 @@ vaultRoutes.post('/vault-key', zValidator('json', vaultKeySchema, (result, c) =>
       await tx.insert(spaces).values({
         id: spaceId,
         type: 'vault',
-        ownerId: identity.supabaseUserId!,
+        ownerId: didAuth.did,
       })
 
       const insertedKeys = await tx
@@ -104,7 +104,7 @@ vaultRoutes.get('/vaults', async (c) => {
       ))
       .where(and(
         eq(spaces.type, 'vault'),
-        eq(spaces.ownerId, identity.supabaseUserId),
+        eq(spaces.ownerId, didAuth.did),
       ))
       .orderBy(vaultKeys.createdAt)
 
@@ -237,7 +237,7 @@ vaultRoutes.delete('/vault/:spaceId', async (c) => {
       .from(spaces)
       .where(and(
         eq(spaces.id, spaceId),
-        eq(spaces.ownerId, identity.supabaseUserId),
+        eq(spaces.ownerId, didAuth.did),
         eq(spaces.type, 'vault'),
       ))
       .limit(1)
@@ -252,7 +252,7 @@ vaultRoutes.delete('/vault/:spaceId', async (c) => {
       .where(
         and(
           eq(spaces.id, spaceId),
-          eq(spaces.ownerId, identity.supabaseUserId),
+          eq(spaces.ownerId, didAuth.did),
           eq(spaces.type, 'vault'),
         )
       )
@@ -281,7 +281,7 @@ vaultRoutes.delete('/vaults', async (c) => {
   try {
     await db.delete(spaces).where(
       and(
-        eq(spaces.ownerId, identity.supabaseUserId),
+        eq(spaces.ownerId, didAuth.did),
         eq(spaces.type, 'vault'),
       )
     )

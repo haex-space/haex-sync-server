@@ -304,73 +304,12 @@ BEGIN
         -- SECURITY DEFINER bypasses RLS to avoid infinite recursion
         -- (space_members has its own RLS that self-references).
 
-        CREATE OR REPLACE FUNCTION public.can_access_sync_channel(
-            p_user_id uuid,
-            p_channel_topic text
-        ) RETURNS boolean
-        SECURITY DEFINER SET search_path = ''
-        AS $authfn$
-        DECLARE
-            v_space_id uuid;
-            v_space_type text;
-        BEGIN
-            -- Extract space_id from topic "sync:<uuid>"
-            BEGIN
-                v_space_id := split_part(p_channel_topic, ':', 2)::uuid;
-            EXCEPTION
-                WHEN invalid_text_representation THEN
-                    RETURN false;
-            END;
+        -- can_access_sync_channel removed: Supabase Realtime replaced by custom WebSocket
 
-            IF v_space_id IS NULL THEN
-                RETURN false;
-            END IF;
-
-            -- Look up space type
-            SELECT type INTO v_space_type
-            FROM public.spaces
-            WHERE id = v_space_id;
-
-            IF v_space_type IS NULL THEN
-                RETURN false;
-            END IF;
-
-            IF v_space_type = 'vault' THEN
-                -- Vault: owner check
-                RETURN EXISTS (
-                    SELECT 1 FROM public.spaces
-                    WHERE id = v_space_id AND owner_id = p_user_id
-                );
-            ELSIF v_space_type = 'shared' THEN
-                -- Shared: membership via identities -> space_members
-                RETURN EXISTS (
-                    SELECT 1 FROM public.identities i
-                    JOIN public.space_members sm ON sm.public_key = i.public_key
-                    WHERE i.supabase_user_id = p_user_id
-                    AND sm.space_id = v_space_id
-                );
-            END IF;
-
-            RETURN false;
-        END;
-        $authfn$ LANGUAGE plpgsql;
-
-        -- ====================================================================
-        -- 7. RLS policy on realtime.messages for broadcast authorization
-        -- ====================================================================
-
+        -- Realtime RLS policies removed: Supabase Realtime replaced by custom WebSocket
         DROP POLICY IF EXISTS "authenticated can receive broadcasts" ON realtime.messages;
         DROP POLICY IF EXISTS "vault owner can receive sync broadcasts" ON realtime.messages;
         DROP POLICY IF EXISTS "sync participant can receive broadcasts" ON realtime.messages;
-        CREATE POLICY "sync participant can receive broadcasts"
-            ON realtime.messages FOR SELECT TO authenticated
-            USING (
-                realtime.messages.extension = 'broadcast'
-                AND public.can_access_sync_channel(
-                    (select auth.uid()),
-                    realtime.topic()
-                )
-            );
     ELSE
         RAISE NOTICE 'Skipping broadcast trigger: realtime.messages table not available';
     END IF;

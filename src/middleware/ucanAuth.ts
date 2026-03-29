@@ -1,4 +1,5 @@
 import type { Context, Next } from 'hono'
+import { eq } from 'drizzle-orm'
 import {
   verifyUcan,
   createWebCryptoVerifier,
@@ -8,6 +9,8 @@ import {
   type Capability,
 } from '@haex-space/ucan'
 import type { UcanContext } from './types'
+import { db } from '../db'
+import { spaces } from '../db/schema'
 
 const verify = createWebCryptoVerifier()
 
@@ -69,26 +72,42 @@ export const ucanAuthMiddleware = async (c: Context, next: Next) => {
  * if (error) return error
  * ```
  */
-export function requireCapability(
+export async function requireCapability(
   c: Context,
   spaceId: string,
   required: Capability,
-): Response | null {
+): Promise<Response | null> {
   const ucan = c.get('ucan') as UcanContext | null
 
-  if (!ucan) {
-    return c.json({ error: 'Forbidden - No UCAN context' }, 403)
+  // If UCAN is present, check capabilities from the token
+  if (ucan) {
+    const resource = spaceResource(spaceId)
+    const held = ucan.capabilities[resource]
+
+    if (!held || !satisfies(held, required)) {
+      return c.json(
+        { error: `Forbidden - Insufficient capability for ${resource}, requires ${required}` },
+        403,
+      )
+    }
+    return null
   }
 
-  const resource = spaceResource(spaceId)
-  const held = ucan.capabilities[resource]
+  // For DID-Auth: the space owner is the root authority — all capabilities are implicit
+  const didAuth = c.get('didAuth') as { did: string } | null
+  if (didAuth) {
+    const [space] = await db
+      .select({ ownerId: spaces.ownerId })
+      .from(spaces)
+      .where(eq(spaces.id, spaceId))
+      .limit(1)
 
-  if (!held || !satisfies(held, required)) {
-    return c.json(
-      { error: `Forbidden - Insufficient capability for ${resource}, requires ${required}` },
-      403,
-    )
+    if (space && space.ownerId === didAuth.did) {
+      return null // Owner is root authority — no UCAN needed
+    }
+
+    return c.json({ error: 'Forbidden - Non-owners must provide a UCAN' }, 403)
   }
 
-  return null
+  return c.json({ error: 'Forbidden - No auth context' }, 403)
 }

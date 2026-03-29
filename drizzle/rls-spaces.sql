@@ -47,10 +47,9 @@ CREATE POLICY "Users can read their own identity"
 
 ALTER TABLE spaces ENABLE ROW LEVEL SECURITY;
 
+-- owner_id is now a DID (text), not a Supabase UUID.
+-- Direct PostgREST access is not used — the server API handles auth.
 DROP POLICY IF EXISTS "Users can read their own spaces" ON spaces;
-CREATE POLICY "Users can read their own spaces"
-  ON spaces FOR SELECT
-  USING (owner_id = (select auth.uid()));
 
 -- Note: shared space members who are NOT the owner cannot see the space
 -- via PostgREST. This is intentional — the server API handles membership
@@ -63,8 +62,7 @@ CREATE POLICY "Users can read their own spaces"
 
 ALTER TABLE space_members ENABLE ROW LEVEL SECURITY;
 
--- Helper function to check space membership without triggering RLS recursion.
--- SECURITY DEFINER runs as the function owner (superuser), bypassing RLS.
+-- Membership check: uses DID from identities table linked to auth.uid()
 CREATE OR REPLACE FUNCTION is_space_member(p_space_id uuid)
 RETURNS boolean
 SECURITY DEFINER SET search_path = ''
@@ -72,7 +70,7 @@ AS $$
 BEGIN
   RETURN EXISTS (
     SELECT 1 FROM public.identities i
-    JOIN public.space_members sm ON sm.public_key = i.public_key
+    JOIN public.space_members sm ON sm.did = i.did
     WHERE i.supabase_user_id = (SELECT auth.uid())
     AND sm.space_id = p_space_id
   );

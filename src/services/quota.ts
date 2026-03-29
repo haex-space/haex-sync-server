@@ -90,7 +90,7 @@ export async function getPartitionQuotaAsync(supabaseUserId: string): Promise<Pa
     count: sql<number>`cast(count(*) as int)`,
   })
     .from(spaces)
-    .where(eq(spaces.ownerId, supabaseUserId))
+    .where(eq(spaces.ownerId, identity.did))
 
   const usedPartitions = (vaultCount?.count ?? 0) + (spaceCount?.count ?? 0)
 

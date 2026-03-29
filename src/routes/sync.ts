@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
-import { db, syncChanges, spaces, identities, type NewSyncChange } from '../db'
+import { db, syncChanges, spaces, type NewSyncChange } from '../db'
 import { authDispatcher } from '../middleware/authDispatcher'
 import { requireCapability } from '../middleware/ucanAuth'
 import { resolveDidIdentity } from '../middleware/didAuth'
@@ -60,7 +60,6 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
     // Resolve caller identity
     const callerDid = getCallerDid(c)!
     const identity = await resolveDidIdentity(callerDid)
-    const effectiveUserId = identity!.supabaseUserId!
 
     // For personal vaults, verify the user owns this space
     if (spaceType === 'vault') {
@@ -68,7 +67,7 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
       if (!didAuth) return c.json({ error: 'Personal vaults require DID-Auth' }, 401)
       const isOwner = await db.select({ id: spaces.id })
         .from(spaces)
-        .where(and(eq(spaces.id, spaceId), eq(spaces.ownerId, effectiveUserId)))
+        .where(and(eq(spaces.id, spaceId), eq(spaces.ownerId, callerDid)))
         .limit(1)
       if (isOwner.length === 0) {
         return c.json({ error: 'Access denied: not the vault owner' }, 403)
@@ -147,7 +146,7 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
     const CHUNK_SIZE = 5000
 
     // Check storage quota before accepting push
-    const quota = await getUserQuotaAsync(effectiveUserId)
+    const quota = await getUserQuotaAsync(identity!.supabaseUserId!)
     if (quota.isOverQuota) {
       return c.json({
         error: 'Storage quota exceeded',
@@ -178,7 +177,7 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
           .insert(syncChanges)
           .values(
             chunk.map((change) => ({
-              userId: effectiveUserId,
+              userId: identity!.supabaseUserId!,
               spaceId,
               tableName: change.tableName,
               rowPks: change.rowPks,
@@ -274,7 +273,6 @@ sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
     // Resolve caller identity
     const callerDid = getCallerDid(c)!
     const identity = await resolveDidIdentity(callerDid)
-    const effectiveUserId = identity!.supabaseUserId!
 
     // For personal vaults, verify the user owns this space
     if (spaceType === 'vault') {
@@ -282,7 +280,7 @@ sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
       if (!didAuth) return c.json({ error: 'Personal vaults require DID-Auth' }, 401)
       const isOwner = await db.select({ id: spaces.id })
         .from(spaces)
-        .where(and(eq(spaces.id, spaceId), eq(spaces.ownerId, effectiveUserId)))
+        .where(and(eq(spaces.id, spaceId), eq(spaces.ownerId, callerDid)))
         .limit(1)
       if (isOwner.length === 0) {
         return c.json({ error: 'Access denied: not the vault owner' }, 403)
@@ -293,7 +291,7 @@ sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
     // For personal vaults: query by userId + spaceId (scoped to owner)
     const scopeFilter = isSpaceSync
       ? eq(syncChanges.spaceId, spaceId)
-      : and(eq(syncChanges.userId, effectiveUserId), eq(syncChanges.spaceId, spaceId))
+      : and(eq(syncChanges.userId, identity!.supabaseUserId!), eq(syncChanges.spaceId, spaceId))
 
     // Step 1: Find rows to return using GROUP BY with HAVING for cursor-based pagination
     // Uses (maxUpdatedAt, tableName, rowPks) for stable cursor - works even with bulk imports
@@ -424,7 +422,6 @@ sync.post('/pull-columns', zValidator('json', pullColumnsSchema), async (c) => {
     // Resolve caller identity
     const callerDid = getCallerDid(c)!
     const identity = await resolveDidIdentity(callerDid)
-    const effectiveUserId = identity!.supabaseUserId!
 
     // For personal vaults, verify the user owns this space
     if (spaceType === 'vault') {
@@ -432,7 +429,7 @@ sync.post('/pull-columns', zValidator('json', pullColumnsSchema), async (c) => {
       if (!didAuth) return c.json({ error: 'Personal vaults require DID-Auth' }, 401)
       const isOwner = await db.select({ id: spaces.id })
         .from(spaces)
-        .where(and(eq(spaces.id, spaceId), eq(spaces.ownerId, effectiveUserId)))
+        .where(and(eq(spaces.id, spaceId), eq(spaces.ownerId, callerDid)))
         .limit(1)
       if (isOwner.length === 0) {
         return c.json({ error: 'Access denied: not the vault owner' }, 403)
@@ -441,7 +438,7 @@ sync.post('/pull-columns', zValidator('json', pullColumnsSchema), async (c) => {
 
     const scopeFilter = isSpaceSync
       ? eq(syncChanges.spaceId, spaceId)
-      : and(eq(syncChanges.userId, effectiveUserId), eq(syncChanges.spaceId, spaceId))
+      : and(eq(syncChanges.userId, identity!.supabaseUserId!), eq(syncChanges.spaceId, spaceId))
 
     // Build conditions for each (tableName, columnName) pair
     const columnConditions = columns.map(
