@@ -30,7 +30,7 @@
   },
   "dependencies": {
     "@haex-space/ucan": "0.1.1",
-    "@haex-space/vault-sdk": "^2.7.0",
+    "@haex-space/vault-sdk": "2.8.0",
     "@hono/zod-validator": "^0.7.4",
     "@supabase/supabase-js": "^2.79.0",
     "drizzle-orm": "^0.45.1",
