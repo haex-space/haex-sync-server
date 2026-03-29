@@ -196,7 +196,6 @@ export const spaces = pgTable("spaces", {
     .references(() => authUsers.id, { onDelete: "cascade" }),
   encryptedName: text("encrypted_name"),
   nameNonce: text("name_nonce"),
-  currentKeyGeneration: integer("current_key_generation").notNull().default(1),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -230,67 +229,6 @@ export const spaceMembers = pgTable(
 
 export type SpaceMember = typeof spaceMembers.$inferSelect;
 export type NewSpaceMember = typeof spaceMembers.$inferInsert;
-
-/**
- * Space Key Grants Table
- * Stores encrypted space keys per public key per key generation.
- * When a member is removed, a new generation is created and re-granted to remaining members.
- * Composite primary key: (spaceId, publicKey, generation)
- */
-export const spaceKeyGrants = pgTable(
-  "space_key_grants",
-  {
-    spaceId: uuid("space_id")
-      .notNull()
-      .references(() => spaces.id, { onDelete: "cascade" }),
-    publicKey: text("public_key").notNull(), // ECDSA P-256 public key (Base64 SPKI)
-    generation: integer("generation").notNull(),
-    encryptedSpaceKey: text("encrypted_space_key").notNull(),
-    keyNonce: text("key_nonce").notNull(),
-    ephemeralPublicKey: text("ephemeral_public_key").notNull(),
-    grantedBy: text("granted_by"), // Public key of the granter
-    grantedAt: timestamp("granted_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (table) => [
-    primaryKey({ columns: [table.spaceId, table.publicKey, table.generation] }),
-  ]
-);
-
-export type SpaceKeyGrant = typeof spaceKeyGrants.$inferSelect;
-export type NewSpaceKeyGrant = typeof spaceKeyGrants.$inferInsert;
-
-// ============================================
-// SPACE ACCESS TOKENS
-// ============================================
-
-/**
- * Space Access Tokens Table
- * Tokens scoped to a single space, bound to a public key, and carrying a role.
- *
- * Security guarantees:
- * - Stolen token + wrong private key = server rejects (signature mismatch during push)
- * - Reader token = no writes allowed
- * - Revoked token = immediate access loss
- */
-export const spaceAccessTokens = pgTable("space_access_tokens", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  spaceId: uuid("space_id")
-    .notNull()
-    .references(() => spaces.id, { onDelete: "cascade" }),
-  token: text("token").notNull().unique(),
-  publicKey: text("public_key").notNull(),
-  role: text("role").notNull(), // 'admin' | 'owner' | 'member' | 'reader'
-  label: text("label"),
-  issuedBy: uuid("issued_by").references(() => authUsers.id),
-  revoked: boolean("revoked").notNull().default(false),
-  revokedAt: timestamp("revoked_at", { withTimezone: true }),
-  revokedBy: text("revoked_by"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
-});
-
-export type SpaceAccessToken = typeof spaceAccessTokens.$inferSelect;
-export type NewSpaceAccessToken = typeof spaceAccessTokens.$inferInsert;
 
 // ============================================
 // IDENTITY AUTH

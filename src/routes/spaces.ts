@@ -91,7 +91,6 @@ spacesRouter.get('/', async (c) => {
       ownerId: spaces.ownerId,
       encryptedName: spaces.encryptedName,
       nameNonce: spaces.nameNonce,
-      currentKeyGeneration: spaces.currentKeyGeneration,
       createdAt: spaces.createdAt,
       updatedAt: spaces.updatedAt,
       role: spaceMembers.role,

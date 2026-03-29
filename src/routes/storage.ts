@@ -1,9 +1,10 @@
 import { Hono } from 'hono'
-import { createClient } from '@supabase/supabase-js'
-import { type UserContext } from '../middleware/auth'
+import { didToPublicKey } from '@haex-space/ucan'
+import { eq } from 'drizzle-orm'
 import { extractAccessKeyId, verifySignature } from '../utils/awsSignatureV4'
 import { getCredentialsByAccessKeyId } from '../services/storageCredentials'
 import { provisionUserStorage } from '../services/minioAdmin'
+import { db, identities } from '../db'
 
 // Re-export utilities from storageUtils for backwards compatibility
 export {
@@ -20,9 +21,13 @@ import {
   buildS3ListXml,
 } from '../utils/storageUtils'
 
+interface StorageUser {
+  userId: string
+}
+
 const storage = new Hono<{
   Variables: {
-    user?: UserContext
+    storageUser: StorageUser
   }
 }>()
 
@@ -43,35 +48,28 @@ function isMinioConfigured(): boolean {
   return !!(minioEndpoint && minioRootUser && minioRootPassword)
 }
 
-// Supabase for auth verification (Bearer token)
-const supabaseUrl = process.env.SUPABASE_URL
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY
-
-if (!supabaseUrl || !supabaseServiceKey) {
-  throw new Error('SUPABASE_URL and SUPABASE_SERVICE_KEY must be set for auth')
+/**
+ * Resolve DID to userId for storage operations.
+ */
+async function resolveDidToUserId(did: string): Promise<string | null> {
+  const [identity] = await db.select({ supabaseUserId: identities.supabaseUserId })
+    .from(identities)
+    .where(eq(identities.did, did))
+    .limit(1)
+  return identity?.supabaseUserId ?? null
 }
 
-const supabase = createClient(supabaseUrl, supabaseServiceKey)
-
-/**
- * Extract user ID from Bearer token by verifying with Supabase
- */
-async function extractUserIdFromBearerToken(token: string): Promise<string | null> {
-  try {
-    const { data: { user }, error } = await supabase.auth.getUser(token)
-    if (error || !user) {
-      return null
-    }
-    return user.id
-  } catch {
-    return null
-  }
+function base64urlDecode(str: string): Uint8Array {
+  let base64 = str.replace(/-/g, '+').replace(/_/g, '/')
+  while (base64.length % 4 !== 0) base64 += '='
+  const binary = atob(base64)
+  return Uint8Array.from(binary, (ch) => ch.charCodeAt(0))
 }
 
 /**
  * Custom auth middleware that supports both:
  * - AWS Signature v4 (for S3 clients) - verifies signature cryptographically
- * - Bearer token (for direct HTTP calls) - verifies with Supabase
+ * - DID-Auth (for direct HTTP calls) - verifies Ed25519 signature
  */
 async function storageAuthMiddleware(c: any, next: () => Promise<void>) {
   const authHeader = c.req.header('authorization')
@@ -84,19 +82,16 @@ async function storageAuthMiddleware(c: any, next: () => Promise<void>) {
 
   // Try AWS Signature v4 first (for S3 clients like rust-s3, rclone, etc.)
   if (authHeader.startsWith('AWS4-HMAC-SHA256')) {
-    // Extract access key ID to look up credentials
     const accessKeyId = extractAccessKeyId(authHeader)
     if (!accessKeyId) {
       return c.json({ error: 'Invalid AWS credentials' }, 401)
     }
 
-    // Look up credentials in database
     const credentials = await getCredentialsByAccessKeyId(accessKeyId)
     if (!credentials) {
       return c.json({ error: 'Invalid access key' }, 401)
     }
 
-    // Verify the signature
     const headers = getHeadersRecord(c.req.raw.headers)
     const url = new URL(c.req.url)
     const isValid = verifySignature(
@@ -104,7 +99,7 @@ async function storageAuthMiddleware(c: any, next: () => Promise<void>) {
       headers,
       c.req.method,
       url.pathname,
-      url.search.substring(1), // Remove leading '?'
+      url.search.substring(1),
       credentials.secretAccessKey
     )
 
@@ -114,20 +109,47 @@ async function storageAuthMiddleware(c: any, next: () => Promise<void>) {
 
     userId = credentials.userId
   }
-  // Try Bearer token (for direct HTTP calls)
-  else if (authHeader.startsWith('Bearer ')) {
-    const token = authHeader.substring(7)
-    userId = await extractUserIdFromBearerToken(token)
-    if (!userId) {
-      return c.json({ error: 'Invalid or expired token' }, 401)
+  // DID-Auth (for direct HTTP calls from haex-vault)
+  else if (authHeader.startsWith('DID ')) {
+    const token = authHeader.substring(4)
+    const dotIndex = token.indexOf('.')
+    if (dotIndex === -1) return c.json({ error: 'Invalid DID auth format' }, 401)
+
+    const payloadB64 = token.substring(0, dotIndex)
+    const signatureB64 = token.substring(dotIndex + 1)
+
+    let payload: { did: string; action: string; timestamp: number; bodyHash: string }
+    try {
+      payload = JSON.parse(new TextDecoder().decode(base64urlDecode(payloadB64)))
+    } catch {
+      return c.json({ error: 'Invalid DID auth payload' }, 401)
     }
+
+    if (!payload.did || !payload.timestamp) return c.json({ error: 'Missing DID auth fields' }, 401)
+
+    // Timestamp check (±30s)
+    if (Math.abs(Date.now() - payload.timestamp) > 30_000) {
+      return c.json({ error: 'DID auth timestamp expired' }, 401)
+    }
+
+    // Verify Ed25519 signature
+    try {
+      const publicKeyBytes = didToPublicKey(payload.did)
+      const publicKey = await crypto.subtle.importKey('raw', publicKeyBytes, { name: 'Ed25519' }, false, ['verify'])
+      const valid = await crypto.subtle.verify('Ed25519', publicKey, base64urlDecode(signatureB64), new TextEncoder().encode(payloadB64))
+      if (!valid) return c.json({ error: 'Invalid DID signature' }, 401)
+    } catch {
+      return c.json({ error: 'DID signature verification failed' }, 401)
+    }
+
+    userId = await resolveDidToUserId(payload.did)
+    if (!userId) return c.json({ error: 'Identity not found' }, 401)
   }
   else {
-    return c.json({ error: 'Unsupported authorization method' }, 401)
+    return c.json({ error: 'Unsupported authorization method. Use AWS4-HMAC-SHA256 or DID.' }, 401)
   }
 
-  // Set user in context
-  c.set('user', { userId, email: '' })
+  c.set('storageUser', { userId })
 
   await next()
 }
@@ -248,7 +270,7 @@ storage.put('/s3/*', async (c) => {
     return c.json({ error: 'Storage service not available' }, 503)
   }
 
-  const user = c.get('user')!
+  const user = c.get('storageUser')
   const extracted = extractBucketAndKey(c.req.path, user.userId)
 
   if (!extracted) {
@@ -304,7 +326,7 @@ storage.get('/s3/*', async (c) => {
     return c.json({ error: 'Storage service not available' }, 503)
   }
 
-  const user = c.get('user')!
+  const user = c.get('storageUser')
   const extracted = extractBucketAndKey(c.req.path, user.userId)
 
   if (!extracted) {
@@ -344,7 +366,7 @@ storage.delete('/s3/*', async (c) => {
     return c.json({ error: 'Storage service not available' }, 503)
   }
 
-  const user = c.get('user')!
+  const user = c.get('storageUser')
   const extracted = extractBucketAndKey(c.req.path, user.userId)
 
   if (!extracted) {
@@ -386,7 +408,7 @@ storage.on('HEAD', '/s3/*', async (c) => {
     return c.json({ error: 'Storage service not available' }, 503)
   }
 
-  const user = c.get('user')!
+  const user = c.get('storageUser')
   const extracted = extractBucketAndKey(c.req.path, user.userId)
 
   if (!extracted) {
@@ -498,7 +520,7 @@ storage.get('/s3', async (c) => {
     return c.json({ error: 'Storage service not available' }, 503)
   }
 
-  const user = c.get('user')!
+  const user = c.get('storageUser')
   return handleListRequest(c, user.userId)
 })
 
