@@ -229,7 +229,11 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
     })
 
     // Notify connected space members about the new changes
-    broadcastToSpace(spaceId, { type: 'sync', spaceId }, callerDid)
+    try {
+      broadcastToSpace(spaceId, { type: 'sync', spaceId }, callerDid)
+    } catch (e) {
+      console.warn('Broadcast failed (non-fatal):', e)
+    }
 
     return c.json({
       message: 'Changes pushed successfully',
