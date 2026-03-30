@@ -10,9 +10,19 @@ export interface DidContext {
   action: string
 }
 
+export interface FederationContext {
+  serverDid: string
+  serverPublicKey: Uint8Array
+  issuerDid: string
+  ucanToken: string
+  ucanCapabilities: Record<string, string>
+  action: string
+}
+
 declare module 'hono' {
   interface ContextVariableMap {
     ucan: UcanContext | null
     didAuth: DidContext | null
+    federation: FederationContext | null
   }
 }

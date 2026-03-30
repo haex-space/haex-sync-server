@@ -7,8 +7,11 @@ import storageRoutes from './src/routes/storage'
 import spacesRoutes from './src/routes/spaces'
 import mlsRoutes from './src/routes/mls'
 import identityAuthRoutes from './src/routes/identity-auth'
+import federationRoutes from './src/routes/federation'
+import { federationWsApp } from './src/routes/federation.ws'
 import { wsApp, websocket } from './src/routes/ws'
 import { syncTiersFromEnvAsync } from './src/services/tierConfig'
+import { initializeServerIdentityAsync } from './src/services/serverIdentity'
 import packageJson from './package.json'
 
 const app = new Hono()
@@ -54,6 +57,10 @@ app.route('/spaces', spacesRoutes)
 app.route('/spaces', mlsRoutes)
 // WebSocket endpoint for real-time push notifications
 app.route('/', wsApp)
+// Federation endpoints (/.well-known/did.json, /federation/*)
+app.route('/', federationRoutes)
+// Federation WebSocket for server-to-server notifications
+app.route('/', federationWsApp)
 
 // 404 handler
 app.notFound((c) => {
@@ -72,7 +79,7 @@ app.onError((err, c) => {
   )
 })
 
-const port = parseInt(process.env.PORT || '3000')
+const port = parseInt(process.env.PORT || '3002')
 
 console.log(`🚀 ${packageJson.name} v${packageJson.version} starting on port ${port}`)
 console.log(`📝 Environment: ${process.env.NODE_ENV || 'development'}`)
@@ -80,6 +87,9 @@ console.log(`🌐 CORS Origins: ${corsOrigin}`)
 
 // Sync tier configuration from environment variables on startup
 syncTiersFromEnvAsync().catch(err => console.error('Failed to sync tiers from env:', err))
+
+// Initialize federation server identity (if configured)
+initializeServerIdentityAsync().catch(err => console.error('Failed to initialize federation identity:', err))
 
 export default {
   port,

@@ -1,12 +1,13 @@
 import type { Context, Next } from 'hono'
 import { didAuthMiddleware } from './didAuth'
 import { ucanAuthMiddleware } from './ucanAuth'
+import { federationAuthMiddleware } from './federationAuth'
 
 /**
  * Auth Dispatcher
  *
  * Routes to the correct auth middleware based on the Authorization header scheme.
- * Supports: UCAN <token>, DID <payload>.<signature>
+ * Supports: UCAN <token>, DID <payload>.<signature>, FEDERATION <payload>.<signature>
  */
 export const authDispatcher = async (c: Context, next: Next) => {
   const authHeader = c.req.header('Authorization')
@@ -23,5 +24,9 @@ export const authDispatcher = async (c: Context, next: Next) => {
     return didAuthMiddleware(c, next)
   }
 
-  return c.json({ error: 'Unsupported authorization scheme. Use UCAN or DID.' }, 401)
+  if (authHeader.startsWith('FEDERATION ')) {
+    return federationAuthMiddleware(c, next)
+  }
+
+  return c.json({ error: 'Unsupported authorization scheme. Use UCAN, DID, or FEDERATION.' }, 401)
 }

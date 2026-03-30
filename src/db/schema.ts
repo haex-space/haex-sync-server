@@ -426,3 +426,79 @@ export const mlsWelcomeMessages = pgTable(
 
 export type MlsWelcomeMessage = typeof mlsWelcomeMessages.$inferSelect;
 export type NewMlsWelcomeMessage = typeof mlsWelcomeMessages.$inferInsert;
+
+// ============================================
+// FEDERATION
+// ============================================
+
+/**
+ * Federation Servers
+ * Known federated server identities. A server can have federation links to multiple spaces.
+ * The public key is cached from the did:web resolution to avoid repeated lookups.
+ */
+export const federationServers = pgTable("federation_servers", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  did: text("did").notNull().unique(), // did:web:sync.example.com
+  url: text("url").notNull(), // https://sync.example.com
+  publicKey: text("public_key").notNull(), // Ed25519 public key (hex)
+  name: text("name"), // Optional display name
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type FederationServer = typeof federationServers.$inferSelect;
+export type NewFederationServer = typeof federationServers.$inferInsert;
+
+/**
+ * Federation Links
+ * Active federation relationships between a space (on this server) and a remote server.
+ * The UCAN token proves that a space member delegated server/relay to the remote server.
+ */
+export const federationLinks = pgTable(
+  "federation_links",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    spaceId: uuid("space_id")
+      .notNull()
+      .references(() => spaces.id, { onDelete: "cascade" }),
+    serverId: uuid("server_id")
+      .notNull()
+      .references(() => federationServers.id, { onDelete: "cascade" }),
+    ucanToken: text("ucan_token").notNull(), // Current server/relay UCAN
+    ucanExpiresAt: timestamp("ucan_expires_at", { withTimezone: true }).notNull(),
+    role: text("role").notNull().default("relay"), // 'home' or 'relay'
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("federation_links_space_server_idx").on(table.spaceId, table.serverId),
+    index("federation_links_space_idx").on(table.spaceId),
+  ]
+);
+
+export type FederationLink = typeof federationLinks.$inferSelect;
+export type NewFederationLink = typeof federationLinks.$inferInsert;
+
+/**
+ * Federation Events
+ * Audit trail for federation operations. Useful for debugging and monitoring.
+ */
+export const federationEvents = pgTable(
+  "federation_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    federationLinkId: uuid("federation_link_id")
+      .notNull()
+      .references(() => federationLinks.id, { onDelete: "cascade" }),
+    eventType: text("event_type").notNull(), // 'established', 'push', 'pull', 'ucan_renewed', 'disconnected'
+    metadata: text("metadata"), // JSON string with additional info
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("federation_events_link_idx").on(table.federationLinkId),
+    index("federation_events_created_idx").on(table.createdAt),
+  ]
+);
+
+export type FederationEvent = typeof federationEvents.$inferSelect;
+export type NewFederationEvent = typeof federationEvents.$inferInsert;

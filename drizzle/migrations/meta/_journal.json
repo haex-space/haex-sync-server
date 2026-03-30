@@ -64,6 +64,13 @@
       "when": 1774822533289,
       "tag": "0008_bumpy_cloak",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1774901296386,
+      "tag": "0009_tiny_retro_girl",
+      "breakpoints": true
     }
   ]
 }

@@ -1,0 +1,144 @@
+/**
+ * Federation Client
+ *
+ * Builds and sends authenticated requests to remote home servers.
+ * Used by the relay server to forward push/pull requests.
+ */
+
+import { getServerIdentity, signWithServerKeyAsync } from './serverIdentity'
+import { db, federationLinks, federationServers } from '../db'
+import { eq, and } from 'drizzle-orm'
+
+function base64urlEncode(bytes: Uint8Array): string {
+  return btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '')
+}
+
+interface FederationLink {
+  homeServerUrl: string
+  ucanToken: string
+}
+
+/**
+ * Look up the federation link for a space on this (relay) server.
+ * Returns the home server URL and UCAN token, or null if the space is not federated.
+ */
+export async function getFederationLinkForSpace(spaceId: string): Promise<FederationLink | null> {
+  const result = await db
+    .select({
+      url: federationServers.url,
+      ucanToken: federationLinks.ucanToken,
+    })
+    .from(federationLinks)
+    .innerJoin(federationServers, eq(federationLinks.serverId, federationServers.id))
+    .where(
+      and(
+        eq(federationLinks.spaceId, spaceId),
+        eq(federationLinks.role, 'relay'),
+      )
+    )
+    .limit(1)
+
+  if (result.length === 0) return null
+
+  return {
+    homeServerUrl: result[0]!.url,
+    ucanToken: result[0]!.ucanToken,
+  }
+}
+
+/**
+ * Build the FEDERATION Authorization header for a request to a home server.
+ *
+ * Format: FEDERATION <base64url(payload)>.<base64url(signature)>
+ */
+async function buildFederationAuthHeader(
+  action: string,
+  body: string,
+  ucanToken: string,
+): Promise<string> {
+  const identity = getServerIdentity()
+  if (!identity) {
+    throw new Error('Server identity not initialized')
+  }
+
+  // Hash the request body
+  const bodyBytes = new TextEncoder().encode(body)
+  const bodyHashBuffer = await crypto.subtle.digest('SHA-256', bodyBytes)
+  const bodyHash = base64urlEncode(new Uint8Array(bodyHashBuffer))
+
+  // Build payload
+  const payload = {
+    did: identity.did,
+    action,
+    timestamp: Date.now(),
+    bodyHash,
+    ucan: ucanToken,
+  }
+
+  const payloadJson = JSON.stringify(payload)
+  const payloadEncoded = base64urlEncode(new TextEncoder().encode(payloadJson))
+
+  // Sign the payload
+  const payloadBytes = new TextEncoder().encode(payloadEncoded)
+  const signature = await signWithServerKeyAsync(payloadBytes)
+  const signatureEncoded = base64urlEncode(signature)
+
+  return `FEDERATION ${payloadEncoded}.${signatureEncoded}`
+}
+
+/**
+ * Forward a push request to the home server.
+ * Returns the home server's response.
+ */
+export async function federatedPushAsync(
+  link: FederationLink,
+  spaceId: string,
+  changes: unknown[],
+): Promise<{ ok: boolean; status: number; data: unknown }> {
+  const body = JSON.stringify({ spaceId, changes })
+
+  const authHeader = await buildFederationAuthHeader('federation-push', body, link.ucanToken)
+
+  const response = await fetch(`${link.homeServerUrl}/federation/push`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': authHeader,
+    },
+    body,
+    signal: AbortSignal.timeout(30_000),
+  })
+
+  const data = await response.json()
+  return { ok: response.ok, status: response.status, data }
+}
+
+/**
+ * Forward a pull request to the home server.
+ * Returns the home server's response.
+ */
+export async function federatedPullAsync(
+  link: FederationLink,
+  params: Record<string, string>,
+): Promise<{ ok: boolean; status: number; data: unknown }> {
+  // Build query string
+  const queryString = new URLSearchParams(params).toString()
+  const url = `${link.homeServerUrl}/federation/pull?${queryString}`
+
+  // For GET requests, body is empty
+  const authHeader = await buildFederationAuthHeader('federation-pull', '', link.ucanToken)
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: {
+      'Authorization': authHeader,
+    },
+    signal: AbortSignal.timeout(30_000),
+  })
+
+  const data = await response.json()
+  return { ok: response.ok, status: response.status, data }
+}
