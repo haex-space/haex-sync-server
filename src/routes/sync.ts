@@ -9,6 +9,7 @@ import { pushChangesSchema, pullChangesSchema, pullColumnsSchema, SpacePushValid
 import { spaceResource, type Capability } from '@haex-space/ucan'
 import { getSpaceType, validateSpacePush } from './sync.helpers'
 import { getUserQuotaAsync } from '../services/quota'
+import { getFederationLinkForSpace, federatedPushAsync, federatedPullAsync } from '../services/federationClient'
 import vaultRoutes from './sync.vaults'
 import { broadcastToSpace } from './ws'
 
@@ -44,6 +45,13 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
   const changes = rawChanges as PushChange[]
 
   try {
+    // Federation relay: if this space is federated (we're a relay), forward to home server
+    const federationLink = await getFederationLinkForSpace(spaceId)
+    if (federationLink) {
+      const result = await federatedPushAsync(federationLink, spaceId, changes)
+      return c.json(result.data, result.status as any)
+    }
+
     const spaceType = await getSpaceType(spaceId)
     if (!spaceType) {
       return c.json({ error: 'Unknown space' }, 404)
@@ -53,7 +61,7 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
 
     // Authorization based on space type
     if (spaceType === 'shared') {
-      const capError = requireCapability(c, spaceId, 'space/write')
+      const capError = await requireCapability(c, spaceId, 'space/write')
       if (capError) return capError
     }
 
@@ -86,6 +94,12 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
 
       const ucan = c.get('ucan')
       spaceCapability = ucan?.capabilities?.[spaceResource(spaceId)]
+
+      // Owner via DID-Auth gets implicit admin capability (no UCAN needed)
+      if (!spaceCapability && c.get('didAuth')) {
+        spaceCapability = 'space/admin' as Capability
+      }
+
       if (!spaceCapability) {
         return c.json({ error: 'No capability for this space' }, 403)
       }
@@ -263,6 +277,18 @@ sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
   const { spaceId, excludeDeviceId, afterUpdatedAt, afterTableName, afterRowPks, limit } = c.req.valid('query')
 
   try {
+    // Federation relay: if this space is federated (we're a relay), proxy from home server
+    const federationLink = await getFederationLinkForSpace(spaceId)
+    if (federationLink) {
+      const params: Record<string, string> = { spaceId, limit: String(limit) }
+      if (excludeDeviceId) params.excludeDeviceId = excludeDeviceId
+      if (afterUpdatedAt) params.afterUpdatedAt = afterUpdatedAt
+      if (afterTableName) params.afterTableName = afterTableName
+      if (afterRowPks) params.afterRowPks = afterRowPks
+      const result = await federatedPullAsync(federationLink, params)
+      return c.json(result.data, result.status as any)
+    }
+
     const spaceType = await getSpaceType(spaceId)
     if (!spaceType) {
       return c.json({ error: 'Unknown space' }, 404)
@@ -272,7 +298,7 @@ sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
 
     // Authorization based on space type
     if (spaceType === 'shared') {
-      const capError = requireCapability(c, spaceId, 'space/read')
+      const capError = await requireCapability(c, spaceId, 'space/read')
       if (capError) return capError
     }
 
@@ -422,7 +448,7 @@ sync.post('/pull-columns', zValidator('json', pullColumnsSchema), async (c) => {
 
     // Authorization based on space type
     if (spaceType === 'shared') {
-      const capError = requireCapability(c, spaceId, 'space/read')
+      const capError = await requireCapability(c, spaceId, 'space/read')
       if (capError) return capError
     }
 
