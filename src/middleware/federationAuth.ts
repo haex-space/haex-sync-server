@@ -3,7 +3,6 @@ import {
   verifyUcan,
   createWebCryptoVerifier,
   decodeUcan,
-  spaceResource,
   multibaseDecode,
 } from '@haex-space/ucan'
 import type { FederationContext } from './types'
@@ -241,10 +240,13 @@ export function requireFederationRelay(c: Context, spaceId: string): Response | 
     return c.json({ error: 'Federation auth required' }, 401)
   }
 
-  const resource = spaceResource(spaceId)
-  const capability = federation.ucanCapabilities[resource]
+  // Check for server/relay on either space:<spaceId> or server:<did> resource
+  // Canonical form is space:<spaceId> — it scopes relay access per space
+  const spaceRes = `space:${spaceId}`
+  const hasRelay = federation.ucanCapabilities[spaceRes] === 'server/relay'
+    || Object.values(federation.ucanCapabilities).some(cap => cap === 'server/relay')
 
-  if (capability !== 'server/relay') {
+  if (!hasRelay) {
     return c.json({
       error: `Forbidden — no server/relay capability for space ${spaceId}`,
     }, 403)
