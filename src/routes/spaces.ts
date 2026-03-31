@@ -21,12 +21,15 @@ async function federationRelay(c: any, spaceId: string): Promise<Response | null
   const link = getFederationLinkForSpace(spaceId)
   if (!link) return null
 
+  const userAuth = c.req.header('Authorization') ?? ''
+  if (!userAuth) return c.json({ error: 'User authentication required for federated requests' }, 401)
+
   const method = c.req.method
   const path = c.req.path
   const query = new URL(c.req.url).search.slice(1)
   const body = method !== 'GET' && method !== 'DELETE' ? await c.req.text() : undefined
 
-  const result = await federatedProxyAsync(link, method, path, body || undefined, query || undefined)
+  const result = await federatedProxyAsync(link, method, path, userAuth, body || undefined, query || undefined)
   return c.json(result.data, result.status as any)
 }
 

@@ -16,18 +16,25 @@ mlsRouter.use('/*', authDispatcher)
 
 /**
  * Check if a space is federated and proxy the request to the home server.
+ * Forwards the original user's Authorization header so the home server
+ * can verify the end user's identity and capabilities.
  * Returns the proxied response, or null if the space is not federated.
  */
 async function federationRelay(c: any, spaceId: string): Promise<Response | null> {
   const link = getFederationLinkForSpace(spaceId)
   if (!link) return null
 
+  // The original user's auth header — signed by the user, not the relay.
+  // Embedded in the FEDERATION payload so the home server can verify it.
+  const userAuth = c.req.header('Authorization') ?? ''
+  if (!userAuth) return c.json({ error: 'User authentication required for federated requests' }, 401)
+
   const method = c.req.method
   const path = c.req.path
-  const query = new URL(c.req.url).search.slice(1) // remove leading ?
+  const query = new URL(c.req.url).search.slice(1)
   const body = method !== 'GET' ? await c.req.text() : undefined
 
-  const result = await federatedProxyAsync(link, method, path, body || undefined, query || undefined)
+  const result = await federatedProxyAsync(link, method, path, userAuth, body || undefined, query || undefined)
   return c.json(result.data, result.status as any)
 }
 

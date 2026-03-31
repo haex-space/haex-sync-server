@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
-import { db, syncChanges, spaces, type NewSyncChange } from '../db'
+import { db, syncChanges, spaces, spaceMembers, type NewSyncChange } from '../db'
 import { authDispatcher } from '../middleware/authDispatcher'
 import { requireCapability } from '../middleware/ucanAuth'
 import { resolveDidIdentity } from '../middleware/didAuth'
@@ -48,7 +48,9 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
     // Federation relay: if this space is federated (we're a relay), forward to home server
     const federationLink = getFederationLinkForSpace(spaceId)
     if (federationLink) {
-      const result = await federatedPushAsync(federationLink, spaceId, changes)
+      const userAuth = c.req.header('Authorization') ?? ''
+      if (!userAuth) return c.json({ error: 'User authentication required' }, 401)
+      const result = await federatedPushAsync(federationLink, spaceId, changes, userAuth)
       return c.json(result.data, result.status as any)
     }
 

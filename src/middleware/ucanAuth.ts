@@ -1,16 +1,16 @@
 import type { Context, Next } from 'hono'
-import { eq } from 'drizzle-orm'
+import { eq, and } from 'drizzle-orm'
 import {
   verifyUcan,
   createWebCryptoVerifier,
   decodeUcan,
   satisfies,
   spaceResource,
+  findRootIssuer,
   type Capability,
 } from '@haex-space/ucan'
 import type { UcanContext } from './types'
-import { db } from '../db'
-import { spaces } from '../db/schema'
+import { db, spaces, spaceMembers } from '../db'
 
 const verify = createWebCryptoVerifier()
 
@@ -90,6 +90,26 @@ export async function requireCapability(
         403,
       )
     }
+
+    // Verify the root issuer of the UCAN chain is actually a member of this space.
+    // Without this, anyone can forge a self-signed UCAN with arbitrary capabilities.
+    const rootIssuerDid = findRootIssuer(ucan.verifiedUcan)
+    const [member] = await db
+      .select({ role: spaceMembers.role })
+      .from(spaceMembers)
+      .where(and(
+        eq(spaceMembers.spaceId, spaceId),
+        eq(spaceMembers.did, rootIssuerDid),
+      ))
+      .limit(1)
+
+    if (!member) {
+      return c.json(
+        { error: `Forbidden - UCAN root issuer is not a member of this space` },
+        403,
+      )
+    }
+
     return undefined
   }
 

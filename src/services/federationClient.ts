@@ -90,10 +90,16 @@ export function getAllFederationLinks(): Map<string, FederationLink> {
  *
  * Format: FEDERATION <base64url(payload)>.<base64url(signature)>
  */
+/**
+ * Build a FEDERATION auth header that includes the original user's Authorization.
+ * The user auth is embedded in the signed payload so the home server can verify
+ * both the relay's identity AND the end user's identity/capabilities.
+ */
 export async function buildFederationAuthHeader(
   action: string,
   body: string,
   ucanToken: string,
+  userAuthorization: string,
 ): Promise<string> {
   const identity = getServerIdentity()
   if (!identity) {
@@ -105,13 +111,13 @@ export async function buildFederationAuthHeader(
   const bodyHashBuffer = await crypto.subtle.digest('SHA-256', bodyBytes)
   const bodyHash = base64urlEncode(new Uint8Array(bodyHashBuffer))
 
-  // Build payload
   const payload = {
     did: identity.did,
     action,
     timestamp: Date.now(),
     bodyHash,
     ucan: ucanToken,
+    userAuthorization,
   }
 
   const payloadJson = JSON.stringify(payload)
@@ -133,13 +139,14 @@ export async function federatedProxyAsync(
   link: FederationLink,
   method: string,
   path: string,
+  userAuthorization: string,
   body?: string,
   query?: string,
 ): Promise<{ ok: boolean; status: number; data: unknown }> {
   const url = `${link.homeServerUrl}${path}${query ? `?${query}` : ''}`
   const action = `federation-proxy-${method.toLowerCase()}`
 
-  const authHeader = await buildFederationAuthHeader(action, body ?? '', link.ucanToken)
+  const authHeader = await buildFederationAuthHeader(action, body ?? '', link.ucanToken, userAuthorization)
 
   const response = await fetch(url, {
     method,
@@ -163,10 +170,11 @@ export async function federatedPushAsync(
   link: FederationLink,
   spaceId: string,
   changes: unknown[],
+  userAuthorization: string,
 ): Promise<{ ok: boolean; status: number; data: unknown }> {
   const body = JSON.stringify({ spaceId, changes })
 
-  const authHeader = await buildFederationAuthHeader('federation-push', body, link.ucanToken)
+  const authHeader = await buildFederationAuthHeader('federation-push', body, link.ucanToken, userAuthorization)
 
   const response = await fetch(`${link.homeServerUrl}/federation/push`, {
     method: 'POST',
@@ -189,13 +197,14 @@ export async function federatedPushAsync(
 export async function federatedPullAsync(
   link: FederationLink,
   params: Record<string, string>,
+  userAuthorization: string,
 ): Promise<{ ok: boolean; status: number; data: unknown }> {
   // Build query string
   const queryString = new URLSearchParams(params).toString()
   const url = `${link.homeServerUrl}/federation/pull?${queryString}`
 
   // For GET requests, body is empty
-  const authHeader = await buildFederationAuthHeader('federation-pull', '', link.ucanToken)
+  const authHeader = await buildFederationAuthHeader('federation-pull', '', link.ucanToken, userAuthorization)
 
   const response = await fetch(url, {
     method: 'GET',
