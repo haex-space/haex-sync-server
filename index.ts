@@ -13,6 +13,7 @@ import { wsApp, websocket } from './src/routes/ws'
 import { syncTiersFromEnvAsync } from './src/services/tierConfig'
 import { initializeServerIdentityAsync } from './src/services/serverIdentity'
 import { initFederationLinkCache } from './src/services/federationClient'
+import { initFederationWsConnections } from './src/services/federationWsClient'
 import packageJson from './package.json'
 
 const app = new Hono()
@@ -92,8 +93,10 @@ syncTiersFromEnvAsync().catch(err => console.error('Failed to sync tiers from en
 // Initialize federation server identity (if configured)
 initializeServerIdentityAsync().catch(err => console.error('Failed to initialize federation identity:', err))
 
-// Load federation link cache for relay routing
-initFederationLinkCache().catch(err => console.error('Failed to initialize federation link cache:', err))
+// Load federation link cache for relay routing, then connect to home servers' WebSockets
+initFederationLinkCache()
+  .then(() => initFederationWsConnections())
+  .catch(err => console.error('Failed to initialize federation:', err))
 
 export default {
   port,

@@ -79,6 +79,13 @@ export function getFederationLinkForSpace(spaceId: string): FederationLink | nul
 }
 
 /**
+ * Get all cached federation links. Used by the WS client to connect on startup.
+ */
+export function getAllFederationLinks(): Map<string, FederationLink> {
+  return federationLinkCache
+}
+
+/**
  * Build the FEDERATION Authorization header for a request to a home server.
  *
  * Format: FEDERATION <base64url(payload)>.<base64url(signature)>

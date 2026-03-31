@@ -24,6 +24,7 @@ import { validateFederationPush, resolveSpaceOwnerUserId } from './federation.he
 import { broadcastToSpace, updateMembershipCache } from './ws'
 import { broadcastToFederatedServers, updateFederatedSpacesCache } from './federation.ws'
 import { buildFederationAuthHeader, updateFederationLinkCache } from '../services/federationClient'
+import { connectToHomeFederationWs } from '../services/federationWsClient'
 import { didToSpkiPublicKey } from '../utils/didIdentity'
 import type { FederationContext } from '../middleware/types'
 
@@ -253,6 +254,11 @@ federation.post('/federation/setup', authDispatcher, async (c) => {
 
     // Update in-memory membership cache for WebSocket routing
     updateMembershipCache(callerDid, body.spaceId, 'add')
+
+    // Connect to home server's federation WebSocket for real-time notifications
+    connectToHomeFederationWs(body.homeServerUrl, body.relayUcan).catch(err => {
+      console.warn('[Federation] Failed to connect WS to home server:', err)
+    })
 
     console.log(`[Federation] Setup complete: ${callerDid} → space ${body.spaceId} via ${homeServerDid}`)
 
