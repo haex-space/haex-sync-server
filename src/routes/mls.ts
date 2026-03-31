@@ -8,10 +8,28 @@ import { resolveDidIdentity } from '../middleware/didAuth'
 import { eq, and, gt, sql } from 'drizzle-orm'
 import { broadcastToSpace, sendToDid } from './ws'
 import { didToSpkiPublicKey } from '../utils/didIdentity'
+import { getFederationLinkForSpace, federatedProxyAsync } from '../services/federationClient'
 
 const mlsRouter = new Hono()
 
 mlsRouter.use('/*', authDispatcher)
+
+/**
+ * Check if a space is federated and proxy the request to the home server.
+ * Returns the proxied response, or null if the space is not federated.
+ */
+async function federationRelay(c: any, spaceId: string): Promise<Response | null> {
+  const link = await getFederationLinkForSpace(spaceId)
+  if (!link) return null
+
+  const method = c.req.method
+  const path = c.req.path
+  const query = new URL(c.req.url).search.slice(1) // remove leading ?
+  const body = method !== 'GET' ? await c.req.text() : undefined
+
+  const result = await federatedProxyAsync(link, method, path, body || undefined, query || undefined)
+  return c.json(result.data, result.status as any)
+}
 
 function getCallerDid(c: any): string | null {
   const ucan = c.get('ucan')
@@ -35,6 +53,10 @@ const createInviteSchema = z.object({
 
 mlsRouter.post('/:spaceId/invites', zValidator('json', createInviteSchema), async (c) => {
   const spaceId = c.req.param('spaceId')
+
+  const relayResponse = await federationRelay(c, spaceId)
+  if (relayResponse) return relayResponse
+
   const body = c.req.valid('json')
 
   const error = await requireCapability(c, spaceId, 'space/invite')
@@ -73,6 +95,9 @@ mlsRouter.post('/:spaceId/invites', zValidator('json', createInviteSchema), asyn
 // GET /:spaceId/invites — List invites (for space members: all invites; for non-members: own invites)
 mlsRouter.get('/:spaceId/invites', async (c) => {
   const spaceId = c.req.param('spaceId')
+
+  const relayResponse = await federationRelay(c, spaceId)
+  if (relayResponse) return relayResponse
 
   const capError = await requireCapability(c, spaceId, 'space/read')
   if (capError) return capError
@@ -135,6 +160,10 @@ const acceptInviteSchema = z.object({
 
 mlsRouter.post('/:spaceId/invites/:inviteId/accept', zValidator('json', acceptInviteSchema), async (c) => {
   const spaceId = c.req.param('spaceId')
+
+  const relayResponse = await federationRelay(c, spaceId)
+  if (relayResponse) return relayResponse
+
   const inviteId = c.req.param('inviteId')
   const body = c.req.valid('json')
 
@@ -222,6 +251,10 @@ const setInviteUcanSchema = z.object({
 
 mlsRouter.patch('/:spaceId/invites/:inviteId/ucan', zValidator('json', setInviteUcanSchema), async (c) => {
   const spaceId = c.req.param('spaceId')
+
+  const relayResponse = await federationRelay(c, spaceId)
+  if (relayResponse) return relayResponse
+
   const inviteId = c.req.param('inviteId')
   const body = c.req.valid('json')
 
@@ -282,6 +315,10 @@ const uploadKeyPackagesSchema = z.object({
 
 mlsRouter.post('/:spaceId/mls/key-packages', zValidator('json', uploadKeyPackagesSchema), async (c) => {
   const spaceId = c.req.param('spaceId')
+
+  const relayResponse = await federationRelay(c, spaceId)
+  if (relayResponse) return relayResponse
+
   const body = c.req.valid('json')
 
   const capError = await requireCapability(c, spaceId, 'space/read')
@@ -310,6 +347,10 @@ mlsRouter.post('/:spaceId/mls/key-packages', zValidator('json', uploadKeyPackage
 // GET /:spaceId/mls/key-packages/:did — Get one unconsumed KeyPackage (protected by accepted invite)
 mlsRouter.get('/:spaceId/mls/key-packages/:did', async (c) => {
   const spaceId = c.req.param('spaceId')
+
+  const relayResponse = await federationRelay(c, spaceId)
+  if (relayResponse) return relayResponse
+
   const targetDid = decodeURIComponent(c.req.param('did'))
 
   const capError = await requireCapability(c, spaceId, 'space/invite')
@@ -374,6 +415,10 @@ const sendMessageSchema = z.object({
 
 mlsRouter.post('/:spaceId/mls/messages', zValidator('json', sendMessageSchema), async (c) => {
   const spaceId = c.req.param('spaceId')
+
+  const relayResponse = await federationRelay(c, spaceId)
+  if (relayResponse) return relayResponse
+
   const body = c.req.valid('json')
 
   const capError = await requireCapability(c, spaceId, 'space/write')
@@ -405,6 +450,10 @@ mlsRouter.post('/:spaceId/mls/messages', zValidator('json', sendMessageSchema), 
 // GET /:spaceId/mls/messages — Fetch ordered messages (polling)
 mlsRouter.get('/:spaceId/mls/messages', async (c) => {
   const spaceId = c.req.param('spaceId')
+
+  const relayResponse = await federationRelay(c, spaceId)
+  if (relayResponse) return relayResponse
+
   const after = parseInt(c.req.query('after') ?? '0')
   const limit = Math.min(parseInt(c.req.query('limit') ?? '100'), 1000)
 
@@ -449,6 +498,10 @@ const sendWelcomeSchema = z.object({
 
 mlsRouter.post('/:spaceId/mls/welcome', zValidator('json', sendWelcomeSchema), async (c) => {
   const spaceId = c.req.param('spaceId')
+
+  const relayResponse = await federationRelay(c, spaceId)
+  if (relayResponse) return relayResponse
+
   const body = c.req.valid('json')
 
   const capError = await requireCapability(c, spaceId, 'space/invite')
@@ -478,6 +531,9 @@ mlsRouter.post('/:spaceId/mls/welcome', zValidator('json', sendWelcomeSchema), a
 // GET /:spaceId/mls/welcome — Fetch own unconsumed Welcome messages
 mlsRouter.get('/:spaceId/mls/welcome', async (c) => {
   const spaceId = c.req.param('spaceId')
+
+  const relayResponse = await federationRelay(c, spaceId)
+  if (relayResponse) return relayResponse
 
   const capError = await requireCapability(c, spaceId, 'space/read')
   if (capError) return capError
@@ -530,6 +586,10 @@ const createTokenSchema = z.object({
 
 mlsRouter.post('/:spaceId/invite-tokens', zValidator('json', createTokenSchema), async (c) => {
   const spaceId = c.req.param('spaceId')
+
+  const relayResponse = await federationRelay(c, spaceId)
+  if (relayResponse) return relayResponse
+
   const body = c.req.valid('json')
 
   const capError = await requireCapability(c, spaceId, 'space/invite')
@@ -567,6 +627,9 @@ mlsRouter.post('/:spaceId/invite-tokens', zValidator('json', createTokenSchema),
 mlsRouter.get('/:spaceId/invite-tokens', async (c) => {
   const spaceId = c.req.param('spaceId')
 
+  const relayResponse = await federationRelay(c, spaceId)
+  if (relayResponse) return relayResponse
+
   const capError = await requireCapability(c, spaceId, 'space/invite')
   if (capError) return capError
 
@@ -597,6 +660,10 @@ mlsRouter.get('/:spaceId/invite-tokens', async (c) => {
 // DELETE /:spaceId/invite-tokens/:tokenId — Revoke a token
 mlsRouter.delete('/:spaceId/invite-tokens/:tokenId', async (c) => {
   const spaceId = c.req.param('spaceId')
+
+  const relayResponse = await federationRelay(c, spaceId)
+  if (relayResponse) return relayResponse
+
   const tokenId = c.req.param('tokenId')
 
   const capError = await requireCapability(c, spaceId, 'space/invite')
@@ -623,6 +690,10 @@ const claimTokenSchema = z.object({
 
 mlsRouter.post('/:spaceId/invite-tokens/:tokenId/claim', zValidator('json', claimTokenSchema), async (c) => {
   const spaceId = c.req.param('spaceId')
+
+  const relayResponse = await federationRelay(c, spaceId)
+  if (relayResponse) return relayResponse
+
   const tokenId = c.req.param('tokenId')
   const body = c.req.valid('json')
 

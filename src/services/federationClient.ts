@@ -90,6 +90,36 @@ async function buildFederationAuthHeader(
 }
 
 /**
+ * Generic federation proxy — forwards an arbitrary request to the home server.
+ * Used for MLS and space operations that need relay.
+ */
+export async function federatedProxyAsync(
+  link: FederationLink,
+  method: string,
+  path: string,
+  body?: string,
+  query?: string,
+): Promise<{ ok: boolean; status: number; data: unknown }> {
+  const url = `${link.homeServerUrl}${path}${query ? `?${query}` : ''}`
+  const action = `federation-proxy-${method.toLowerCase()}`
+
+  const authHeader = await buildFederationAuthHeader(action, body ?? '', link.ucanToken)
+
+  const response = await fetch(url, {
+    method,
+    headers: {
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
+      'Authorization': authHeader,
+    },
+    ...(body ? { body } : {}),
+    signal: AbortSignal.timeout(30_000),
+  })
+
+  const data = await response.json()
+  return { ok: response.ok, status: response.status, data }
+}
+
+/**
  * Forward a push request to the home server.
  * Returns the home server's response.
  */
