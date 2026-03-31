@@ -1,0 +1,1 @@
+ALTER TABLE "vault_keys" ADD COLUMN "vault_name_salt" text NOT NULL;

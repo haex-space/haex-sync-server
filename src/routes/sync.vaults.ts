@@ -21,7 +21,7 @@ vaultRoutes.post('/vault-key', zValidator('json', vaultKeySchema, (result, c) =>
   if (!didAuth) return c.json({ error: 'Vault operations require DID-Auth' }, 401)
   const identity = await resolveDidIdentity(didAuth.did)
   if (!identity?.supabaseUserId) return c.json({ error: 'Identity not found' }, 404)
-  const { spaceId, encryptedVaultKey, encryptedVaultName, vaultKeySalt, ephemeralPublicKey, vaultKeyNonce, vaultNameNonce } = c.req.valid('json')
+  const { spaceId, encryptedVaultKey, encryptedVaultName, vaultKeySalt, ephemeralPublicKey, vaultKeyNonce, vaultNameNonce, vaultNameSalt } = c.req.valid('json')
 
   try {
     // Check if vault key already exists
@@ -55,6 +55,7 @@ vaultRoutes.post('/vault-key', zValidator('json', vaultKeySchema, (result, c) =>
           ephemeralPublicKey,
           vaultKeyNonce,
           vaultNameNonce,
+          vaultNameSalt,
         } as NewVaultKey)
         .returning()
 
@@ -94,6 +95,7 @@ vaultRoutes.get('/vaults', async (c) => {
       spaceId: vaultKeys.spaceId,
       encryptedVaultName: vaultKeys.encryptedVaultName,
       vaultNameNonce: vaultKeys.vaultNameNonce,
+      vaultNameSalt: vaultKeys.vaultNameSalt,
       ephemeralPublicKey: vaultKeys.ephemeralPublicKey,
       createdAt: vaultKeys.createdAt,
     })
@@ -113,6 +115,7 @@ vaultRoutes.get('/vaults', async (c) => {
         spaceId: vault.spaceId,
         encryptedVaultName: vault.encryptedVaultName,
         vaultNameNonce: vault.vaultNameNonce,
+        vaultNameSalt: vault.vaultNameSalt,
         ephemeralPublicKey: vault.ephemeralPublicKey,
         createdAt: vault.createdAt,
       })),
@@ -133,7 +136,7 @@ vaultRoutes.patch('/vault-key/:spaceId', zValidator('json', updateVaultNameSchem
   const identity = await resolveDidIdentity(didAuth.did)
   if (!identity?.supabaseUserId) return c.json({ error: 'Identity not found' }, 404)
   const spaceId = c.req.param('spaceId')
-  const { encryptedVaultName, vaultNameNonce, ephemeralPublicKey } = c.req.valid('json')
+  const { encryptedVaultName, vaultNameNonce, ephemeralPublicKey, vaultNameSalt } = c.req.valid('json')
 
   try {
     // Check if vault key exists and belongs to user
@@ -155,6 +158,7 @@ vaultRoutes.patch('/vault-key/:spaceId', zValidator('json', updateVaultNameSchem
         encryptedVaultName,
         vaultNameNonce,
         ephemeralPublicKey,
+        vaultNameSalt,
         updatedAt: new Date(),
       })
       .where(
@@ -206,6 +210,7 @@ vaultRoutes.get('/vault-key/:spaceId', async (c) => {
         ephemeralPublicKey: vaultKey.ephemeralPublicKey,
         vaultKeyNonce: vaultKey.vaultKeyNonce,
         vaultNameNonce: vaultKey.vaultNameNonce,
+        vaultNameSalt: vaultKey.vaultNameSalt,
         createdAt: vaultKey.createdAt,
       },
     })

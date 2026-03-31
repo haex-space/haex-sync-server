@@ -71,6 +71,13 @@
       "when": 1774901296386,
       "tag": "0009_tiny_retro_girl",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1774948494395,
+      "tag": "0010_zippy_hitman",
+      "breakpoints": true
     }
   ]
 }

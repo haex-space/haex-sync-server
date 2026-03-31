@@ -58,6 +58,9 @@ services:
       GOTRUE_EXTERNAL_EMAIL_ENABLED: "true"
       GOTRUE_MAILER_AUTOCONFIRM: "true"
       GOTRUE_SMTP_ADMIN_EMAIL: admin@localhost
+      GOTRUE_SMTP_HOST: inbucket
+      GOTRUE_SMTP_PORT: 2500
+      GOTRUE_SMTP_SENDER_NAME: HaexHub Dev
       GOTRUE_MAILER_URLPATHS_INVITE: /auth/v1/verify
       GOTRUE_MAILER_URLPATHS_CONFIRMATION: /auth/v1/verify
       GOTRUE_MAILER_URLPATHS_RECOVERY: /auth/v1/verify
@@ -167,6 +170,15 @@ services:
     volumes:
       - ./relay/config.toml:/etc/iroh-relay/config.toml:ro
     command: ["--config-path", "/etc/iroh-relay/config.toml"]
+
+  # Inbucket - SMTP sink for dev (catches all emails, web UI to read OTPs)
+  inbucket:
+    image: inbucket/inbucket:3.0.4
+    container_name: haex-sync-inbucket
+    restart: unless-stopped
+    ports:
+      - "${INBUCKET_PORT:-9000}:9000"    # Web UI
+      - "${INBUCKET_SMTP_PORT:-2500}:2500" # SMTP
 
   # HaexHub Sync Server
   sync-server:
