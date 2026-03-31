@@ -53,6 +53,12 @@ export async function sendOtpAsync(email: string): Promise<void> {
       console.log(`[OTP] Rate limited for ${email} — existing OTP still valid`)
       return
     }
+    // If SMTP is not configured (e.g., AUTOCONFIRM mode), the email send fails
+    // but the user is already confirmed. Don't throw — just log.
+    if (error.message.includes('sending') || error.message.includes('SMTP') || error.message.includes('magic link')) {
+      console.warn(`[OTP] Email delivery failed for ${email} (SMTP may not be configured): ${error.message}`)
+      return
+    }
     console.error(`[OTP] Failed to send OTP to ${email}:`, error.message)
     throw new Error(`Failed to send verification code: ${error.message}`)
   }
