@@ -7,6 +7,7 @@ import { requireCapability } from '../middleware/ucanAuth'
 import { resolveDidIdentity } from '../middleware/didAuth'
 import { eq, and, gt, sql } from 'drizzle-orm'
 import { broadcastToSpace, sendToDid } from './ws'
+import { didToSpkiPublicKey } from '../utils/didIdentity'
 
 const mlsRouter = new Hono()
 
@@ -617,6 +618,7 @@ mlsRouter.delete('/:spaceId/invite-tokens/:tokenId', async (c) => {
 // POST /:spaceId/invite-tokens/:tokenId/claim — Claim a token (no auth required, token IS the auth)
 const claimTokenSchema = z.object({
   keyPackages: z.array(z.string()).min(1).max(20),
+  label: z.string().max(200).optional(),
 })
 
 mlsRouter.post('/:spaceId/invite-tokens/:tokenId/claim', zValidator('json', claimTokenSchema), async (c) => {
@@ -629,8 +631,18 @@ mlsRouter.post('/:spaceId/invite-tokens/:tokenId/claim', zValidator('json', clai
   if (!didAuth) return c.json({ error: 'Token claim requires DID-Auth' }, 401)
 
   try {
+    let identityPublicKey: string
+    let identityDid: string
+
     const identity = await resolveDidIdentity(didAuth.did)
-    if (!identity) return c.json({ error: 'Identity not found' }, 404)
+    if (identity) {
+      identityPublicKey = identity.publicKey
+      identityDid = identity.did
+    } else {
+      // Cross-server claim: derive publicKey from DID (no registration needed)
+      identityPublicKey = didToSpkiPublicKey(didAuth.did)
+      identityDid = didAuth.did
+    }
 
     // Validate token: exists, not expired, not exhausted
     const [token] = await db.select().from(spaceInviteTokens)
@@ -654,7 +666,7 @@ mlsRouter.post('/:spaceId/invite-tokens/:tokenId/claim', zValidator('json', clai
       await tx.insert(spaceInvites).values({
         spaceId,
         inviterPublicKey: token.createdByDid,
-        inviteeDid: identity.did,
+        inviteeDid: identityDid,
         status: 'accepted',
         tokenId,
         expiresAt: token.expiresAt,
@@ -664,10 +676,21 @@ mlsRouter.post('/:spaceId/invite-tokens/:tokenId/claim', zValidator('json', clai
       // Upload KeyPackages
       const values = body.keyPackages.map((kp) => ({
         spaceId,
-        identityPublicKey: identity.publicKey,
+        identityPublicKey: identityPublicKey,
         keyPackage: Buffer.from(kp, 'base64'),
       }))
       await tx.insert(mlsKeyPackages).values(values)
+
+      // Auto-create space member entry
+      const memberLabel = body.label ?? identityDid.slice(0, 20)
+      await tx.insert(spaceMembers).values({
+        spaceId,
+        publicKey: identityPublicKey,
+        did: identityDid,
+        label: memberLabel,
+        role: token.capability === 'space/admin' ? 'admin' : token.capability === 'space/read' ? 'reader' : 'member',
+        invitedBy: token.createdByDid,
+      }).onConflictDoNothing()
     })
 
     // Notify space members
