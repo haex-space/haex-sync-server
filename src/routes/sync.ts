@@ -46,7 +46,7 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
 
   try {
     // Federation relay: if this space is federated (we're a relay), forward to home server
-    const federationLink = await getFederationLinkForSpace(spaceId)
+    const federationLink = getFederationLinkForSpace(spaceId)
     if (federationLink) {
       const result = await federatedPushAsync(federationLink, spaceId, changes)
       return c.json(result.data, result.status as any)
@@ -278,7 +278,7 @@ sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
 
   try {
     // Federation relay: if this space is federated (we're a relay), proxy from home server
-    const federationLink = await getFederationLinkForSpace(spaceId)
+    const federationLink = getFederationLinkForSpace(spaceId)
     if (federationLink) {
       const params: Record<string, string> = { spaceId, limit: String(limit) }
       if (excludeDeviceId) params.excludeDeviceId = excludeDeviceId

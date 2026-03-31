@@ -7,7 +7,7 @@
 
 import { getServerIdentity, signWithServerKeyAsync } from './serverIdentity'
 import { db, federationLinks, federationServers } from '../db'
-import { eq, and } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 
 function base64urlEncode(bytes: Uint8Array): string {
   return btoa(String.fromCharCode(...bytes))
@@ -16,37 +16,66 @@ function base64urlEncode(bytes: Uint8Array): string {
     .replace(/=+$/, '')
 }
 
-interface FederationLink {
+export interface FederationLink {
   homeServerUrl: string
   ucanToken: string
 }
 
+// ── In-Memory Cache ───────────────────────────────────────────────
+// Avoids a DB query on every request. Loaded once at startup,
+// updated when federation links are established or removed.
+
+const federationLinkCache = new Map<string, FederationLink>()
+let cacheInitialized = false
+
 /**
- * Look up the federation link for a space on this (relay) server.
- * Returns the home server URL and UCAN token, or null if the space is not federated.
+ * Load all relay federation links from DB into memory.
+ * Call once at server startup.
  */
-export async function getFederationLinkForSpace(spaceId: string): Promise<FederationLink | null> {
-  const result = await db
+export async function initFederationLinkCache(): Promise<void> {
+  const results = await db
     .select({
+      spaceId: federationLinks.spaceId,
       url: federationServers.url,
       ucanToken: federationLinks.ucanToken,
     })
     .from(federationLinks)
     .innerJoin(federationServers, eq(federationLinks.serverId, federationServers.id))
-    .where(
-      and(
-        eq(federationLinks.spaceId, spaceId),
-        eq(federationLinks.role, 'relay'),
-      )
-    )
-    .limit(1)
+    .where(eq(federationLinks.role, 'relay'))
 
-  if (result.length === 0) return null
-
-  return {
-    homeServerUrl: result[0]!.url,
-    ucanToken: result[0]!.ucanToken,
+  federationLinkCache.clear()
+  for (const row of results) {
+    federationLinkCache.set(row.spaceId, {
+      homeServerUrl: row.url,
+      ucanToken: row.ucanToken,
+    })
   }
+  cacheInitialized = true
+  console.log(`[Federation] Link cache loaded: ${federationLinkCache.size} relay link(s)`)
+}
+
+/**
+ * Update the federation link cache when a link is established or removed.
+ */
+export function updateFederationLinkCache(spaceId: string, link: FederationLink | null): void {
+  if (link) {
+    federationLinkCache.set(spaceId, link)
+  } else {
+    federationLinkCache.delete(spaceId)
+  }
+}
+
+/**
+ * Look up the federation link for a space on this (relay) server.
+ * Returns the home server URL and UCAN token, or null if the space is not federated.
+ * Uses in-memory cache — no DB query per request.
+ */
+export function getFederationLinkForSpace(spaceId: string): FederationLink | null {
+  if (!cacheInitialized) {
+    console.warn('[Federation] Link cache not initialized, returning null')
+    return null
+  }
+  return federationLinkCache.get(spaceId) ?? null
 }
 
 /**

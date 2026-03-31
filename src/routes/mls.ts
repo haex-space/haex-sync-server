@@ -19,7 +19,7 @@ mlsRouter.use('/*', authDispatcher)
  * Returns the proxied response, or null if the space is not federated.
  */
 async function federationRelay(c: any, spaceId: string): Promise<Response | null> {
-  const link = await getFederationLinkForSpace(spaceId)
+  const link = getFederationLinkForSpace(spaceId)
   if (!link) return null
 
   const method = c.req.method
