@@ -83,7 +83,7 @@ export function getFederationLinkForSpace(spaceId: string): FederationLink | nul
  *
  * Format: FEDERATION <base64url(payload)>.<base64url(signature)>
  */
-async function buildFederationAuthHeader(
+export async function buildFederationAuthHeader(
   action: string,
   body: string,
   ucanToken: string,

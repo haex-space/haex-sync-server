@@ -12,14 +12,14 @@ importers:
   .:
     dependencies:
       '@haex-space/ucan':
-        specifier: 0.1.2
-        version: 0.1.2
+        specifier: 0.1.6
+        version: 0.1.6
       '@haex-space/vault-sdk':
         specifier: link:../haex-vault-sdk
         version: link:../haex-vault-sdk
       '@hono/zod-validator':
         specifier: ^0.7.4
-        version: 0.7.5(hono@4.10.6)(zod@4.1.13)
+        version: 0.7.5(hono@4.12.9)(zod@4.1.13)
       '@supabase/supabase-js':
         specifier: ^2.79.0
         version: 2.84.0
@@ -27,8 +27,8 @@ importers:
         specifier: ^0.45.1
         version: 0.45.1(bun-types@1.3.3)(postgres@3.4.7)
       hono:
-        specifier: ^4.10.4
-        version: 4.10.6
+        specifier: ^4.12.9
+        version: 4.12.9
       postgres:
         specifier: ^3.4.7
         version: 3.4.7
@@ -350,8 +350,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@haex-space/ucan@0.1.2':
-    resolution: {integrity: sha512-ybOdoshckyBKncsrs4jx4mW80s3pdSk9kBlvkFSmATy4bp+GP0IMYl7q5J7Ipq/LkPEckOTxEG/dAyYXghHA9Q==}
+  '@haex-space/ucan@0.1.6':
+    resolution: {integrity: sha512-lQDWZsBLJ52KlaPdRbEjFdb2HVHnp83EHXEfKdhMpDP+I0V34UcDlvFUL2QhqO5GGPcyA3V5dXx5WA9rWE4/ig==}
 
   '@hono/zod-validator@0.7.5':
     resolution: {integrity: sha512-n4l4hutkfYU07PzRUHBOVzUEn38VSfrh+UVE5d0w4lyfWDOEhzxIupqo5iakRiJL44c3vTuFJBvcmUl8b9agIA==}
@@ -529,8 +529,8 @@ packages:
   get-tsconfig@4.13.0:
     resolution: {integrity: sha512-1VKTZJCwBrvbd+Wn3AOgQP/2Av+TfTCOlE4AcRJE72W1ksZXbAx8PPBR9RzgTeSPzlPMHrbANMH3LbltH73wxQ==}
 
-  hono@4.10.6:
-    resolution: {integrity: sha512-BIdolzGpDO9MQ4nu3AUuDwHZZ+KViNm+EZ75Ae55eMXMqLVhDFqEMXxtUe9Qh8hjL+pIna/frs2j6Y2yD5Ua/g==}
+  hono@4.12.9:
+    resolution: {integrity: sha512-wy3T8Zm2bsEvxKZM5w21VdHDDcwVS1yUFFY6i8UobSsKfFceT7TOwhbhfKsDyx7tYQlmRM5FLpIuYvNFyjctiA==}
     engines: {node: '>=16.9.0'}
 
   ms@2.1.3:
@@ -739,11 +739,11 @@ snapshots:
   '@esbuild/win32-x64@0.25.12':
     optional: true
 
-  '@haex-space/ucan@0.1.2': {}
+  '@haex-space/ucan@0.1.6': {}
 
-  '@hono/zod-validator@0.7.5(hono@4.10.6)(zod@4.1.13)':
+  '@hono/zod-validator@0.7.5(hono@4.12.9)(zod@4.1.13)':
     dependencies:
-      hono: 4.10.6
+      hono: 4.12.9
       zod: 4.1.13
 
   '@supabase/auth-js@2.84.0':
@@ -889,7 +889,7 @@ snapshots:
     dependencies:
       resolve-pkg-maps: 1.0.0
 
-  hono@4.10.6: {}
+  hono@4.12.9: {}
 
   ms@2.1.3: {}
 

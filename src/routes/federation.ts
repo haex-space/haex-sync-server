@@ -1,28 +1,41 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { eq, and, ne, sql, max, asc } from 'drizzle-orm'
+import { multibaseDecode } from '@haex-space/ucan'
 import {
   buildDidDocument,
   isFederationEnabled,
   getServerIdentity,
 } from '../services/serverIdentity'
 import { federationAuthMiddleware, requireFederationRelay } from '../middleware/federationAuth'
+import { authDispatcher } from '../middleware/authDispatcher'
 import {
   db,
   federationServers,
   federationLinks,
   federationEvents,
   spaces,
+  spaceMembers,
   syncChanges,
   type NewSyncChange,
 } from '../db'
 import { pushChangesSchema, pullChangesSchema, type PushChange } from './sync.schemas'
 import { validateFederationPush, resolveSpaceOwnerUserId } from './federation.helpers'
-import { broadcastToSpace } from './ws'
+import { broadcastToSpace, updateMembershipCache } from './ws'
 import { broadcastToFederatedServers, updateFederatedSpacesCache } from './federation.ws'
+import { buildFederationAuthHeader, updateFederationLinkCache } from '../services/federationClient'
+import { didToSpkiPublicKey } from '../utils/didIdentity'
 import type { FederationContext } from '../middleware/types'
 
 const federation = new Hono()
+
+function getCallerDid(c: any): string | null {
+  const ucan = c.get('ucan')
+  if (ucan) return ucan.issuerDid
+  const didAuth = c.get('didAuth')
+  if (didAuth) return didAuth.did
+  return null
+}
 
 // ─── Public Endpoints (no auth) ──────────────────────────────────────
 
@@ -52,6 +65,206 @@ federation.get('/federation/status', (c) => {
   return c.json({
     federation: isFederationEnabled(),
   })
+})
+
+/**
+ * GET /federation/server-did
+ * Returns this server's federation DID.
+ * Public endpoint (no auth required).
+ */
+federation.get('/federation/server-did', (c) => {
+  const identity = getServerIdentity()
+  if (!identity) {
+    return c.json({ error: 'Federation not configured' }, 404)
+  }
+  return c.json({ did: identity.did })
+})
+
+// ─── Client-Authenticated Endpoint (DID-Auth / UCAN) ───────────────
+
+const setupSchema = z.object({
+  spaceId: z.string().uuid(),
+  homeServerUrl: z.string().url(),
+  relayUcan: z.string().min(1),
+})
+
+/**
+ * POST /federation/setup
+ * Called by a CLIENT on their own relay server to initiate federation with a home server.
+ * Uses normal user auth (DID-Auth or UCAN), NOT federation auth.
+ *
+ * Flow:
+ * 1. Resolve home server DID document
+ * 2. Upsert home server in federation_servers
+ * 3. Upsert federation link with the client-provided relay UCAN
+ * 4. Call POST {homeServerUrl}/federation/establish with FEDERATION auth
+ * 5. Create local space + member entries for WebSocket routing
+ */
+federation.post('/federation/setup', authDispatcher, async (c) => {
+  const body = await parseBody(c, setupSchema)
+  if (body instanceof Response) return body
+
+  // 1. Check federation is enabled on this server
+  if (!isFederationEnabled()) {
+    return c.json({ error: 'Federation not enabled on this server' }, 503)
+  }
+
+  const serverIdentity = getServerIdentity()
+  if (!serverIdentity) {
+    return c.json({ error: 'Server identity not configured' }, 500)
+  }
+
+  // Get the caller's DID from auth context
+  const callerDid = getCallerDid(c)
+  if (!callerDid) {
+    return c.json({ error: 'Could not determine caller DID' }, 401)
+  }
+
+  try {
+    // 2. Resolve home server DID document
+    const didDocResponse = await fetch(`${body.homeServerUrl}/.well-known/did.json`, {
+      signal: AbortSignal.timeout(10_000),
+    })
+    if (!didDocResponse.ok) {
+      return c.json({ error: `Failed to resolve home server DID document: HTTP ${didDocResponse.status}` }, 502)
+    }
+
+    const didDoc = await didDocResponse.json() as {
+      id?: string
+      verificationMethod?: { publicKeyMultibase?: string }[]
+    }
+
+    // 3. Extract home server DID and public key from the DID document
+    const homeServerDid = didDoc.id
+    if (!homeServerDid) {
+      return c.json({ error: 'Home server DID document missing id' }, 502)
+    }
+
+    const verificationMethod = didDoc.verificationMethod?.[0]
+    if (!verificationMethod?.publicKeyMultibase) {
+      return c.json({ error: 'Home server DID document missing publicKeyMultibase' }, 502)
+    }
+
+    // Decode multibase (base58btc) to raw public key bytes, then convert to hex
+    const decoded = multibaseDecode(verificationMethod.publicKeyMultibase)
+    if (decoded[0] !== 0xed || decoded[1] !== 0x01) {
+      return c.json({ error: 'Expected Ed25519 multicodec prefix (0xed01)' }, 502)
+    }
+    const homeServerPublicKeyBytes = decoded.slice(2)
+    const homeServerPublicKeyHex = Array.from(homeServerPublicKeyBytes as Uint8Array)
+      .map((b: number) => b.toString(16).padStart(2, '0'))
+      .join('')
+
+    // 4. Upsert the home server in federation_servers
+    const [server] = await db
+      .insert(federationServers)
+      .values({
+        did: homeServerDid,
+        url: body.homeServerUrl,
+        publicKey: homeServerPublicKeyHex,
+      })
+      .onConflictDoUpdate({
+        target: federationServers.did,
+        set: {
+          url: body.homeServerUrl,
+          publicKey: homeServerPublicKeyHex,
+          updatedAt: new Date(),
+        },
+      })
+      .returning({ id: federationServers.id })
+
+    // 5. Upsert the federation link with the client-provided relay UCAN
+    const ucanExpiresAt = extractUcanExpiry(body.relayUcan)
+
+    const [link] = await db
+      .insert(federationLinks)
+      .values({
+        spaceId: body.spaceId,
+        serverId: server!.id,
+        ucanToken: body.relayUcan,
+        ucanExpiresAt,
+        role: 'relay',
+      })
+      .onConflictDoUpdate({
+        target: [federationLinks.spaceId, federationLinks.serverId],
+        set: {
+          ucanToken: body.relayUcan,
+          ucanExpiresAt,
+          updatedAt: new Date(),
+        },
+      })
+      .returning({ id: federationLinks.id })
+
+    // 6. Update the in-memory federation link cache
+    updateFederationLinkCache(body.spaceId, {
+      homeServerUrl: body.homeServerUrl,
+      ucanToken: body.relayUcan,
+    })
+
+    // 7. Call POST {homeServerUrl}/federation/establish with FEDERATION auth
+    const establishBody = JSON.stringify({
+      spaceId: body.spaceId,
+      serverUrl: serverIdentity.serverUrl ?? `https://${serverIdentity.did.replace('did:web:', '')}`,
+    })
+
+    const authHeader = await buildFederationAuthHeader('federation-establish', establishBody, body.relayUcan)
+
+    const establishResponse = await fetch(`${body.homeServerUrl}/federation/establish`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': authHeader,
+      },
+      body: establishBody,
+      signal: AbortSignal.timeout(30_000),
+    })
+
+    if (!establishResponse.ok) {
+      const errorData = await establishResponse.json().catch(() => null)
+      console.error('[Federation] Establish call failed:', establishResponse.status, errorData)
+      return c.json({
+        error: 'Failed to establish federation with home server',
+        details: errorData,
+        status: establishResponse.status,
+      }, 502)
+    }
+
+    // 8. Create local space + member entries so the relay server can route WebSocket notifications
+    await db
+      .insert(spaces)
+      .values({
+        id: body.spaceId,
+        type: 'shared',
+        ownerId: callerDid,
+      })
+      .onConflictDoNothing()
+
+    const callerPublicKey = didToSpkiPublicKey(callerDid)
+    await db
+      .insert(spaceMembers)
+      .values({
+        spaceId: body.spaceId,
+        publicKey: callerPublicKey,
+        did: callerDid,
+        label: 'Federation member',
+        role: 'member',
+      })
+      .onConflictDoNothing()
+
+    // Update in-memory membership cache for WebSocket routing
+    updateMembershipCache(callerDid, body.spaceId, 'add')
+
+    console.log(`[Federation] Setup complete: ${callerDid} → space ${body.spaceId} via ${homeServerDid}`)
+
+    return c.json({
+      federationLinkId: link!.id,
+      homeServerDid,
+      spaceId: body.spaceId,
+    }, 201)
+  } catch (error) {
+    console.error('[Federation] Setup error:', error)
+    return c.json({ error: 'Federation setup failed' }, 500)
+  }
 })
 
 // ─── Authenticated Endpoints (FEDERATION auth) ──────────────────────

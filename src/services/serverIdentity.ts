@@ -8,6 +8,8 @@
  * Generate a key with: bun run scripts/generate-federation-key.ts
  */
 
+import { multibaseEncode } from '@haex-space/ucan'
+
 let serverIdentity: {
   privateKey: CryptoKey
   publicKey: CryptoKey
@@ -23,10 +25,6 @@ function base64Decode(str: string): Uint8Array {
     bytes[i] = binary.charCodeAt(i)
   }
   return bytes
-}
-
-function base64Encode(bytes: Uint8Array): string {
-  return btoa(String.fromCharCode(...bytes))
 }
 
 function bytesToHex(bytes: Uint8Array): string {
@@ -169,7 +167,7 @@ export function buildDidDocument() {
     return null
   }
 
-  const publicKeyMultibase = `z${base64Encode(new Uint8Array([0xed, 0x01, ...serverIdentity.publicKeyBytes]))}`
+  const publicKeyMultibase = multibaseEncode(new Uint8Array([0xed, 0x01, ...serverIdentity.publicKeyBytes]))
 
   return {
     '@context': [
