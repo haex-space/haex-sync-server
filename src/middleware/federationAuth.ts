@@ -4,6 +4,7 @@ import {
   createWebCryptoVerifier,
   decodeUcan,
   spaceResource,
+  multibaseDecode,
 } from '@haex-space/ucan'
 import type { FederationContext } from './types'
 
@@ -37,9 +38,14 @@ async function resolveDidWebPublicKey(did: string): Promise<Uint8Array> {
   // did:web:sync.example.com → https://sync.example.com/.well-known/did.json
   // did:web:sync.example.com%3A8443 → https://sync.example.com:8443/.well-known/did.json
   const domain = did.replace('did:web:', '').replace(/%3A/g, ':')
-  const url = `https://${domain}/.well-known/did.json`
 
-  const response = await fetch(url, { signal: AbortSignal.timeout(10_000) })
+  // Try HTTPS first (production), fall back to HTTP (development/testing)
+  let response: Response
+  try {
+    response = await fetch(`https://${domain}/.well-known/did.json`, { signal: AbortSignal.timeout(5_000) })
+  } catch {
+    response = await fetch(`http://${domain}/.well-known/did.json`, { signal: AbortSignal.timeout(5_000) })
+  }
   if (!response.ok) {
     throw new Error(`Failed to resolve ${did}: HTTP ${response.status}`)
   }
@@ -50,13 +56,8 @@ async function resolveDidWebPublicKey(did: string): Promise<Uint8Array> {
     throw new Error(`No publicKeyMultibase in DID document for ${did}`)
   }
 
-  // publicKeyMultibase format: z<base64(0xed 0x01 <32-byte-key>)>
-  const multibase = verificationMethod.publicKeyMultibase as string
-  if (!multibase.startsWith('z')) {
-    throw new Error(`Unsupported multibase encoding: ${multibase[0]}`)
-  }
-
-  const decoded = Uint8Array.from(atob(multibase.slice(1)), c => c.charCodeAt(0))
+  // publicKeyMultibase format: z<base58btc(0xed 0x01 <32-byte-key>)>
+  const decoded = multibaseDecode(verificationMethod.publicKeyMultibase as string)
   // Skip the 2-byte multicodec prefix (0xed, 0x01 for Ed25519)
   if (decoded[0] !== 0xed || decoded[1] !== 0x01) {
     throw new Error('Expected Ed25519 multicodec prefix (0xed01)')
