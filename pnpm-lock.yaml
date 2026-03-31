@@ -12,8 +12,8 @@ importers:
   .:
     dependencies:
       '@haex-space/ucan':
-        specifier: 0.1.6
-        version: 0.1.6
+        specifier: 0.1.8
+        version: 0.1.8
       '@haex-space/vault-sdk':
         specifier: link:../haex-vault-sdk
         version: link:../haex-vault-sdk
@@ -350,8 +350,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@haex-space/ucan@0.1.6':
-    resolution: {integrity: sha512-lQDWZsBLJ52KlaPdRbEjFdb2HVHnp83EHXEfKdhMpDP+I0V34UcDlvFUL2QhqO5GGPcyA3V5dXx5WA9rWE4/ig==}
+  '@haex-space/ucan@0.1.8':
+    resolution: {integrity: sha512-qHEdyJOnqKAggIb9cc7en+Zf6QqtZcBgHr8/hOQPtsmxiYO5gqvdhWUvTxTpDe0f+9hSdhhx3SNNFYfat+RgOw==}
 
   '@hono/zod-validator@0.7.5':
     resolution: {integrity: sha512-n4l4hutkfYU07PzRUHBOVzUEn38VSfrh+UVE5d0w4lyfWDOEhzxIupqo5iakRiJL44c3vTuFJBvcmUl8b9agIA==}
@@ -739,7 +739,7 @@ snapshots:
   '@esbuild/win32-x64@0.25.12':
     optional: true
 
-  '@haex-space/ucan@0.1.6': {}
+  '@haex-space/ucan@0.1.8': {}
 
   '@hono/zod-validator@0.7.5(hono@4.12.9)(zod@4.1.13)':
     dependencies:

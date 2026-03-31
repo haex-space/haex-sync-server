@@ -4,7 +4,11 @@ import {
   createWebCryptoVerifier,
   decodeUcan,
   multibaseDecode,
+  findRootIssuer,
+  parseSpaceResource,
 } from '@haex-space/ucan'
+import { eq, and } from 'drizzle-orm'
+import { db, spaceMembers } from '../db'
 import type { FederationContext } from './types'
 
 const TIMESTAMP_TOLERANCE_MS = 30_000
@@ -199,23 +203,51 @@ export const federationAuthMiddleware = async (c: Context, next: Next) => {
     }
 
     // Full cryptographic verification (signature + proof chain)
-    await verifyUcan(payload.ucan, verify)
+    const verified = await verifyUcan(payload.ucan, verify)
+
+    // Find the root issuer of the UCAN chain — the original authority
+    const rootIssuerDid = findRootIssuer(verified)
+
+    // Extract space IDs from capabilities to verify root issuer membership
+    const capEntries = Object.entries(ucanPayload.cap)
+    if (capEntries.length === 0) {
+      return c.json({ error: 'UCAN has no capabilities' }, 403)
+    }
+
+    const relayEntry = capEntries.find(([, capability]) => capability === 'server/relay')
+    if (!relayEntry) {
+      return c.json({ error: 'UCAN does not grant server/relay capability' }, 403)
+    }
+
+    // Extract space ID from resource (e.g., "space:<uuid>" → "<uuid>")
+    const spaceId = parseSpaceResource(relayEntry[0])
+    if (!spaceId) {
+      return c.json({ error: 'server/relay capability must be scoped to a space resource' }, 403)
+    }
+
+    // CRITICAL: Verify the root issuer is actually a member of this space.
+    // Without this, anyone can forge a self-signed UCAN chain and gain relay access.
+    const [member] = await db
+      .select({ did: spaceMembers.did })
+      .from(spaceMembers)
+      .where(and(
+        eq(spaceMembers.spaceId, spaceId),
+        eq(spaceMembers.did, rootIssuerDid),
+      ))
+      .limit(1)
+
+    if (!member) {
+      console.warn(`[Federation] Rejected: root issuer ${rootIssuerDid} is not a member of space ${spaceId}`)
+      return c.json({ error: 'UCAN root issuer is not a member of the target space' }, 403)
+    }
   } catch (error) {
     console.error('[Federation] UCAN verification failed:', error)
     return c.json({ error: 'Invalid UCAN token' }, 401)
   }
 
-  // Extract the space ID and capability from the UCAN
+  // Extract capabilities (already validated above)
   const capEntries = Object.entries(ucanPayload.cap)
-  if (capEntries.length === 0) {
-    return c.json({ error: 'UCAN has no capabilities' }, 403)
-  }
-
-  // Find server/relay capability
   const relayEntry = capEntries.find(([, capability]) => capability === 'server/relay')
-  if (!relayEntry) {
-    return c.json({ error: 'UCAN does not grant server/relay capability' }, 403)
-  }
 
   const federationContext: FederationContext = {
     serverDid: payload.did,
