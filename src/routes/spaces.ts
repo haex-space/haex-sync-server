@@ -7,11 +7,28 @@ import { requireCapability } from '../middleware/ucanAuth'
 import { resolveDidIdentity } from '../middleware/didAuth'
 import { eq, and } from 'drizzle-orm'
 import { broadcastToSpace, updateMembershipCache } from './ws'
+import { getFederationLinkForSpace, federatedProxyAsync } from '../services/federationClient'
 
 const spacesRouter = new Hono()
 
 // All space routes require authentication (UCAN or DID)
 spacesRouter.use('/*', authDispatcher)
+
+/**
+ * Check if a space is federated and proxy the request to the home server.
+ */
+async function federationRelay(c: any, spaceId: string): Promise<Response | null> {
+  const link = getFederationLinkForSpace(spaceId)
+  if (!link) return null
+
+  const method = c.req.method
+  const path = c.req.path
+  const query = new URL(c.req.url).search.slice(1)
+  const body = method !== 'GET' && method !== 'DELETE' ? await c.req.text() : undefined
+
+  const result = await federatedProxyAsync(link, method, path, body || undefined, query || undefined)
+  return c.json(result.data, result.status as any)
+}
 
 const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -142,6 +159,9 @@ spacesRouter.get('/:spaceId', async (c) => {
     return c.json({ error: 'Invalid space ID format' }, 400)
   }
 
+  const relayResponse = await federationRelay(c, spaceId)
+  if (relayResponse) return relayResponse
+
   const error = await requireCapability(c, spaceId, 'space/read')
   if (error) return error
 
@@ -190,6 +210,9 @@ spacesRouter.patch('/:spaceId', zValidator('json', updateSpaceSchema), async (c)
     return c.json({ error: 'Invalid space ID format' }, 400)
   }
 
+  const relayResponse = await federationRelay(c, spaceId)
+  if (relayResponse) return relayResponse
+
   const error = await requireCapability(c, spaceId, 'space/admin')
   if (error) return error
 
@@ -215,6 +238,9 @@ spacesRouter.delete('/:spaceId', async (c) => {
   if (!isValidUuid(spaceId)) {
     return c.json({ error: 'Invalid space ID format' }, 400)
   }
+
+  const relayResponse = await federationRelay(c, spaceId)
+  if (relayResponse) return relayResponse
 
   const error = await requireCapability(c, spaceId, 'space/admin')
   if (error) return error
@@ -243,6 +269,9 @@ spacesRouter.post('/:spaceId/members', zValidator('json', inviteMemberSchema), a
   if (!isValidUuid(spaceId)) {
     return c.json({ error: 'Invalid space ID format' }, 400)
   }
+
+  const relayResponse = await federationRelay(c, spaceId)
+  if (relayResponse) return relayResponse
 
   const capError = await requireCapability(c, spaceId, 'space/invite')
   if (capError) return capError
@@ -292,6 +321,9 @@ spacesRouter.delete('/:spaceId/members/:memberDid', async (c) => {
   if (!isValidUuid(spaceId)) {
     return c.json({ error: 'Invalid space ID format' }, 400)
   }
+
+  const relayResponse = await federationRelay(c, spaceId)
+  if (relayResponse) return relayResponse
 
   const callerDid = getCallerDid(c)
   if (!callerDid) {
@@ -371,6 +403,9 @@ spacesRouter.post('/:spaceId/transfer-admin', zValidator('json', transferAdminSc
   if (!isValidUuid(spaceId)) {
     return c.json({ error: 'Invalid space ID format' }, 400)
   }
+
+  const relayResponse = await federationRelay(c, spaceId)
+  if (relayResponse) return relayResponse
 
   const capError = await requireCapability(c, spaceId, 'space/admin')
   if (capError) return capError
