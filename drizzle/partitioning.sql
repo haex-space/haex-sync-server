@@ -278,12 +278,11 @@ BEGIN
             -- Minimal notification — no record data.
             -- The app uses this as a trigger to pull changes via the pull endpoint.
             -- All actual data is E2E-encrypted.
-            INSERT INTO realtime.messages (topic, extension, event, payload, private)
-            VALUES (
-                'sync:' || COALESCE(NEW.space_id, OLD.space_id)::text,
-                'broadcast',
-                TG_OP,
+            -- Uses realtime.send() which handles missing partitions gracefully.
+            PERFORM realtime.send(
                 jsonb_build_object('op', TG_OP),
+                TG_OP,
+                'sync:' || COALESCE(NEW.space_id, OLD.space_id)::text,
                 true
             );
             RETURN NULL;

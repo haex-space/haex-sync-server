@@ -67,6 +67,45 @@ try {
   await migrationClient.unsafe(partitioningSQL)
   console.log('✅ Partitioning configuration applied successfully')
 
+  // Ensure realtime.messages partitions exist for the next 7 days.
+  // Supabase Realtime only creates partitions when a tenant connects via WebSocket.
+  // Our broadcast_sync_changes trigger fires on every sync push regardless —
+  // if no WS client connected recently, partitions may be missing.
+  console.log('📅 Ensuring realtime.messages partitions...')
+  await migrationClient.unsafe(`
+    DO $$
+    DECLARE
+      d date;
+      partition_name text;
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'realtime' AND c.relname = 'messages'
+      ) THEN
+        FOR d IN SELECT generate_series(
+          CURRENT_DATE - INTERVAL '1 day',
+          CURRENT_DATE + INTERVAL '7 days',
+          '1 day'
+        )::date LOOP
+          partition_name := 'messages_' || to_char(d, 'YYYY_MM_DD');
+          BEGIN
+            EXECUTE format(
+              'CREATE TABLE IF NOT EXISTS realtime.%I PARTITION OF realtime.messages FOR VALUES FROM (%L) TO (%L)',
+              partition_name, d, d + 1
+            );
+          EXCEPTION WHEN duplicate_table THEN
+            NULL;
+          END;
+        END LOOP;
+        RAISE NOTICE 'Realtime message partitions ensured for next 7 days';
+      ELSE
+        RAISE NOTICE 'Skipping partition creation: realtime.messages not available';
+      END IF;
+    END $$;
+  `)
+  console.log('✅ Realtime partitions ensured')
+
   // Apply RLS policies (these need to be reapplied after schema changes)
   console.log('🔒 Applying RLS policies...')
   const rlsPoliciesSQL = readFileSync(join(import.meta.dir, '../drizzle/rls-policies.sql'), 'utf-8')
