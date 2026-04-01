@@ -194,7 +194,7 @@ BEGIN
                         JOIN public.space_members sm ON sm.public_key = i.public_key
                         WHERE i.supabase_user_id = (SELECT auth.uid())
                         AND sm.space_id = %L::uuid
-                        AND sm.role IN (''member'', ''admin'', ''owner'')
+                        AND sm.capability IN (''space/write'', ''space/admin'')
                     )
                 )', partition_name, NEW.id::text
             );
@@ -205,7 +205,7 @@ BEGIN
                         JOIN public.space_members sm ON sm.public_key = i.public_key
                         WHERE i.supabase_user_id = (SELECT auth.uid())
                         AND sm.space_id = %L::uuid
-                        AND sm.role IN (''member'', ''admin'', ''owner'')
+                        AND sm.capability IN (''space/write'', ''space/admin'')
                     )
                 )', partition_name, NEW.id::text
             );
