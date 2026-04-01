@@ -1,0 +1,1 @@
+ALTER TABLE "space_members" RENAME COLUMN "role" TO "capability";
