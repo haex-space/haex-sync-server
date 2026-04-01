@@ -67,44 +67,69 @@ try {
   await migrationClient.unsafe(partitioningSQL)
   console.log('✅ Partitioning configuration applied successfully')
 
-  // Ensure realtime.messages partitions exist for the next 7 days.
+  // Set up pg_cron to manage realtime.messages partitions automatically.
   // Supabase Realtime only creates partitions when a tenant connects via WebSocket.
   // Our broadcast_sync_changes trigger fires on every sync push regardless —
-  // if no WS client connected recently, partitions may be missing.
-  console.log('📅 Ensuring realtime.messages partitions...')
+  // without this, partitions expire after a few days of no WS connections.
+  console.log('📅 Setting up realtime.messages partition management...')
   await migrationClient.unsafe(`
-    DO $$
+    -- Install pg_cron if not already installed
+    CREATE EXTENSION IF NOT EXISTS pg_cron;
+
+    -- Function: create future partitions + drop old ones
+    CREATE OR REPLACE FUNCTION realtime.maintain_message_partitions()
+    RETURNS void
+    LANGUAGE plpgsql
+    AS $fn$
     DECLARE
       d date;
       partition_name text;
+      old_partition text;
     BEGIN
-      IF EXISTS (
-        SELECT 1 FROM pg_class c
-        JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = 'realtime' AND c.relname = 'messages'
-      ) THEN
-        FOR d IN SELECT generate_series(
-          CURRENT_DATE - INTERVAL '1 day',
-          CURRENT_DATE + INTERVAL '7 days',
-          '1 day'
-        )::date LOOP
-          partition_name := 'messages_' || to_char(d, 'YYYY_MM_DD');
-          BEGIN
-            EXECUTE format(
-              'CREATE TABLE IF NOT EXISTS realtime.%I PARTITION OF realtime.messages FOR VALUES FROM (%L) TO (%L)',
-              partition_name, d, d + 1
-            );
-          EXCEPTION WHEN duplicate_table THEN
-            NULL;
-          END;
-        END LOOP;
-        RAISE NOTICE 'Realtime message partitions ensured for next 7 days';
-      ELSE
-        RAISE NOTICE 'Skipping partition creation: realtime.messages not available';
-      END IF;
-    END $$;
+      -- Create partitions for yesterday through +3 days
+      FOR d IN SELECT generate_series(
+        CURRENT_DATE - INTERVAL '1 day',
+        CURRENT_DATE + INTERVAL '3 days',
+        '1 day'
+      )::date LOOP
+        partition_name := 'messages_' || to_char(d, 'YYYY_MM_DD');
+        BEGIN
+          EXECUTE format(
+            'CREATE TABLE IF NOT EXISTS realtime.%I PARTITION OF realtime.messages FOR VALUES FROM (%L) TO (%L)',
+            partition_name, d, d + 1
+          );
+        EXCEPTION WHEN duplicate_table THEN
+          NULL;
+        END;
+      END LOOP;
+
+      -- Drop partitions older than 3 days
+      FOR old_partition IN
+        SELECT inhrelid::regclass::text
+        FROM pg_inherits
+        WHERE inhparent = 'realtime.messages'::regclass
+        AND inhrelid::regclass::text ~ 'messages_[0-9]{4}_[0-9]{2}_[0-9]{2}$'
+        AND to_date(
+          regexp_replace(inhrelid::regclass::text, '.*messages_', ''),
+          'YYYY_MM_DD'
+        ) < CURRENT_DATE - INTERVAL '3 days'
+      LOOP
+        EXECUTE format('DROP TABLE IF EXISTS %s', old_partition);
+      END LOOP;
+    END;
+    $fn$;
+
+    -- Run immediately to ensure partitions exist now
+    SELECT realtime.maintain_message_partitions();
+
+    -- Schedule daily at midnight UTC (idempotent — updates if job exists)
+    SELECT cron.schedule(
+      'maintain-realtime-partitions',
+      '0 0 * * *',
+      $$SELECT realtime.maintain_message_partitions()$$
+    );
   `)
-  console.log('✅ Realtime partitions ensured')
+  console.log('✅ Realtime partition management configured (pg_cron daily)')
 
   // Apply RLS policies (these need to be reapplied after schema changes)
   console.log('🔒 Applying RLS policies...')
