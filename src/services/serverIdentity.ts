@@ -12,6 +12,7 @@ import { multibaseEncode } from '@haex-space/ucan'
 
 let serverIdentity: {
   privateKey: CryptoKey
+  privateKeyPkcs8Base64: string
   publicKey: CryptoKey
   publicKeyBytes: Uint8Array
   did: string
@@ -96,8 +97,11 @@ export async function initializeServerIdentityAsync(): Promise<void> {
 
   const did = serverUrlToDid(serverUrl)
 
+  const privateKeyPkcs8Base64 = btoa(String.fromCharCode(...pkcs8))
+
   serverIdentity = {
     privateKey,
+    privateKeyPkcs8Base64,
     publicKey,
     publicKeyBytes,
     did,

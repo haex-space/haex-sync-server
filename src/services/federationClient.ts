@@ -5,16 +5,10 @@
  * Used by the relay server to forward push/pull requests.
  */
 
-import { getServerIdentity, signWithServerKeyAsync } from './serverIdentity'
+import { getServerIdentity } from './serverIdentity'
+import { buildFederationAuthHeader as sdkBuildFederationAuthHeader } from '@haex-space/federation-sdk'
 import { db, federationLinks, federationServers } from '../db'
 import { eq } from 'drizzle-orm'
-
-function base64urlEncode(bytes: Uint8Array): string {
-  return btoa(String.fromCharCode(...bytes))
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/, '')
-}
 
 export interface FederationLink {
   originServerUrl: string
@@ -86,14 +80,8 @@ export function getAllFederationLinks(): Map<string, FederationLink> {
 }
 
 /**
- * Build the FEDERATION Authorization header for a request to an origin server.
- *
- * Format: FEDERATION <base64url(payload)>.<base64url(signature)>
- */
-/**
  * Build a FEDERATION auth header that includes the original user's Authorization.
- * The user auth is embedded in the signed payload so the origin server can verify
- * both the relay's identity AND the end user's identity/capabilities.
+ * Delegates to @haex-space/federation-sdk.
  */
 export async function buildFederationAuthHeader(
   action: string,
@@ -106,31 +94,14 @@ export async function buildFederationAuthHeader(
     throw new Error('Server identity not initialized')
   }
 
-  // Hash the request body
-  const bodyBytes = new TextEncoder().encode(body)
-  const bodyHashBuffer = await crypto.subtle.digest('SHA-256', bodyBytes)
-  const bodyHash = base64urlEncode(new Uint8Array(bodyHashBuffer))
-
-  const now = Date.now()
-  const payload = {
-    did: identity.did,
+  return sdkBuildFederationAuthHeader({
+    serverDid: identity.did,
+    privateKeyPkcs8Base64: identity.privateKeyPkcs8Base64,
     action,
-    timestamp: now,
-    expiresAt: now + 30_000,
-    bodyHash,
-    ucan: ucanToken,
+    body,
+    ucanToken,
     userAuthorization,
-  }
-
-  const payloadJson = JSON.stringify(payload)
-  const payloadEncoded = base64urlEncode(new TextEncoder().encode(payloadJson))
-
-  // Sign the payload
-  const payloadBytes = new TextEncoder().encode(payloadEncoded)
-  const signature = await signWithServerKeyAsync(payloadBytes)
-  const signatureEncoded = base64urlEncode(signature)
-
-  return `FEDERATION ${payloadEncoded}.${signatureEncoded}`
+  })
 }
 
 /**
