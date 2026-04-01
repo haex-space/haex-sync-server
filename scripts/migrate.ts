@@ -18,6 +18,13 @@ const migrationClient = postgres(connectionString, { max: 1 })
 const db = drizzle(migrationClient)
 
 try {
+  // Drop RLS policies that reference columns being altered by migrations.
+  // The policies are re-created after migrations from rls-spaces.sql.
+  console.log('🔒 Dropping RLS policies that block column type changes...')
+  await migrationClient.unsafe(`
+    DROP POLICY IF EXISTS "Users can read their own spaces" ON spaces;
+  `)
+
   console.log('🚀 Running migrations...')
   await migrate(db, { migrationsFolder: './drizzle/migrations' })
   console.log('✅ Migrations completed successfully')
