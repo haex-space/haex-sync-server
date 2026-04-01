@@ -1,4 +1,4 @@
-import { describe, test, expect } from 'bun:test'
+import { describe, test, expect, mock } from 'bun:test'
 import { Hono } from 'hono'
 import {
   createUcan,
@@ -7,6 +7,30 @@ import {
   type Capabilities,
   type SignFn,
 } from '@haex-space/ucan'
+
+// Mock DB before importing middleware — requireCapability queries space_members
+let mockMemberDids: string[] = ['__any__']
+
+mock.module('../../src/db', () => ({
+  db: {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () => {
+            if (mockMemberDids.includes('__any__')) {
+              return Promise.resolve([{ did: 'mock-member' }])
+            }
+            const did = mockMemberDids[0]
+            return Promise.resolve(did ? [{ did }] : [])
+          },
+        }),
+      }),
+    }),
+  },
+  spaces: { id: 'id', ownerId: 'owner_id' },
+  spaceMembers: { did: 'did', spaceId: 'space_id', capability: 'capability' },
+}))
+
 import { ucanAuthMiddleware, requireCapability } from '../../src/middleware/ucanAuth'
 
 // ============================================
