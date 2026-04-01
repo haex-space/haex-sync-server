@@ -22,7 +22,11 @@ try {
   // The policies are re-created after migrations from rls-spaces.sql.
   console.log('🔒 Dropping RLS policies that block column type changes...')
   await migrationClient.unsafe(`
-    DROP POLICY IF EXISTS "Users can read their own spaces" ON spaces;
+    DO $$ BEGIN
+      DROP POLICY IF EXISTS "Users can read their own spaces" ON spaces;
+    EXCEPTION WHEN undefined_table THEN
+      NULL;
+    END $$;
   `)
 
   console.log('🚀 Running migrations...')
