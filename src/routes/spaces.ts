@@ -6,8 +6,11 @@ import { authDispatcher } from '../middleware/authDispatcher'
 import { requireCapability } from '../middleware/ucanAuth'
 import { resolveDidIdentity } from '../middleware/didAuth'
 import { eq, and } from 'drizzle-orm'
+import { SpaceCapabilities } from '@haex-space/ucan'
 import { broadcastToSpace, updateMembershipCache } from './ws'
 import { getFederationLinkForSpace, federatedProxyAsync } from '../services/federationClient'
+import { parseFederatedAuthHeader } from '@haex-space/federation-sdk'
+import { getServerIdentity } from '../services/serverIdentity'
 
 const spacesRouter = new Hono()
 
@@ -15,7 +18,7 @@ const spacesRouter = new Hono()
 spacesRouter.use('/*', authDispatcher)
 
 /**
- * Check if a space is federated and proxy the request to the home server.
+ * Check if a space is federated and proxy the request to the origin server.
  */
 async function federationRelay(c: any, spaceId: string): Promise<Response | null> {
   const link = getFederationLinkForSpace(spaceId)
@@ -23,6 +26,14 @@ async function federationRelay(c: any, spaceId: string): Promise<Response | null
 
   const userAuth = c.req.header('Authorization') ?? ''
   if (!userAuth) return c.json({ error: 'User authentication required for federated requests' }, 401)
+
+  const parsed = parseFederatedAuthHeader(userAuth)
+  if (parsed) {
+    const myDid = getServerIdentity()?.did
+    if (myDid && parsed.relayDid !== myDid) {
+      return c.json({ error: `Request not intended for this relay (expected ${myDid}, got ${parsed.relayDid})` }, 403)
+    }
+  }
 
   const method = c.req.method
   const path = c.req.path
@@ -87,7 +98,7 @@ spacesRouter.post('/', zValidator('json', createSpaceSchema), async (c) => {
         publicKey: identity.publicKey,
         did: didAuth.did,
         label: body.label,
-        role: 'admin',
+        capability: 'space/admin',
         invitedBy: null,
       })
     })
@@ -114,7 +125,7 @@ spacesRouter.get('/', async (c) => {
       nameNonce: spaces.nameNonce,
       createdAt: spaces.createdAt,
       updatedAt: spaces.updatedAt,
-      role: spaceMembers.role,
+      capability: spaceMembers.capability,
       joinedAt: spaceMembers.joinedAt,
     })
       .from(spaceMembers)
@@ -140,7 +151,7 @@ spacesRouter.delete('/my-admin-spaces', async (c) => {
       spaceId: spaceMembers.spaceId,
     })
       .from(spaceMembers)
-      .where(and(eq(spaceMembers.did, callerDid), eq(spaceMembers.role, 'admin')))
+      .where(and(eq(spaceMembers.did, callerDid), eq(spaceMembers.capability, SpaceCapabilities.ADMIN)))
 
     const deletedSpaceIds: string[] = []
     for (const membership of adminMemberships) {
@@ -182,7 +193,7 @@ spacesRouter.get('/:spaceId', async (c) => {
       publicKey: spaceMembers.publicKey,
       did: spaceMembers.did,
       label: spaceMembers.label,
-      role: spaceMembers.role,
+      capability: spaceMembers.capability,
       invitedBy: spaceMembers.invitedBy,
       joinedAt: spaceMembers.joinedAt,
     })
@@ -262,7 +273,7 @@ spacesRouter.delete('/:spaceId', async (c) => {
 const inviteMemberSchema = z.object({
   did: z.string().min(1),
   label: z.string().min(1),
-  role: z.enum(['owner', 'member', 'reader']),
+  capability: z.enum([SpaceCapabilities.WRITE, SpaceCapabilities.READ]),
 })
 
 spacesRouter.post('/:spaceId/members', zValidator('json', inviteMemberSchema), async (c) => {
@@ -291,7 +302,7 @@ spacesRouter.post('/:spaceId/members', zValidator('json', inviteMemberSchema), a
     }
 
     // Check if already a member
-    const existing = await db.select({ role: spaceMembers.role })
+    const existing = await db.select({ did: spaceMembers.did })
       .from(spaceMembers)
       .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.did, body.did)))
       .limit(1)
@@ -305,7 +316,7 @@ spacesRouter.post('/:spaceId/members', zValidator('json', inviteMemberSchema), a
       publicKey: inviteeIdentity.publicKey,
       did: body.did,
       label: body.label,
-      role: body.role,
+      capability: body.capability,
       invitedBy: callerDid,
     })
 
@@ -344,32 +355,43 @@ spacesRouter.delete('/:spaceId/members/:memberDid', async (c) => {
   try {
     const result = await db.transaction(async (tx) => {
       if (isSelf) {
-        // Check caller membership to prevent admin from leaving
-        const callerMembership = await tx.select({ role: spaceMembers.role })
+        // Prevent space owner from leaving
+        const [space] = await tx.select({ ownerId: spaces.ownerId })
+          .from(spaces)
+          .where(eq(spaces.id, spaceId))
+          .limit(1)
+
+        if (space && space.ownerId === callerDid) {
+          return { error: 'The owner cannot leave the space. Transfer ownership or delete it instead.', status: 400 as const }
+        }
+
+        // Verify caller is actually a member
+        const [membership] = await tx.select({ did: spaceMembers.did })
           .from(spaceMembers)
           .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.did, callerDid)))
           .limit(1)
 
-        if (!callerMembership[0]) {
+        if (!membership) {
           return { error: 'Not a member of this space', status: 403 as const }
         }
-
-        if (callerMembership[0].role === 'admin') {
-          return { error: 'The admin cannot leave the space. Transfer admin or delete it instead.', status: 400 as const }
-        }
       } else {
-        // Verify target exists
-        const target = await tx.select({ role: spaceMembers.role })
+        // Verify target exists and is not the owner
+        const [space] = await tx.select({ ownerId: spaces.ownerId })
+          .from(spaces)
+          .where(eq(spaces.id, spaceId))
+          .limit(1)
+
+        const [target] = await tx.select({ did: spaceMembers.did })
           .from(spaceMembers)
           .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.did, targetDid)))
           .limit(1)
 
-        if (!target[0]) {
+        if (!target) {
           return { error: 'Target is not a member of this space', status: 404 as const }
         }
 
-        if (target[0].role === 'admin') {
-          return { error: 'Cannot kick the admin', status: 403 as const }
+        if (space && space.ownerId === targetDid) {
+          return { error: 'Cannot kick the space owner', status: 403 as const }
         }
       }
 
@@ -394,12 +416,12 @@ spacesRouter.delete('/:spaceId/members/:memberDid', async (c) => {
   }
 })
 
-// POST /:spaceId/transfer-admin – Transfer admin role to another member
-const transferAdminSchema = z.object({
+// POST /:spaceId/transfer-ownership – Transfer space ownership to another member
+const transferOwnershipSchema = z.object({
   targetDid: z.string().min(1),
 })
 
-spacesRouter.post('/:spaceId/transfer-admin', zValidator('json', transferAdminSchema), async (c) => {
+spacesRouter.post('/:spaceId/transfer-ownership', zValidator('json', transferOwnershipSchema), async (c) => {
   const spaceId = c.req.param('spaceId')
   const body = c.req.valid('json')
 
@@ -421,23 +443,28 @@ spacesRouter.post('/:spaceId/transfer-admin', zValidator('json', transferAdminSc
   try {
     const result = await db.transaction(async (tx) => {
       // Verify target is a member of the space
-      const targetResult = await tx.select({ role: spaceMembers.role })
+      const [target] = await tx.select({ did: spaceMembers.did })
         .from(spaceMembers)
         .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.did, body.targetDid)))
         .limit(1)
 
-      if (!targetResult[0]) {
+      if (!target) {
         return { error: 'Target is not a member of this space', status: 404 as const }
       }
 
-      // Promote target to admin
+      // Transfer ownership: update spaces.ownerId
+      await tx.update(spaces)
+        .set({ ownerId: body.targetDid })
+        .where(eq(spaces.id, spaceId))
+
+      // Promote target to admin capability
       await tx.update(spaceMembers)
-        .set({ role: 'admin' })
+        .set({ capability: SpaceCapabilities.ADMIN })
         .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.did, body.targetDid)))
 
-      // Demote caller to owner
+      // Demote caller to write capability
       await tx.update(spaceMembers)
-        .set({ role: 'owner' })
+        .set({ capability: SpaceCapabilities.WRITE })
         .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.did, callerDid)))
 
       return null
@@ -449,7 +476,7 @@ spacesRouter.post('/:spaceId/transfer-admin', zValidator('json', transferAdminSc
 
     return c.json({ success: true })
   } catch (error) {
-    console.error('Transfer admin error:', error)
+    console.error('Transfer ownership error:', error)
     return c.json({ error: 'Internal server error' }, 500)
   }
 })

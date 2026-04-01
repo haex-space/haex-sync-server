@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { eq, and, ne, sql, max, asc } from 'drizzle-orm'
-import { multibaseDecode } from '@haex-space/ucan'
+import { multibaseDecode, SpaceCapabilities, satisfies, type SpaceCapability } from '@haex-space/ucan'
 import {
   buildDidDocument,
   isFederationEnabled,
@@ -24,7 +24,7 @@ import { validateFederationPush, resolveSpaceOwnerUserId } from './federation.he
 import { broadcastToSpace, updateMembershipCache } from './ws'
 import { broadcastToFederatedServers, updateFederatedSpacesCache } from './federation.ws'
 import { buildFederationAuthHeader, updateFederationLinkCache } from '../services/federationClient'
-import { connectToHomeFederationWs } from '../services/federationWsClient'
+import { connectToOriginFederationWs } from '../services/federationWsClient'
 import { didToSpkiPublicKey } from '../utils/didIdentity'
 import type { FederationContext } from '../middleware/types'
 
@@ -85,20 +85,20 @@ federation.get('/federation/server-did', (c) => {
 
 const setupSchema = z.object({
   spaceId: z.string().uuid(),
-  homeServerUrl: z.string().url(),
+  originServerUrl: z.string().url(),
   relayUcan: z.string().min(1),
 })
 
 /**
  * POST /federation/setup
- * Called by a CLIENT on their own relay server to initiate federation with a home server.
+ * Called by a CLIENT on their own relay server to initiate federation with an origin server.
  * Uses normal user auth (DID-Auth or UCAN), NOT federation auth.
  *
  * Flow:
- * 1. Resolve home server DID document
- * 2. Upsert home server in federation_servers
+ * 1. Resolve origin server DID document
+ * 2. Upsert origin server in federation_servers
  * 3. Upsert federation link with the client-provided relay UCAN
- * 4. Call POST {homeServerUrl}/federation/establish with FEDERATION auth
+ * 4. Call POST {originServerUrl}/federation/establish with FEDERATION auth
  * 5. Create local space + member entries for WebSocket routing
  */
 federation.post('/federation/setup', authDispatcher, async (c) => {
@@ -122,12 +122,12 @@ federation.post('/federation/setup', authDispatcher, async (c) => {
   }
 
   try {
-    // 2. Resolve home server DID document
-    const didDocResponse = await fetch(`${body.homeServerUrl}/.well-known/did.json`, {
+    // 2. Resolve origin server DID document
+    const didDocResponse = await fetch(`${body.originServerUrl}/.well-known/did.json`, {
       signal: AbortSignal.timeout(10_000),
     })
     if (!didDocResponse.ok) {
-      return c.json({ error: `Failed to resolve home server DID document: HTTP ${didDocResponse.status}` }, 502)
+      return c.json({ error: `Failed to resolve origin server DID document: HTTP ${didDocResponse.status}` }, 502)
     }
 
     const didDoc = await didDocResponse.json() as {
@@ -135,15 +135,15 @@ federation.post('/federation/setup', authDispatcher, async (c) => {
       verificationMethod?: { publicKeyMultibase?: string }[]
     }
 
-    // 3. Extract home server DID and public key from the DID document
-    const homeServerDid = didDoc.id
-    if (!homeServerDid) {
-      return c.json({ error: 'Home server DID document missing id' }, 502)
+    // 3. Extract origin server DID and public key from the DID document
+    const originServerDid = didDoc.id
+    if (!originServerDid) {
+      return c.json({ error: 'Origin server DID document missing id' }, 502)
     }
 
     const verificationMethod = didDoc.verificationMethod?.[0]
     if (!verificationMethod?.publicKeyMultibase) {
-      return c.json({ error: 'Home server DID document missing publicKeyMultibase' }, 502)
+      return c.json({ error: 'Origin server DID document missing publicKeyMultibase' }, 502)
     }
 
     // Decode multibase (base58btc) to raw public key bytes, then convert to hex
@@ -151,24 +151,24 @@ federation.post('/federation/setup', authDispatcher, async (c) => {
     if (decoded[0] !== 0xed || decoded[1] !== 0x01) {
       return c.json({ error: 'Expected Ed25519 multicodec prefix (0xed01)' }, 502)
     }
-    const homeServerPublicKeyBytes = decoded.slice(2)
-    const homeServerPublicKeyHex = Array.from(homeServerPublicKeyBytes as Uint8Array)
+    const originServerPublicKeyBytes = decoded.slice(2)
+    const originServerPublicKeyHex = Array.from(originServerPublicKeyBytes as Uint8Array)
       .map((b: number) => b.toString(16).padStart(2, '0'))
       .join('')
 
-    // 4. Upsert the home server in federation_servers
+    // 4. Upsert the origin server in federation_servers
     const [server] = await db
       .insert(federationServers)
       .values({
-        did: homeServerDid,
-        url: body.homeServerUrl,
-        publicKey: homeServerPublicKeyHex,
+        did: originServerDid,
+        url: body.originServerUrl,
+        publicKey: originServerPublicKeyHex,
       })
       .onConflictDoUpdate({
         target: federationServers.did,
         set: {
-          url: body.homeServerUrl,
-          publicKey: homeServerPublicKeyHex,
+          url: body.originServerUrl,
+          publicKey: originServerPublicKeyHex,
           updatedAt: new Date(),
         },
       })
@@ -198,11 +198,11 @@ federation.post('/federation/setup', authDispatcher, async (c) => {
 
     // 6. Update the in-memory federation link cache
     updateFederationLinkCache(body.spaceId, {
-      homeServerUrl: body.homeServerUrl,
+      originServerUrl: body.originServerUrl,
       ucanToken: body.relayUcan,
     })
 
-    // 7. Call POST {homeServerUrl}/federation/establish with FEDERATION auth
+    // 7. Call POST {originServerUrl}/federation/establish with FEDERATION auth
     const establishBody = JSON.stringify({
       spaceId: body.spaceId,
       serverUrl: serverIdentity.serverUrl ?? `https://${serverIdentity.did.replace('did:web:', '')}`,
@@ -212,7 +212,7 @@ federation.post('/federation/setup', authDispatcher, async (c) => {
     const userAuth = c.req.header('Authorization') ?? ''
     const authHeader = await buildFederationAuthHeader('federation-establish', establishBody, body.relayUcan, userAuth)
 
-    const establishResponse = await fetch(`${body.homeServerUrl}/federation/establish`, {
+    const establishResponse = await fetch(`${body.originServerUrl}/federation/establish`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -226,7 +226,7 @@ federation.post('/federation/setup', authDispatcher, async (c) => {
       const errorData = await establishResponse.json().catch(() => null)
       console.error('[Federation] Establish call failed:', establishResponse.status, errorData)
       return c.json({
-        error: 'Failed to establish federation with home server',
+        error: 'Failed to establish federation with origin server',
         details: errorData,
         status: establishResponse.status,
       }, 502)
@@ -250,23 +250,23 @@ federation.post('/federation/setup', authDispatcher, async (c) => {
         publicKey: callerPublicKey,
         did: callerDid,
         label: 'Federation member',
-        role: 'member',
+        capability: SpaceCapabilities.WRITE,
       })
       .onConflictDoNothing()
 
     // Update in-memory membership cache for WebSocket routing
     updateMembershipCache(callerDid, body.spaceId, 'add')
 
-    // Connect to home server's federation WebSocket for real-time notifications
-    connectToHomeFederationWs(body.homeServerUrl, body.relayUcan).catch(err => {
-      console.warn('[Federation] Failed to connect WS to home server:', err)
+    // Connect to origin server's federation WebSocket for real-time notifications
+    connectToOriginFederationWs(body.originServerUrl, body.relayUcan).catch(err => {
+      console.warn('[Federation] Failed to connect WS to origin server:', err)
     })
 
-    console.log(`[Federation] Setup complete: ${callerDid} → space ${body.spaceId} via ${homeServerDid}`)
+    console.log(`[Federation] Setup complete: ${callerDid} → space ${body.spaceId} via ${originServerDid}`)
 
     return c.json({
       federationLinkId: link!.id,
-      homeServerDid,
+      originServerDid,
       spaceId: body.spaceId,
     }, 201)
   } catch (error) {
@@ -446,7 +446,7 @@ federationRouter.post('/remove', async (c) => {
   return c.json({ removed: true })
 })
 
-// ─── Sync Relay Endpoints (on Home Server) ─────────────────────────
+// ─── Sync Relay Endpoints (on Origin Server) ─────────────────────────
 
 /**
  * POST /federation/push
@@ -471,6 +471,22 @@ federationRouter.post('/push', async (c) => {
     // Verify relay capability for this space
     const relayError = requireFederationRelay(c, spaceId)
     if (relayError) return relayError
+
+    // Verify the end user has write capability (if user auth is present)
+    if (federationContext.userAuth) {
+      const [member] = await db
+        .select({ capability: spaceMembers.capability })
+        .from(spaceMembers)
+        .where(and(
+          eq(spaceMembers.spaceId, spaceId),
+          eq(spaceMembers.did, federationContext.userAuth.did),
+        ))
+        .limit(1)
+
+      if (!member || !satisfies(member.capability as SpaceCapability, SpaceCapabilities.WRITE)) {
+        return c.json({ error: 'Insufficient capability — need at least space/write to push' }, 403)
+      }
+    }
 
     // Resolve space owner's userId for billing
     const ownerUserId = await resolveSpaceOwnerUserId(spaceId)
@@ -583,6 +599,23 @@ federationRouter.get('/pull', async (c) => {
     // Verify relay capability for this space
     const relayError = requireFederationRelay(c, spaceId)
     if (relayError) return relayError
+
+    // Verify the end user has read capability (if user auth is present)
+    const federationContext = c.get('federation') as FederationContext
+    if (federationContext.userAuth) {
+      const [member] = await db
+        .select({ capability: spaceMembers.capability })
+        .from(spaceMembers)
+        .where(and(
+          eq(spaceMembers.spaceId, spaceId),
+          eq(spaceMembers.did, federationContext.userAuth.did),
+        ))
+        .limit(1)
+
+      if (!member || !satisfies(member.capability as SpaceCapability, SpaceCapabilities.READ)) {
+        return c.json({ error: 'Insufficient capability — need at least space/read to pull' }, 403)
+      }
+    }
 
     // Verify space exists and is shared
     const [space] = await db

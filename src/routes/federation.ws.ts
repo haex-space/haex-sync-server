@@ -8,7 +8,7 @@
  * Architecture mirrors ws.ts (user WebSocket) but scoped to server identities:
  * - Auth: FEDERATION token (server DID + UCAN) instead of DID-Auth
  * - Scope: federation_links instead of space_members
- * - Push-only: Home server sends, relay servers receive
+ * - Push-only: Origin server sends, relay servers receive
  */
 
 import { Hono } from 'hono'
@@ -213,7 +213,7 @@ federationWsApp.get(
       },
 
       onMessage() {
-        // Push-only — home server sends, relay servers receive
+        // Push-only — origin server sends, relay servers receive
       },
     }
   }),

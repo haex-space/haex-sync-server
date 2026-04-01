@@ -1,4 +1,5 @@
 import type { UcanContext } from '@haex-space/ucan'
+import type { VerifiedFederatedAuth } from '@haex-space/federation-sdk'
 
 export type { UcanContext }
 
@@ -17,6 +18,7 @@ export interface FederationContext {
   ucanToken: string
   ucanCapabilities: Record<string, string>
   action: string
+  userAuth: VerifiedFederatedAuth | null
 }
 
 declare module 'hono' {

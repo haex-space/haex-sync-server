@@ -220,7 +220,7 @@ export const spaceMembers = pgTable(
     publicKey: text("public_key").notNull(), // Ed25519 public key (hex)
     did: text("did").notNull(), // did:key:z... of the member
     label: text("label").notNull(), // Human-readable name assigned by the inviter
-    role: text("role").notNull(), // 'admin' | 'owner' | 'member' | 'reader' — server-side cache, UCAN is authoritative
+    capability: text("capability").notNull(), // 'space/admin' | 'space/write' | 'space/read' — server-side cache, UCAN is authoritative
     invitedBy: text("invited_by"), // Public key of the inviter (null for space creator)
     joinedAt: timestamp("joined_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -467,7 +467,7 @@ export const federationLinks = pgTable(
       .references(() => federationServers.id, { onDelete: "cascade" }),
     ucanToken: text("ucan_token").notNull(), // Current server/relay UCAN
     ucanExpiresAt: timestamp("ucan_expires_at", { withTimezone: true }).notNull(),
-    role: text("role").notNull().default("relay"), // 'home' or 'relay'
+    role: text("role").notNull().default("relay"), // 'origin' or 'relay'
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

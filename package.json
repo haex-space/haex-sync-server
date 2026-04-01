@@ -29,7 +29,8 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "@haex-space/ucan": "0.1.8",
+    "@haex-space/federation-sdk": "0.2.2",
+    "@haex-space/ucan": "0.1.9",
     "@haex-space/vault-sdk": "2.8.0",
     "@hono/zod-validator": "^0.7.4",
     "@supabase/supabase-js": "^2.79.0",

@@ -1,7 +1,7 @@
 /**
  * Federation Client
  *
- * Builds and sends authenticated requests to remote home servers.
+ * Builds and sends authenticated requests to remote origin servers.
  * Used by the relay server to forward push/pull requests.
  */
 
@@ -17,7 +17,7 @@ function base64urlEncode(bytes: Uint8Array): string {
 }
 
 export interface FederationLink {
-  homeServerUrl: string
+  originServerUrl: string
   ucanToken: string
 }
 
@@ -46,7 +46,7 @@ export async function initFederationLinkCache(): Promise<void> {
   federationLinkCache.clear()
   for (const row of results) {
     federationLinkCache.set(row.spaceId, {
-      homeServerUrl: row.url,
+      originServerUrl: row.url,
       ucanToken: row.ucanToken,
     })
   }
@@ -67,7 +67,7 @@ export function updateFederationLinkCache(spaceId: string, link: FederationLink 
 
 /**
  * Look up the federation link for a space on this (relay) server.
- * Returns the home server URL and UCAN token, or null if the space is not federated.
+ * Returns the origin server URL and UCAN token, or null if the space is not federated.
  * Uses in-memory cache — no DB query per request.
  */
 export function getFederationLinkForSpace(spaceId: string): FederationLink | null {
@@ -86,13 +86,13 @@ export function getAllFederationLinks(): Map<string, FederationLink> {
 }
 
 /**
- * Build the FEDERATION Authorization header for a request to a home server.
+ * Build the FEDERATION Authorization header for a request to an origin server.
  *
  * Format: FEDERATION <base64url(payload)>.<base64url(signature)>
  */
 /**
  * Build a FEDERATION auth header that includes the original user's Authorization.
- * The user auth is embedded in the signed payload so the home server can verify
+ * The user auth is embedded in the signed payload so the origin server can verify
  * both the relay's identity AND the end user's identity/capabilities.
  */
 export async function buildFederationAuthHeader(
@@ -111,10 +111,12 @@ export async function buildFederationAuthHeader(
   const bodyHashBuffer = await crypto.subtle.digest('SHA-256', bodyBytes)
   const bodyHash = base64urlEncode(new Uint8Array(bodyHashBuffer))
 
+  const now = Date.now()
   const payload = {
     did: identity.did,
     action,
-    timestamp: Date.now(),
+    timestamp: now,
+    expiresAt: now + 30_000,
     bodyHash,
     ucan: ucanToken,
     userAuthorization,
@@ -132,7 +134,7 @@ export async function buildFederationAuthHeader(
 }
 
 /**
- * Generic federation proxy — forwards an arbitrary request to the home server.
+ * Generic federation proxy — forwards an arbitrary request to the origin server.
  * Used for MLS and space operations that need relay.
  */
 export async function federatedProxyAsync(
@@ -143,7 +145,7 @@ export async function federatedProxyAsync(
   body?: string,
   query?: string,
 ): Promise<{ ok: boolean; status: number; data: unknown }> {
-  const url = `${link.homeServerUrl}${path}${query ? `?${query}` : ''}`
+  const url = `${link.originServerUrl}${path}${query ? `?${query}` : ''}`
   const action = `federation-proxy-${method.toLowerCase()}`
 
   const authHeader = await buildFederationAuthHeader(action, body ?? '', link.ucanToken, userAuthorization)
@@ -163,8 +165,8 @@ export async function federatedProxyAsync(
 }
 
 /**
- * Forward a push request to the home server.
- * Returns the home server's response.
+ * Forward a push request to the origin server.
+ * Returns the origin server's response.
  */
 export async function federatedPushAsync(
   link: FederationLink,
@@ -176,7 +178,7 @@ export async function federatedPushAsync(
 
   const authHeader = await buildFederationAuthHeader('federation-push', body, link.ucanToken, userAuthorization)
 
-  const response = await fetch(`${link.homeServerUrl}/federation/push`, {
+  const response = await fetch(`${link.originServerUrl}/federation/push`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -191,8 +193,8 @@ export async function federatedPushAsync(
 }
 
 /**
- * Forward a pull request to the home server.
- * Returns the home server's response.
+ * Forward a pull request to the origin server.
+ * Returns the origin server's response.
  */
 export async function federatedPullAsync(
   link: FederationLink,
@@ -201,7 +203,7 @@ export async function federatedPullAsync(
 ): Promise<{ ok: boolean; status: number; data: unknown }> {
   // Build query string
   const queryString = new URLSearchParams(params).toString()
-  const url = `${link.homeServerUrl}/federation/pull?${queryString}`
+  const url = `${link.originServerUrl}/federation/pull?${queryString}`
 
   // For GET requests, body is empty
   const authHeader = await buildFederationAuthHeader('federation-pull', '', link.ucanToken, userAuthorization)

@@ -6,12 +6,14 @@ import {
   multibaseDecode,
   findRootIssuer,
   parseSpaceResource,
+  didToPublicKey,
 } from '@haex-space/ucan'
+import { verifyFederatedAuth } from '@haex-space/federation-sdk'
 import { eq, and } from 'drizzle-orm'
 import { db, spaceMembers } from '../db'
+import { getServerIdentity } from '../services/serverIdentity'
 import type { FederationContext } from './types'
 
-const TIMESTAMP_TOLERANCE_MS = 30_000
 const verify = createWebCryptoVerifier()
 
 function base64urlDecode(str: string): Uint8Array {
@@ -102,8 +104,10 @@ export const federationAuthMiddleware = async (c: Context, next: Next) => {
     did: string
     action: string
     timestamp: number
+    expiresAt: number
     bodyHash: string
     ucan: string
+    userAuthorization?: string
   }
   try {
     const payloadBytes = base64urlDecode(payloadEncoded)
@@ -114,8 +118,8 @@ export const federationAuthMiddleware = async (c: Context, next: Next) => {
   }
 
   // Validate required fields
-  if (!payload.did || !payload.action || !payload.timestamp || !payload.bodyHash || !payload.ucan) {
-    return c.json({ error: 'Missing required payload fields (did, action, timestamp, bodyHash, ucan)' }, 401)
+  if (!payload.did || !payload.action || !payload.timestamp || !payload.expiresAt || !payload.bodyHash || !payload.ucan) {
+    return c.json({ error: 'Missing required payload fields (did, action, timestamp, expiresAt, bodyHash, ucan)' }, 401)
   }
 
   // Must be a did:web
@@ -123,11 +127,10 @@ export const federationAuthMiddleware = async (c: Context, next: Next) => {
     return c.json({ error: 'Federation requires did:web server identity' }, 401)
   }
 
-  // Check timestamp within tolerance
+  // Check expiry
   const now = Date.now()
-  const diff = Math.abs(now - payload.timestamp)
-  if (diff > TIMESTAMP_TOLERANCE_MS) {
-    return c.json({ error: 'Request expired — timestamp outside tolerance' }, 401)
+  if (now > payload.expiresAt) {
+    return c.json({ error: 'Federation request expired' }, 401)
   }
 
   // Verify body hash
@@ -245,10 +248,6 @@ export const federationAuthMiddleware = async (c: Context, next: Next) => {
     return c.json({ error: 'Invalid UCAN token' }, 401)
   }
 
-  // Extract capabilities (already validated above)
-  const capEntries = Object.entries(ucanPayload.cap)
-  const relayEntry = capEntries.find(([, capability]) => capability === 'server/relay')
-
   const federationContext: FederationContext = {
     serverDid: payload.did,
     serverPublicKey: publicKeyBytes,
@@ -256,7 +255,54 @@ export const federationAuthMiddleware = async (c: Context, next: Next) => {
     ucanToken: payload.ucan,
     ucanCapabilities: ucanPayload.cap,
     action: payload.action,
+    userAuth: null,
   }
+
+  // Verify embedded user auth if present
+  if (payload.userAuthorization) {
+    const serverIdentity = getServerIdentity()
+    if (!serverIdentity) {
+      return c.json({ error: 'Server identity not configured' }, 500)
+    }
+
+    const requestQuery = new URL(c.req.url).search.slice(1)
+    const userResult = await verifyFederatedAuth({
+      authHeader: payload.userAuthorization,
+      verify: async (publicKey, signature, data) => {
+        const key = await crypto.subtle.importKey('raw', publicKey, { name: 'Ed25519' }, false, ['verify'])
+        return crypto.subtle.verify('Ed25519', key, signature, data)
+      },
+      didToPublicKey,
+      requestBody: body,
+      requestQueryString: requestQuery,
+    })
+
+    if ('error' in userResult) {
+      return c.json({ error: `Federated user auth invalid: ${userResult.error}` }, 401)
+    }
+
+    // Verify serverDid matches this server
+    if (userResult.serverDid !== serverIdentity.did) {
+      return c.json({ error: `Request not intended for this server (expected ${serverIdentity.did}, got ${userResult.serverDid})` }, 403)
+    }
+
+    // Verify user is a member of the space
+    const [member] = await db
+      .select({ did: spaceMembers.did })
+      .from(spaceMembers)
+      .where(and(
+        eq(spaceMembers.spaceId, userResult.spaceId),
+        eq(spaceMembers.did, userResult.did),
+      ))
+      .limit(1)
+
+    if (!member) {
+      return c.json({ error: `User ${userResult.did} is not a member of space ${userResult.spaceId}` }, 403)
+    }
+
+    federationContext.userAuth = userResult
+  }
+
   c.set('federation', federationContext)
 
   await next()

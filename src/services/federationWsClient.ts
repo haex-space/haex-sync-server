@@ -1,11 +1,11 @@
 /**
  * Federation WebSocket Client
  *
- * Maintains outgoing WebSocket connections FROM this relay server TO home servers.
- * When a home server sends a real-time event (sync changes, membership updates),
+ * Maintains outgoing WebSocket connections FROM this relay server TO origin servers.
+ * When an origin server sends a real-time event (sync changes, membership updates),
  * this client re-broadcasts it to local clients via broadcastToSpace().
  *
- * Counterpart to federation.ws.ts which handles the home server (accepting) side.
+ * Counterpart to federation.ws.ts which handles the origin server (accepting) side.
  */
 
 import { getServerIdentity, signWithServerKeyAsync } from './serverIdentity'
@@ -21,13 +21,13 @@ function base64urlEncode(bytes: Uint8Array): string {
 
 // ── Connection State ──────────────────────────────────────────────
 
-/** Active outgoing WebSocket connections keyed by home server URL */
+/** Active outgoing WebSocket connections keyed by origin server URL */
 const activeConnections = new Map<string, WebSocket>()
 
 /** Track intentional disconnections to suppress auto-reconnect */
 const intentionalDisconnects = new Set<string>()
 
-/** Reconnect delay per home server URL (exponential backoff) */
+/** Reconnect delay per origin server URL (exponential backoff) */
 const reconnectDelays = new Map<string, number>()
 
 const MIN_RECONNECT_DELAY_MS = 5_000
@@ -72,24 +72,24 @@ async function buildFederationWsToken(ucanToken: string): Promise<string> {
 // ── Connect / Disconnect ──────────────────────────────────────────
 
 /**
- * Connect to a home server's /federation/ws endpoint.
+ * Connect to an origin server's /federation/ws endpoint.
  * On message, re-broadcasts events to local clients via broadcastToSpace().
  * Auto-reconnects on disconnect with exponential backoff.
  * Skips if already connected to this URL.
  */
-export async function connectToHomeFederationWs(homeServerUrl: string, ucanToken: string): Promise<void> {
+export async function connectToOriginFederationWs(originServerUrl: string, ucanToken: string): Promise<void> {
   // Skip if already connected
-  if (activeConnections.has(homeServerUrl)) {
+  if (activeConnections.has(originServerUrl)) {
     return
   }
 
   // Remove from intentional disconnect set (in case we're re-connecting)
-  intentionalDisconnects.delete(homeServerUrl)
+  intentionalDisconnects.delete(originServerUrl)
 
   const token = await buildFederationWsToken(ucanToken)
 
   // Build WebSocket URL: https:// → wss://, http:// → ws://
-  const wsUrl = homeServerUrl
+  const wsUrl = originServerUrl
     .replace(/^https:\/\//, 'wss://')
     .replace(/^http:\/\//, 'ws://')
 
@@ -98,10 +98,10 @@ export async function connectToHomeFederationWs(homeServerUrl: string, ucanToken
   const ws = new WebSocket(url)
 
   ws.onopen = () => {
-    console.log(`[Federation WS Client] Connected to ${homeServerUrl}`)
-    activeConnections.set(homeServerUrl, ws)
+    console.log(`[Federation WS Client] Connected to ${originServerUrl}`)
+    activeConnections.set(originServerUrl, ws)
     // Reset backoff on successful connection
-    reconnectDelays.delete(homeServerUrl)
+    reconnectDelays.delete(originServerUrl)
   }
 
   ws.onmessage = (event) => {
@@ -116,31 +116,31 @@ export async function connectToHomeFederationWs(homeServerUrl: string, ucanToken
   }
 
   ws.onerror = (error) => {
-    console.error(`[Federation WS Client] Error for ${homeServerUrl}:`, error)
+    console.error(`[Federation WS Client] Error for ${originServerUrl}:`, error)
     // Let onclose handle reconnection
   }
 
   ws.onclose = () => {
-    activeConnections.delete(homeServerUrl)
+    activeConnections.delete(originServerUrl)
 
-    if (intentionalDisconnects.has(homeServerUrl)) {
-      intentionalDisconnects.delete(homeServerUrl)
-      reconnectDelays.delete(homeServerUrl)
-      console.log(`[Federation WS Client] Disconnected from ${homeServerUrl} (intentional)`)
+    if (intentionalDisconnects.has(originServerUrl)) {
+      intentionalDisconnects.delete(originServerUrl)
+      reconnectDelays.delete(originServerUrl)
+      console.log(`[Federation WS Client] Disconnected from ${originServerUrl} (intentional)`)
       return
     }
 
     // Auto-reconnect with exponential backoff
-    const currentDelay = reconnectDelays.get(homeServerUrl) ?? MIN_RECONNECT_DELAY_MS
+    const currentDelay = reconnectDelays.get(originServerUrl) ?? MIN_RECONNECT_DELAY_MS
     const nextDelay = Math.min(currentDelay * 2, MAX_RECONNECT_DELAY_MS)
-    reconnectDelays.set(homeServerUrl, nextDelay)
+    reconnectDelays.set(originServerUrl, nextDelay)
 
-    console.log(`[Federation WS Client] Disconnected from ${homeServerUrl}, reconnecting in ${currentDelay}ms`)
+    console.log(`[Federation WS Client] Disconnected from ${originServerUrl}, reconnecting in ${currentDelay}ms`)
 
     setTimeout(() => {
-      if (!intentionalDisconnects.has(homeServerUrl)) {
-        connectToHomeFederationWs(homeServerUrl, ucanToken).catch(error => {
-          console.error(`[Federation WS Client] Reconnect failed for ${homeServerUrl}:`, error)
+      if (!intentionalDisconnects.has(originServerUrl)) {
+        connectToOriginFederationWs(originServerUrl, ucanToken).catch(error => {
+          console.error(`[Federation WS Client] Reconnect failed for ${originServerUrl}:`, error)
         })
       }
     }, currentDelay)
@@ -148,23 +148,23 @@ export async function connectToHomeFederationWs(homeServerUrl: string, ucanToken
 }
 
 /**
- * Intentionally disconnect from a specific home server.
+ * Intentionally disconnect from a specific origin server.
  * Suppresses auto-reconnect.
  */
-export function disconnectFederationWs(homeServerUrl: string): void {
-  intentionalDisconnects.add(homeServerUrl)
+export function disconnectFederationWs(originServerUrl: string): void {
+  intentionalDisconnects.add(originServerUrl)
 
-  const ws = activeConnections.get(homeServerUrl)
+  const ws = activeConnections.get(originServerUrl)
   if (ws) {
     ws.close()
-    activeConnections.delete(homeServerUrl)
+    activeConnections.delete(originServerUrl)
   }
 }
 
 // ── Init ──────────────────────────────────────────────────────────
 
 /**
- * On startup, connect to all home servers that this relay has federation links to.
+ * On startup, connect to all origin servers that this relay has federation links to.
  * Must be called AFTER initFederationLinkCache() has completed.
  */
 export async function initFederationWsConnections(): Promise<void> {
@@ -180,22 +180,22 @@ export async function initFederationWsConnections(): Promise<void> {
     return
   }
 
-  // Deduplicate by home server URL (multiple spaces may point to the same server)
+  // Deduplicate by origin server URL (multiple spaces may point to the same server)
   const serverTokens = new Map<string, string>()
   for (const link of allLinks.values()) {
     // Use the first UCAN we find for each server (they should all be valid)
-    if (!serverTokens.has(link.homeServerUrl)) {
-      serverTokens.set(link.homeServerUrl, link.ucanToken)
+    if (!serverTokens.has(link.originServerUrl)) {
+      serverTokens.set(link.originServerUrl, link.ucanToken)
     }
   }
 
-  console.log(`[Federation WS Client] Connecting to ${serverTokens.size} home server(s)`)
+  console.log(`[Federation WS Client] Connecting to ${serverTokens.size} origin server(s)`)
 
   const connectionPromises: Promise<void>[] = []
-  for (const [homeServerUrl, ucanToken] of serverTokens) {
+  for (const [originServerUrl, ucanToken] of serverTokens) {
     connectionPromises.push(
-      connectToHomeFederationWs(homeServerUrl, ucanToken).catch(error => {
-        console.error(`[Federation WS Client] Failed to connect to ${homeServerUrl}:`, error)
+      connectToOriginFederationWs(originServerUrl, ucanToken).catch(error => {
+        console.error(`[Federation WS Client] Failed to connect to ${originServerUrl}:`, error)
       })
     )
   }

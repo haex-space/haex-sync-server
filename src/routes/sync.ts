@@ -10,6 +10,8 @@ import { spaceResource, type Capability } from '@haex-space/ucan'
 import { getSpaceType, validateSpacePush } from './sync.helpers'
 import { getUserQuotaAsync } from '../services/quota'
 import { getFederationLinkForSpace, federatedPushAsync, federatedPullAsync } from '../services/federationClient'
+import { parseFederatedAuthHeader } from '@haex-space/federation-sdk'
+import { getServerIdentity } from '../services/serverIdentity'
 import vaultRoutes from './sync.vaults'
 import { broadcastToSpace } from './ws'
 
@@ -45,11 +47,20 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
   const changes = rawChanges as PushChange[]
 
   try {
-    // Federation relay: if this space is federated (we're a relay), forward to home server
+    // Federation relay: if this space is federated (we're a relay), forward to origin server
     const federationLink = getFederationLinkForSpace(spaceId)
     if (federationLink) {
       const userAuth = c.req.header('Authorization') ?? ''
       if (!userAuth) return c.json({ error: 'User authentication required' }, 401)
+
+      const parsed = parseFederatedAuthHeader(userAuth)
+      if (parsed) {
+        const myDid = getServerIdentity()?.did
+        if (myDid && parsed.relayDid !== myDid) {
+          return c.json({ error: `Request not intended for this relay (expected ${myDid}, got ${parsed.relayDid})` }, 403)
+        }
+      }
+
       const result = await federatedPushAsync(federationLink, spaceId, changes, userAuth)
       return c.json(result.data, result.status as any)
     }
@@ -279,7 +290,7 @@ sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
   const { spaceId, excludeDeviceId, afterUpdatedAt, afterTableName, afterRowPks, limit } = c.req.valid('query')
 
   try {
-    // Federation relay: if this space is federated (we're a relay), proxy from home server
+    // Federation relay: if this space is federated (we're a relay), proxy from origin server
     const federationLink = getFederationLinkForSpace(spaceId)
     if (federationLink) {
       const params: Record<string, string> = { spaceId, limit: String(limit) }
@@ -287,7 +298,18 @@ sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
       if (afterUpdatedAt) params.afterUpdatedAt = afterUpdatedAt
       if (afterTableName) params.afterTableName = afterTableName
       if (afterRowPks) params.afterRowPks = afterRowPks
-      const result = await federatedPullAsync(federationLink, params)
+      const userAuth = c.req.header('Authorization') ?? ''
+      if (!userAuth) return c.json({ error: 'User authentication required' }, 401)
+
+      const parsed = parseFederatedAuthHeader(userAuth)
+      if (parsed) {
+        const myDid = getServerIdentity()?.did
+        if (myDid && parsed.relayDid !== myDid) {
+          return c.json({ error: `Request not intended for this relay (expected ${myDid}, got ${parsed.relayDid})` }, 403)
+        }
+      }
+
+      const result = await federatedPullAsync(federationLink, params, userAuth)
       return c.json(result.data, result.status as any)
     }
 

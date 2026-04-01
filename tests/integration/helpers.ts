@@ -2,10 +2,15 @@ import {
   createUcan,
   createWebCryptoSigner,
   spaceResource,
+  multibaseEncode,
   type Capabilities,
   type Capability,
   type SignFn,
 } from '@haex-space/ucan'
+import {
+  buildFederationAuthHeader as sdkBuildFederationAuthHeader,
+  createFederatedAuthHeader,
+} from '@haex-space/federation-sdk'
 
 // --- Base Encoding ---
 
@@ -135,3 +140,78 @@ export async function createUcanHeader(
 
   return `UCAN ${token}`
 }
+
+// --- Server Identity (for federation tests) ---
+
+export interface ServerIdentity {
+  did: string
+  domain: string
+  keyPair: CryptoKeyPair
+  rawPublicKey: Uint8Array
+  privateKeyPkcs8Base64: string
+}
+
+export async function makeServerIdentity(domain: string): Promise<ServerIdentity> {
+  const keyPair = (await crypto.subtle.generateKey(
+    { name: 'Ed25519' },
+    true,
+    ['sign', 'verify'],
+  )) as unknown as CryptoKeyPair
+
+  const rawPublicKey = new Uint8Array(await crypto.subtle.exportKey('raw', keyPair.publicKey))
+  const pkcs8 = new Uint8Array(await crypto.subtle.exportKey('pkcs8', keyPair.privateKey))
+  const privateKeyPkcs8Base64 = btoa(String.fromCharCode(...pkcs8))
+
+  return {
+    did: `did:web:${domain}`,
+    domain,
+    keyPair,
+    rawPublicKey,
+    privateKeyPkcs8Base64,
+  }
+}
+
+export function buildDidDocument(server: ServerIdentity) {
+  // DID document requires multicodec-prefixed key: 0xed 0x01 + raw 32-byte key
+  const multicodecKey = new Uint8Array(2 + server.rawPublicKey.length)
+  multicodecKey[0] = 0xed
+  multicodecKey[1] = 0x01
+  multicodecKey.set(server.rawPublicKey, 2)
+
+  return {
+    id: server.did,
+    verificationMethod: [{
+      publicKeyMultibase: multibaseEncode(multicodecKey),
+    }],
+  }
+}
+
+// --- FEDERATION Auth Header (via SDK) ---
+
+export async function buildFederationHeader(options: {
+  server: ServerIdentity
+  action: string
+  body: string
+  ucanToken: string
+  userAuthorization?: string
+  expiresInMs?: number
+}): Promise<string> {
+  return sdkBuildFederationAuthHeader({
+    serverDid: options.server.did,
+    privateKeyPkcs8Base64: options.server.privateKeyPkcs8Base64,
+    action: options.action,
+    body: options.body,
+    ucanToken: options.ucanToken,
+    userAuthorization: options.userAuthorization,
+    expiresInMs: options.expiresInMs,
+  })
+}
+
+// --- Federated User Auth Header (via SDK) ---
+
+export async function makePrivateKeyBase64(keyPair: CryptoKeyPair): Promise<string> {
+  const pkcs8 = new Uint8Array(await crypto.subtle.exportKey('pkcs8', keyPair.privateKey))
+  return btoa(String.fromCharCode(...pkcs8))
+}
+
+export { createFederatedAuthHeader }

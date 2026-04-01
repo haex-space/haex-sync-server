@@ -9,14 +9,16 @@ import { eq, and, gt, sql } from 'drizzle-orm'
 import { broadcastToSpace, sendToDid } from './ws'
 import { didToSpkiPublicKey } from '../utils/didIdentity'
 import { getFederationLinkForSpace, federatedProxyAsync } from '../services/federationClient'
+import { parseFederatedAuthHeader } from '@haex-space/federation-sdk'
+import { getServerIdentity } from '../services/serverIdentity'
 
 const mlsRouter = new Hono()
 
 mlsRouter.use('/*', authDispatcher)
 
 /**
- * Check if a space is federated and proxy the request to the home server.
- * Forwards the original user's Authorization header so the home server
+ * Check if a space is federated and proxy the request to the origin server.
+ * Forwards the original user's Authorization header so the origin server
  * can verify the end user's identity and capabilities.
  * Returns the proxied response, or null if the space is not federated.
  */
@@ -24,10 +26,17 @@ async function federationRelay(c: any, spaceId: string): Promise<Response | null
   const link = getFederationLinkForSpace(spaceId)
   if (!link) return null
 
-  // The original user's auth header — signed by the user, not the relay.
-  // Embedded in the FEDERATION payload so the home server can verify it.
   const userAuth = c.req.header('Authorization') ?? ''
   if (!userAuth) return c.json({ error: 'User authentication required for federated requests' }, 401)
+
+  // Validate relayDid if this is a federated DID-Auth request
+  const parsed = parseFederatedAuthHeader(userAuth)
+  if (parsed) {
+    const myDid = getServerIdentity()?.did
+    if (myDid && parsed.relayDid !== myDid) {
+      return c.json({ error: `Request not intended for this relay (expected ${myDid}, got ${parsed.relayDid})` }, 403)
+    }
+  }
 
   const method = c.req.method
   const path = c.req.path
@@ -114,7 +123,7 @@ mlsRouter.get('/:spaceId/invites', async (c) => {
     const identity = await resolveDidIdentity(callerDid)
     if (!identity) return c.json({ error: 'Identity not found' }, 404)
 
-    const [membership] = await db.select({ role: spaceMembers.role })
+    const [membership] = await db.select({ did: spaceMembers.did })
       .from(spaceMembers)
       .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.publicKey, identity.publicKey)))
       .limit(1)
@@ -766,7 +775,7 @@ mlsRouter.post('/:spaceId/invite-tokens/:tokenId/claim', zValidator('json', clai
         publicKey: identityPublicKey,
         did: identityDid,
         label: memberLabel,
-        role: token.capability === 'space/admin' ? 'admin' : token.capability === 'space/read' ? 'reader' : 'member',
+        capability: token.capability,
         invitedBy: token.createdByDid,
       }).onConflictDoNothing()
     })

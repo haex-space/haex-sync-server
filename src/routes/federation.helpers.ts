@@ -5,7 +5,7 @@ import type { PushChange } from './sync.schemas'
 
 /**
  * Resolve the space owner's supabaseUserId.
- * Federation changes are billed to the space owner on the home server.
+ * Federation changes are billed to the space owner on the origin server.
  */
 export async function resolveSpaceOwnerUserId(spaceId: string): Promise<string | null> {
   const [space] = await db

@@ -95,7 +95,7 @@ export async function requireCapability(
     // Without this, anyone can forge a self-signed UCAN with arbitrary capabilities.
     const rootIssuerDid = findRootIssuer(ucan.verifiedUcan)
     const [member] = await db
-      .select({ role: spaceMembers.role })
+      .select({ did: spaceMembers.did })
       .from(spaceMembers)
       .where(and(
         eq(spaceMembers.spaceId, spaceId),
