@@ -145,3 +145,39 @@ CREATE POLICY "Recipients can read their welcomes"
       AND i.public_key = mls_welcome_messages.recipient_public_key
     )
   );
+
+-- ============================================================================
+-- 10. SPACE_INVITE_TOKENS — server-managed invite tokens
+-- ============================================================================
+
+ALTER TABLE space_invite_tokens ENABLE ROW LEVEL SECURITY;
+
+-- No policies: all access via service_role (server handles token lifecycle)
+-- PostgREST access fully blocked for both anon and authenticated
+
+-- ============================================================================
+-- 11. FEDERATION_SERVERS — known federated server identities
+-- ============================================================================
+
+ALTER TABLE federation_servers ENABLE ROW LEVEL SECURITY;
+
+-- No policies: all access via service_role (server handles federation)
+-- PostgREST access fully blocked for both anon and authenticated
+
+-- ============================================================================
+-- 12. FEDERATION_LINKS — active federation relationships
+-- ============================================================================
+
+ALTER TABLE federation_links ENABLE ROW LEVEL SECURITY;
+
+-- No policies: all access via service_role (server handles federation)
+-- PostgREST access fully blocked for both anon and authenticated
+
+-- ============================================================================
+-- 13. FEDERATION_EVENTS — federation audit trail
+-- ============================================================================
+
+ALTER TABLE federation_events ENABLE ROW LEVEL SECURITY;
+
+-- No policies: all access via service_role (server handles federation)
+-- PostgREST access fully blocked for both anon and authenticated
