@@ -562,6 +562,7 @@ mlsRouter.post('/:spaceId/mls/welcome', zValidator('json', sendWelcomeSchema), a
 })
 
 // GET /:spaceId/mls/welcome — Fetch own unconsumed Welcome messages
+// Does NOT mark as consumed — client must ACK via DELETE after processing.
 mlsRouter.get('/:spaceId/mls/welcome', async (c) => {
   const spaceId = c.req.param('spaceId')
 
@@ -584,14 +585,6 @@ mlsRouter.get('/:spaceId/mls/welcome', async (c) => {
         eq(mlsWelcomeMessages.consumed, false),
       ))
 
-    if (welcomes.length > 0) {
-      for (const w of welcomes) {
-        await db.update(mlsWelcomeMessages)
-          .set({ consumed: true })
-          .where(eq(mlsWelcomeMessages.id, w.id))
-      }
-    }
-
     return c.json({
       welcomes: welcomes.map((w) => ({
         id: w.id,
@@ -601,6 +594,47 @@ mlsRouter.get('/:spaceId/mls/welcome', async (c) => {
     })
   } catch (error) {
     console.error('Fetch welcomes error:', error)
+    return c.json({ error: 'Internal server error' }, 500)
+  }
+})
+
+// DELETE /:spaceId/mls/welcome/:id — ACK a Welcome after successful processing
+mlsRouter.delete('/:spaceId/mls/welcome/:id', async (c) => {
+  const spaceId = c.req.param('spaceId')
+  const welcomeId = c.req.param('id')
+
+  const relayResponse = await federationRelay(c, spaceId)
+  if (relayResponse) return relayResponse
+
+  const capError = await requireCapability(c, spaceId, 'space/read')
+  if (capError) return capError
+
+  try {
+    const callerDid = getCallerDid(c)!
+    const identity = await resolveDidIdentity(callerDid)
+    if (!identity) return c.json({ error: 'Identity not found' }, 404)
+
+    // Verify ownership before consuming
+    const welcome = await db.select({ id: mlsWelcomeMessages.id })
+      .from(mlsWelcomeMessages)
+      .where(and(
+        eq(mlsWelcomeMessages.id, welcomeId),
+        eq(mlsWelcomeMessages.spaceId, spaceId),
+        eq(mlsWelcomeMessages.recipientPublicKey, identity.publicKey),
+      ))
+      .limit(1)
+
+    if (welcome.length === 0) {
+      return c.json({ error: 'Welcome not found or not owned by caller' }, 404)
+    }
+
+    await db.update(mlsWelcomeMessages)
+      .set({ consumed: true })
+      .where(eq(mlsWelcomeMessages.id, welcomeId))
+
+    return c.json({ success: true })
+  } catch (error) {
+    console.error('ACK welcome error:', error)
     return c.json({ error: 'Internal server error' }, 500)
   }
 })
