@@ -85,6 +85,13 @@
       "when": 1775047350997,
       "tag": "0011_careful_boomerang",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1775943853757,
+      "tag": "0012_clear_excalibur",
+      "breakpoints": true
     }
   ]
 }
