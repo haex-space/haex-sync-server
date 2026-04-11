@@ -428,6 +428,26 @@ export const mlsWelcomeMessages = pgTable(
 export type MlsWelcomeMessage = typeof mlsWelcomeMessages.$inferSelect;
 export type NewMlsWelcomeMessage = typeof mlsWelcomeMessages.$inferInsert;
 
+/**
+ * MLS GroupInfo
+ * Stores the latest GroupInfo per space for External Commit rejoin.
+ * Updated every time a commit is sent. One row per space.
+ */
+export const mlsGroupInfo = pgTable(
+  "mls_group_info",
+  {
+    spaceId: uuid("space_id")
+      .primaryKey()
+      .references(() => spaces.id, { onDelete: "cascade" }),
+    payload: bytea("payload").notNull(),
+    epoch: bigint("epoch", { mode: "number" }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+);
+
+export type MlsGroupInfoRow = typeof mlsGroupInfo.$inferSelect;
+export type NewMlsGroupInfoRow = typeof mlsGroupInfo.$inferInsert;
+
 // ============================================
 // FEDERATION
 // ============================================

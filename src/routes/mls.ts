@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { db, spaceMembers, identities, mlsKeyPackages, mlsMessages, mlsWelcomeMessages, spaceInvites, spaceInviteTokens } from '../db'
+import { db, spaceMembers, identities, mlsKeyPackages, mlsMessages, mlsWelcomeMessages, mlsGroupInfo, spaceInvites, spaceInviteTokens } from '../db'
 import { authDispatcher } from '../middleware/authDispatcher'
 import { requireCapability } from '../middleware/ucanAuth'
 import { resolveDidIdentity } from '../middleware/didAuth'
@@ -427,6 +427,7 @@ const sendMessageSchema = z.object({
   payload: z.string(),
   messageType: z.enum(['commit', 'application']),
   epoch: z.number().optional(),
+  groupInfo: z.string().optional(), // Base64-encoded GroupInfo, updated on every commit
 })
 
 mlsRouter.post('/:spaceId/mls/messages', zValidator('json', sendMessageSchema), async (c) => {
@@ -452,6 +453,22 @@ mlsRouter.post('/:spaceId/mls/messages', zValidator('json', sendMessageSchema), 
       payload: Buffer.from(body.payload, 'base64'),
       epoch: body.epoch ?? null,
     }).returning({ id: mlsMessages.id })
+
+    // Update stored GroupInfo if provided (for External Commit rejoin)
+    if (body.groupInfo && body.messageType === 'commit') {
+      await db.insert(mlsGroupInfo).values({
+        spaceId,
+        payload: Buffer.from(body.groupInfo, 'base64'),
+        epoch: body.epoch ?? 0,
+      }).onConflictDoUpdate({
+        target: mlsGroupInfo.spaceId,
+        set: {
+          payload: Buffer.from(body.groupInfo, 'base64'),
+          epoch: body.epoch ?? 0,
+          updatedAt: new Date(),
+        },
+      })
+    }
 
     // Notify space members about the new MLS message
     broadcastToSpace(spaceId, { type: 'mls', spaceId }, callerDid)
@@ -584,6 +601,82 @@ mlsRouter.get('/:spaceId/mls/welcome', async (c) => {
     })
   } catch (error) {
     console.error('Fetch welcomes error:', error)
+    return c.json({ error: 'Internal server error' }, 500)
+  }
+})
+
+// ============================================
+// REJOIN via External Commit (Epoch-Gap Recovery)
+// ============================================
+
+// POST /:spaceId/mls/rejoin — Request GroupInfo for External Commit rejoin
+mlsRouter.post('/:spaceId/mls/rejoin', async (c) => {
+  const spaceId = c.req.param('spaceId')
+
+  const relayResponse = await federationRelay(c, spaceId)
+  if (relayResponse) return relayResponse
+
+  const capError = await requireCapability(c, spaceId, 'space/read')
+  if (capError) return capError
+
+  try {
+    const groupInfo = await db.select()
+      .from(mlsGroupInfo)
+      .where(eq(mlsGroupInfo.spaceId, spaceId))
+      .limit(1)
+
+    const row = groupInfo[0]
+    if (!row) {
+      return c.json({ error: 'No GroupInfo available for this space' }, 404)
+    }
+
+    return c.json({
+      groupInfo: row.payload.toString('base64'),
+      epoch: row.epoch,
+    })
+  } catch (error) {
+    console.error('Rejoin error:', error)
+    return c.json({ error: 'Internal server error' }, 500)
+  }
+})
+
+// POST /:spaceId/mls/external-commit — Submit an External Commit to rejoin
+const externalCommitSchema = z.object({
+  commit: z.string(), // Base64-encoded MLS commit
+})
+
+mlsRouter.post('/:spaceId/mls/external-commit', zValidator('json', externalCommitSchema), async (c) => {
+  const spaceId = c.req.param('spaceId')
+
+  const relayResponse = await federationRelay(c, spaceId)
+  if (relayResponse) return relayResponse
+
+  const { commit } = c.req.valid('json')
+
+  const capError = await requireCapability(c, spaceId, 'space/read')
+  if (capError) return capError
+
+  try {
+    const callerDid = getCallerDid(c)!
+    const identity = await resolveDidIdentity(callerDid)
+    if (!identity) return c.json({ error: 'Identity not found' }, 404)
+
+    // Store as a regular MLS commit message
+    const rows = await db.insert(mlsMessages).values({
+      spaceId,
+      senderPublicKey: identity.publicKey,
+      messageType: 'commit',
+      payload: Buffer.from(commit, 'base64'),
+    }).returning({ id: mlsMessages.id })
+
+    const messageId = rows[0]?.id ?? 0
+
+    // Broadcast to all space members (including the rejoinee, who needs the ACK)
+    broadcastToSpace(spaceId, { type: 'mls', spaceId })
+
+    return c.json({ messageId }, 201)
+  } catch (error) {
+    console.error('External commit error:', error)
     return c.json({ error: 'Internal server error' }, 500)
   }
 })
