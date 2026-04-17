@@ -1,7 +1,80 @@
 import { db, syncChanges, spaces, identities } from '../db'
 import { verifyRecordSignatureAsync } from '@haex-space/vault-sdk'
 import { eq, and } from 'drizzle-orm'
+import { lookup } from 'dns/promises'
 import type { PushChange } from './sync.schemas'
+
+/**
+ * Validate an external server URL before issuing any fetch to prevent SSRF.
+ *
+ * Blocks:
+ * - Non-http(s) schemes
+ * - Literal private/loopback/link-local IPs in the hostname
+ * - Hostnames that DNS-resolve to private IPs (defeats DNS rebinding)
+ */
+export async function validateOriginServerUrl(url: string): Promise<{ valid: boolean; error?: string }> {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    return { valid: false, error: 'Invalid URL' }
+  }
+
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    return { valid: false, error: `Unsupported protocol: ${parsed.protocol}` }
+  }
+
+  // URL.hostname keeps IPv6 brackets (e.g. "[::1]") — strip them so the
+  // reserved-IP check can match on the raw address.
+  const rawHostname = parsed.hostname.toLowerCase()
+  const hostname = rawHostname.startsWith('[') && rawHostname.endsWith(']')
+    ? rawHostname.slice(1, -1)
+    : rawHostname
+
+  if (hostname === '' || hostname === 'localhost' || hostname.endsWith('.localhost') || hostname === '0.0.0.0') {
+    return { valid: false, error: 'Loopback host is not allowed' }
+  }
+
+  if (isPrivateOrReservedIp(hostname)) {
+    return { valid: false, error: 'Private IP is not allowed' }
+  }
+
+  // DNS pre-check — protects against rebinding and hostnames pointing to internal IPs.
+  try {
+    const resolved = await lookup(hostname, { all: true })
+    for (const entry of resolved) {
+      if (isPrivateOrReservedIp(entry.address)) {
+        return { valid: false, error: 'Hostname resolves to a private IP' }
+      }
+    }
+  } catch {
+    return { valid: false, error: 'DNS resolution failed' }
+  }
+
+  return { valid: true }
+}
+
+function isPrivateOrReservedIp(host: string): boolean {
+  // IPv6 loopback / link-local / unique-local
+  if (host === '::1' || host === '::' || host.startsWith('fe80:') || host.startsWith('fc') || host.startsWith('fd')) {
+    return true
+  }
+
+  // IPv4
+  const ipv4Match = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+  if (!ipv4Match) return false
+
+  const [a, b] = [parseInt(ipv4Match[1]!, 10), parseInt(ipv4Match[2]!, 10)]
+  if (a === 10) return true                       // 10.0.0.0/8
+  if (a === 127) return true                      // 127.0.0.0/8 loopback
+  if (a === 169 && b === 254) return true         // link-local
+  if (a === 172 && b >= 16 && b <= 31) return true // 172.16.0.0/12
+  if (a === 192 && b === 168) return true         // 192.168.0.0/16
+  if (a === 0) return true                        // 0.0.0.0/8
+  if (a >= 224) return true                       // multicast / reserved
+
+  return false
+}
 
 /**
  * Resolve the space owner's supabaseUserId.

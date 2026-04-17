@@ -20,7 +20,7 @@ import {
   type NewSyncChange,
 } from '../db'
 import { pushChangesSchema, pullChangesSchema, type PushChange } from './sync.schemas'
-import { validateFederationPush, resolveSpaceOwnerUserId } from './federation.helpers'
+import { validateFederationPush, resolveSpaceOwnerUserId, validateOriginServerUrl } from './federation.helpers'
 import { broadcastToSpace, updateMembershipCache } from './ws'
 import { broadcastToFederatedServers, updateFederatedSpacesCache } from './federation.ws'
 import { buildFederationAuthHeader, updateFederationLinkCache } from '../services/federationClient'
@@ -119,6 +119,12 @@ federation.post('/federation/setup', authDispatcher, async (c) => {
   const callerDid = getCallerDid(c)
   if (!callerDid) {
     return c.json({ error: 'Could not determine caller DID' }, 401)
+  }
+
+  // SSRF guard: reject private/loopback/DNS-rebinding URLs before any fetch.
+  const urlCheck = await validateOriginServerUrl(body.originServerUrl)
+  if (!urlCheck.valid) {
+    return c.json({ error: `Invalid origin server URL: ${urlCheck.error}` }, 400)
   }
 
   try {

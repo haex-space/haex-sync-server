@@ -44,12 +44,13 @@ async function resolveDidWebPublicKey(did: string): Promise<Uint8Array> {
   // did:web:sync.example.com%3A8443 → https://sync.example.com:8443/.well-known/did.json
   const domain = did.replace('did:web:', '').replace(/%3A/g, ':')
 
-  // Try HTTPS first (production), fall back to HTTP (development/testing)
+  // HTTPS only — silent HTTP fallback would enable MITM against DID resolution.
   let response: Response
   try {
     response = await fetch(`https://${domain}/.well-known/did.json`, { signal: AbortSignal.timeout(5_000) })
-  } catch {
-    response = await fetch(`http://${domain}/.well-known/did.json`, { signal: AbortSignal.timeout(5_000) })
+  } catch (error) {
+    console.error(`[Federation] HTTPS DID resolution failed for ${did}:`, error)
+    throw new Error(`Failed to resolve ${did} over HTTPS`)
   }
   if (!response.ok) {
     throw new Error(`Failed to resolve ${did}: HTTP ${response.status}`)

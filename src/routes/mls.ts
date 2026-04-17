@@ -11,8 +11,52 @@ import { didToSpkiPublicKey } from '../utils/didIdentity'
 import { getFederationLinkForSpace, federatedProxyAsync } from '../services/federationClient'
 import { parseFederatedAuthHeader } from '@haex-space/federation-sdk'
 import { getServerIdentity } from '../services/serverIdentity'
+import { isValidUuid } from '../utils/uuid'
 
 const mlsRouter = new Hono()
+
+// Validate UUID-format path params for every route. Runs before authDispatcher
+// so malformed IDs are rejected with 400 before any DB lookup (including the
+// identity resolution done inside authDispatcher).
+//
+// Middleware with a `/*` pattern doesn't receive the child route's named
+// params yet — instead we parse the positional segments from the URL path.
+// Every route under mls.ts follows one of these shapes:
+//   /:spaceId
+//   /:spaceId/invites/:inviteId(/accept|/decline|/ucan)?
+//   /:spaceId/invites(/)?
+//   /:spaceId/invite-tokens/:tokenId(/claim)?
+//   /:spaceId/invite-tokens(/)?
+//   /:spaceId/mls/key-packages(/:did)?        (:did is NOT a UUID — skipped)
+//   /:spaceId/mls/messages
+//   /:spaceId/mls/welcome(/:id)?
+//   /:spaceId/mls/rejoin | external-commit
+mlsRouter.use('/*', async (c, next) => {
+  const path = new URL(c.req.url).pathname
+  const segments = path.split('/').filter(Boolean)
+
+  // segments[0] is always spaceId
+  if (segments.length >= 1 && !isValidUuid(segments[0]!)) {
+    return c.json({ error: 'Invalid spaceId: must be a UUID' }, 400)
+  }
+
+  // /:spaceId/invites/:inviteId(/...)
+  if (segments[1] === 'invites' && segments[2] !== undefined && !isValidUuid(segments[2])) {
+    return c.json({ error: 'Invalid inviteId: must be a UUID' }, 400)
+  }
+
+  // /:spaceId/invite-tokens/:tokenId(/...)
+  if (segments[1] === 'invite-tokens' && segments[2] !== undefined && !isValidUuid(segments[2])) {
+    return c.json({ error: 'Invalid tokenId: must be a UUID' }, 400)
+  }
+
+  // /:spaceId/mls/welcome/:id
+  if (segments[1] === 'mls' && segments[2] === 'welcome' && segments[3] !== undefined && !isValidUuid(segments[3])) {
+    return c.json({ error: 'Invalid id: must be a UUID' }, 400)
+  }
+
+  await next()
+})
 
 mlsRouter.use('/*', authDispatcher)
 
@@ -231,6 +275,9 @@ mlsRouter.post('/:spaceId/invites/:inviteId/decline', async (c) => {
   const spaceId = c.req.param('spaceId')
   const inviteId = c.req.param('inviteId')
 
+  const relayResponse = await federationRelay(c, spaceId)
+  if (relayResponse) return relayResponse
+
   const callerDid = getCallerDid(c)
   if (!callerDid) return c.json({ error: 'Auth required' }, 401)
 
@@ -302,6 +349,9 @@ mlsRouter.patch('/:spaceId/invites/:inviteId/ucan', zValidator('json', setInvite
 mlsRouter.delete('/:spaceId/invites/:inviteId', async (c) => {
   const spaceId = c.req.param('spaceId')
   const inviteId = c.req.param('inviteId')
+
+  const relayResponse = await federationRelay(c, spaceId)
+  if (relayResponse) return relayResponse
 
   const capError = await requireCapability(c, spaceId, 'space/invite')
   if (capError) return capError
@@ -487,8 +537,18 @@ mlsRouter.get('/:spaceId/mls/messages', async (c) => {
   const relayResponse = await federationRelay(c, spaceId)
   if (relayResponse) return relayResponse
 
-  const after = parseInt(c.req.query('after') ?? '0')
-  const limit = Math.min(parseInt(c.req.query('limit') ?? '100'), 1000)
+  const listQuerySchema = z.object({
+    after: z.coerce.number().int().min(0).default(0),
+    limit: z.coerce.number().int().min(1).max(1000).default(100),
+  })
+  const parsedQuery = listQuerySchema.safeParse({
+    after: c.req.query('after'),
+    limit: c.req.query('limit'),
+  })
+  if (!parsedQuery.success) {
+    return c.json({ error: 'Invalid query parameters', details: parsedQuery.error.issues }, 400)
+  }
+  const { after, limit } = parsedQuery.data
 
   const capError = await requireCapability(c, spaceId, 'space/read')
   if (capError) return capError

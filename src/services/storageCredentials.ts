@@ -60,7 +60,9 @@ export async function getOrCreateStorageCredentials(userId: string): Promise<Sto
   const accessKeyId = generateAccessKeyId()
   const secretAccessKey = generateSecretAccessKey()
 
-  // Insert with encrypted secret using sql template for pgp_sym_encrypt
+  // Insert with encrypted secret using sql template for pgp_sym_encrypt.
+  // onConflictDoNothing handles the race where two concurrent calls for the
+  // same user both miss the existing-row check above.
   await db
     .insert(userStorageCredentials)
     .values({
@@ -69,8 +71,26 @@ export async function getOrCreateStorageCredentials(userId: string): Promise<Sto
       // Use sql to call pgp_sym_encrypt
       encryptedSecretKey: sql`pgp_sym_encrypt(${secretAccessKey}, ${STORAGE_ENCRYPTION_KEY})`,
     } as any) // Type assertion needed because encryptedSecretKey expects string but we pass SQL
+    .onConflictDoNothing({ target: userStorageCredentials.userId })
 
-  return { accessKeyId, secretAccessKey }
+  // Re-query to get the canonical row (handles both successful insert and race loser)
+  const [canonical] = await db
+    .select({
+      accessKeyId: userStorageCredentials.accessKeyId,
+      secretAccessKey: sql<string>`pgp_sym_decrypt(${userStorageCredentials.encryptedSecretKey}::bytea, ${STORAGE_ENCRYPTION_KEY})`,
+    })
+    .from(userStorageCredentials)
+    .where(eq(userStorageCredentials.userId, userId))
+    .limit(1)
+
+  if (!canonical) {
+    throw new Error('Failed to retrieve storage credentials after insert')
+  }
+
+  return {
+    accessKeyId: canonical.accessKeyId,
+    secretAccessKey: canonical.secretAccessKey,
+  }
 }
 
 /**

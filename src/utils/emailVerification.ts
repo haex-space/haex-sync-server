@@ -14,16 +14,29 @@ export async function isEmailVerifiedAsync(supabaseUserId: string): Promise<bool
  * Check if the last OTP for this email was already consumed (verified/used).
  * Compares last_sign_in_at with confirmation_sent_at in auth.users.
  * If the user signed in AFTER the OTP was sent, the code was consumed.
+ *
+ * Paginates through listUsers (default page size 50) so emails beyond the
+ * first page are still found.
  */
 async function isOtpConsumedAsync(email: string): Promise<boolean> {
-  const { data } = await supabaseAdmin.auth.admin.listUsers()
-  const user = data?.users?.find(u => u.email === email)
-  if (!user) return false
+  const perPage = 200
+  const maxPages = 50 // hard cap to avoid unbounded iteration (≤ 10k users per lookup)
 
-  const sentAt = user.confirmation_sent_at ? new Date(user.confirmation_sent_at).getTime() : 0
-  const signedInAt = user.last_sign_in_at ? new Date(user.last_sign_in_at).getTime() : 0
+  for (let page = 1; page <= maxPages; page++) {
+    const { data, error } = await supabaseAdmin.auth.admin.listUsers({ page, perPage })
+    if (error || !data) return false
 
-  return signedInAt > sentAt
+    const user = data.users.find(u => u.email === email)
+    if (user) {
+      const sentAt = user.confirmation_sent_at ? new Date(user.confirmation_sent_at).getTime() : 0
+      const signedInAt = user.last_sign_in_at ? new Date(user.last_sign_in_at).getTime() : 0
+      return signedInAt > sentAt
+    }
+
+    if (data.users.length < perPage) break
+  }
+
+  return false
 }
 
 /**

@@ -24,25 +24,15 @@ vaultRoutes.post('/vault-key', zValidator('json', vaultKeySchema, (result, c) =>
   const { spaceId, encryptedVaultKey, encryptedVaultName, vaultKeySalt, ephemeralPublicKey, vaultKeyNonce, vaultNameNonce, vaultNameSalt } = c.req.valid('json')
 
   try {
-    // Check if vault key already exists
-    const existing = await db.query.vaultKeys.findFirst({
-      where: and(
-        eq(vaultKeys.userId, identity.supabaseUserId),
-        eq(vaultKeys.spaceId, spaceId)
-      ),
-    })
-
-    if (existing) {
-      return c.json({ error: 'Vault key already exists for this vault' }, 409)
-    }
-
-    // Insert space first, then vault key in a transaction
+    // Insert space + vault key in a single transaction.
+    // Existence check is part of the insert via onConflictDoNothing — moving
+    // it out of a separate SELECT prevents a check-then-insert race.
     const result = await db.transaction(async (tx) => {
       await tx.insert(spaces).values({
         id: spaceId,
         type: 'vault',
         ownerId: didAuth.did,
-      })
+      }).onConflictDoNothing()
 
       const insertedKeys = await tx
         .insert(vaultKeys)
@@ -57,13 +47,14 @@ vaultRoutes.post('/vault-key', zValidator('json', vaultKeySchema, (result, c) =>
           vaultNameNonce,
           vaultNameSalt,
         } as NewVaultKey)
+        .onConflictDoNothing()
         .returning()
 
       return insertedKeys[0]
     })
 
     if (!result) {
-      return c.json({ error: 'Failed to insert vault key' }, 500)
+      return c.json({ error: 'Vault key already exists for this vault' }, 409)
     }
 
     return c.json({

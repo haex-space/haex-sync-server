@@ -50,12 +50,12 @@ export type PushChange = z.infer<typeof pushChangeSchema> & {
 }
 
 export const pushChangesSchema = z.object({
-  spaceId: z.string(),
+  spaceId: z.string().uuid(),
   changes: z.array(pushChangeSchema),
 })
 
 export const pullChangesSchema = z.object({
-  spaceId: z.string(),
+  spaceId: z.string().uuid(),
   excludeDeviceId: z.string().optional(), // Exclude changes from this device ID
   afterUpdatedAt: z.string().optional(), // Pull changes after this server timestamp (ISO 8601)
   afterTableName: z.string().optional(), // Secondary cursor for stable pagination (table name)
@@ -64,7 +64,7 @@ export const pullChangesSchema = z.object({
 })
 
 export const pullColumnsSchema = z.object({
-  spaceId: z.string(),
+  spaceId: z.string().uuid(),
   columns: z.array(
     z.object({
       tableName: z.string(),

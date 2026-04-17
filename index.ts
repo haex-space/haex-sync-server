@@ -18,9 +18,16 @@ import packageJson from './package.json'
 
 const app = new Hono()
 
-// Parse CORS origins from env
-const corsOrigin = process.env.CORS_ORIGIN || '*'
-const allowedOrigins = corsOrigin === '*' ? '*' : corsOrigin.split(',').map(o => o.trim())
+// Parse CORS origins from env.
+// No wildcard default — production deployments must set CORS_ORIGIN explicitly.
+// When unset, we allow only same-origin by returning an empty origin list.
+const corsOrigin = process.env.CORS_ORIGIN
+if (!corsOrigin) {
+  console.warn('Warning: CORS_ORIGIN not set — cross-origin requests will be blocked. Set CORS_ORIGIN to a comma-separated list of allowed origins.')
+}
+const allowedOrigins: string[] = corsOrigin
+  ? corsOrigin.split(',').map(o => o.trim()).filter(Boolean)
+  : []
 
 // Middleware
 app.use('*', logger())
@@ -69,13 +76,17 @@ app.notFound((c) => {
   return c.json({ error: 'Not Found' }, 404)
 })
 
-// Error handler
+// Error handler.
+// Never leak err.message to clients — it can reveal stack traces, DB errors, or
+// internal paths. We log the full error server-side with a correlation ID and
+// echo only that ID back so support can cross-reference.
 app.onError((err, c) => {
-  console.error('Server error:', err)
+  const correlationId = crypto.randomUUID()
+  console.error(`Server error [${correlationId}]:`, err)
   return c.json(
     {
       error: 'Internal Server Error',
-      message: err.message,
+      correlationId,
     },
     500
   )
@@ -85,7 +96,7 @@ const port = parseInt(process.env.PORT || '3002')
 
 console.log(`🚀 ${packageJson.name} v${packageJson.version} starting on port ${port}`)
 console.log(`📝 Environment: ${process.env.NODE_ENV || 'development'}`)
-console.log(`🌐 CORS Origins: ${corsOrigin}`)
+console.log(`🌐 CORS Origins: ${allowedOrigins.length > 0 ? allowedOrigins.join(', ') : '(none — same-origin only)'}`)
 
 // Sync tier configuration from environment variables on startup
 syncTiersFromEnvAsync().catch(err => console.error('Failed to sync tiers from env:', err))

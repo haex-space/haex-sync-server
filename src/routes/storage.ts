@@ -28,6 +28,9 @@ interface StorageUser {
 const storage = new Hono<{
   Variables: {
     storageUser: StorageUser
+    // When DID-Auth consumes the body for hash verification, the bytes are
+    // kept here so PUT handlers can still forward them to MinIO.
+    bufferedBody?: Uint8Array
   }
 }>()
 
@@ -66,12 +69,22 @@ function base64urlDecode(str: string): Uint8Array {
   return Uint8Array.from(binary, (ch) => ch.charCodeAt(0))
 }
 
+function base64urlEncode(bytes: Uint8Array): string {
+  return btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '')
+}
+
 /**
  * Custom auth middleware that supports both:
  * - AWS Signature v4 (for S3 clients) - verifies signature cryptographically
  * - DID-Auth (for direct HTTP calls) - verifies Ed25519 signature
+ *
+ * Exported so integration tests can exercise the real code rather than
+ * re-implementing the flow.
  */
-async function storageAuthMiddleware(c: any, next: () => Promise<void>) {
+export async function storageAuthMiddleware(c: any, next: () => Promise<void>) {
   const authHeader = c.req.header('authorization')
 
   if (!authHeader) {
@@ -125,12 +138,25 @@ async function storageAuthMiddleware(c: any, next: () => Promise<void>) {
       return c.json({ error: 'Invalid DID auth payload' }, 401)
     }
 
-    if (!payload.did || !payload.timestamp) return c.json({ error: 'Missing DID auth fields' }, 401)
+    if (!payload.did || !payload.timestamp || !payload.bodyHash) {
+      return c.json({ error: 'Missing DID auth fields' }, 401)
+    }
 
     // Timestamp check (±30s)
     if (Math.abs(Date.now() - payload.timestamp) > 30_000) {
       return c.json({ error: 'DID auth timestamp expired' }, 401)
     }
+
+    // Verify body hash to prevent request tampering / signature replay across bodies.
+    // Reading the body here consumes c.req.raw.body, so we stash the bytes in
+    // context for the PUT handler to forward to MinIO.
+    const bodyBuffer = new Uint8Array(await c.req.raw.arrayBuffer())
+    const bodyHashBuffer = await crypto.subtle.digest('SHA-256', bodyBuffer)
+    const computedBodyHash = base64urlEncode(new Uint8Array(bodyHashBuffer))
+    if (computedBodyHash !== payload.bodyHash) {
+      return c.json({ error: 'Invalid body hash — request body was tampered' }, 401)
+    }
+    c.set('bufferedBody', bodyBuffer)
 
     // Verify Ed25519 signature
     try {
@@ -286,10 +312,17 @@ storage.put('/s3/*', async (c) => {
     await provisionUserStorage(user.userId)
 
     const contentType = c.req.header('content-type')
+    // For DID-Auth, the auth middleware already buffered the body to verify
+    // its hash — wrap those bytes back into a stream so the MinIO PUT can
+    // forward them like an ordinary streamed upload.
+    const buffered = c.get('bufferedBody')
+    const uploadBody: ReadableStream<Uint8Array> | null = buffered
+      ? new Response(buffered).body
+      : c.req.raw.body
     const response = await uploadToMinio(
       extracted.bucket,
       extracted.key,
-      c.req.raw.body,
+      uploadBody,
       contentType,
     )
 
@@ -453,7 +486,8 @@ storage.on('HEAD', '/s3/*', async (c) => {
 async function handleListRequest(c: any, userId: string): Promise<Response> {
   const prefix = c.req.query('prefix') || ''
   const delimiter = c.req.query('delimiter') || '/'
-  const maxKeys = parseInt(c.req.query('max-keys') || '1000', 10)
+  const parsedMaxKeys = parseInt(c.req.query('max-keys') || '1000', 10)
+  const maxKeys = Math.min(Number.isFinite(parsedMaxKeys) && parsedMaxKeys > 0 ? parsedMaxKeys : 1000, 1000)
   const continuationToken = c.req.query('continuation-token') || ''
 
   try {

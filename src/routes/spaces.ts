@@ -44,11 +44,8 @@ async function federationRelay(c: any, spaceId: string): Promise<Response | null
   return c.json(result.data, result.status as any)
 }
 
-const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-function isValidUuid(id: string): boolean {
-  return uuidRegex.test(id)
-}
+export { isValidUuid } from '../utils/uuid'
+import { isValidUuid } from '../utils/uuid'
 
 /** Get caller DID from either UCAN or DID-Auth context */
 function getCallerDid(c: any): string | null {
