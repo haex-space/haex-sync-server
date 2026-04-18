@@ -509,7 +509,7 @@ federationRouter.post('/push', async (c) => {
         throw new FederationPushValidationError(validation.error ?? 'Federation push validation failed')
       }
 
-      const allInsertedChanges: { id: string; hlcTimestamp: string }[] = []
+      const allInsertedChanges: { id: string; hlcTimestamp: string; updatedAtIso: string }[] = []
 
       for (let i = 0; i < changes.length; i += CHUNK_SIZE) {
         const chunk = changes.slice(i, i + CHUNK_SIZE)
@@ -552,6 +552,8 @@ federationRouter.post('/push', async (c) => {
           .returning({
             id: syncChanges.id,
             hlcTimestamp: syncChanges.hlcTimestamp,
+            // Same format as pull's serverTimestamp — Postgres clock, µs precision.
+            updatedAtIso: sql<string>`to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`.as('updated_at_iso'),
           })
 
         allInsertedChanges.push(...insertedChanges)
@@ -570,11 +572,18 @@ federationRouter.post('/push', async (c) => {
     // Notify other federated servers (exclude the sender)
     broadcastToFederatedServers(spaceId, { type: 'sync', spaceId }, federationContext.serverDid)
 
+    let serverTimestamp: string | null = null
+    for (const row of result) {
+      if (serverTimestamp === null || row.updatedAtIso > serverTimestamp) {
+        serverTimestamp = row.updatedAtIso
+      }
+    }
+
     return c.json({
       message: 'Changes pushed successfully',
       count: result.length,
       lastHlc: result.length > 0 ? result[result.length - 1]?.hlcTimestamp ?? null : null,
-      serverTimestamp: new Date().toISOString(),
+      serverTimestamp: serverTimestamp ?? new Date().toISOString(),
     })
   } catch (error) {
     if (error instanceof FederationPushValidationError) {

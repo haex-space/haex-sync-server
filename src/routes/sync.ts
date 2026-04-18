@@ -194,7 +194,7 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
         }
       }
 
-      const allInsertedChanges: { id: string; hlcTimestamp: string }[] = []
+      const allInsertedChanges: { id: string; hlcTimestamp: string; updatedAtIso: string }[] = []
 
       // Process changes in chunks to avoid PostgreSQL parameter limit
       for (let i = 0; i < changes.length; i += CHUNK_SIZE) {
@@ -247,6 +247,10 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
           .returning({
             id: syncChanges.id,
             hlcTimestamp: syncChanges.hlcTimestamp,
+            // Return updated_at formatted identically to the pull handler so
+            // push.serverTimestamp and pull.serverTimestamp share clock and
+            // precision (microseconds, Postgres server time).
+            updatedAtIso: sql<string>`to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`.as('updated_at_iso'),
           })
 
         allInsertedChanges.push(...insertedChanges)
@@ -262,11 +266,21 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
       console.warn('Broadcast failed (non-fatal):', e)
     }
 
+    // Compute serverTimestamp from the Postgres `updated_at` values of the
+    // rows we just wrote. ISO strings in this format sort lexicographically
+    // the same as chronologically, so plain string comparison gives us max.
+    let serverTimestamp: string | null = null
+    for (const row of result) {
+      if (serverTimestamp === null || row.updatedAtIso > serverTimestamp) {
+        serverTimestamp = row.updatedAtIso
+      }
+    }
+
     return c.json({
       message: 'Changes pushed successfully',
       count: result.length,
       lastHlc: result.length > 0 ? result[result.length - 1]?.hlcTimestamp ?? null : null,
-      serverTimestamp: new Date().toISOString(),
+      serverTimestamp: serverTimestamp ?? new Date().toISOString(),
     })
   } catch (error) {
     if (error instanceof SpacePushValidationError) {
