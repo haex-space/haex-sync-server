@@ -31,8 +31,11 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      # Unit + integration tests. Includes the deadlock regression test,
+      # which spawns a throwaway postgres container via docker — available
+      # on ubuntu-latest runners out of the box.
       - name: Run tests
-        run: bun test tests/awsSignatureV4.test.ts tests/storageCredentials.test.ts tests/storage.test.ts tests/syncBatchValidation.test.ts
+        run: bun test
 
   build-and-push:
     name: Build and Push Docker Image
