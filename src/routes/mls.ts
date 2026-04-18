@@ -32,7 +32,11 @@ const mlsRouter = new Hono()
 //   /:spaceId/mls/welcome(/:id)?
 //   /:spaceId/mls/rejoin | external-commit
 mlsRouter.use('/*', async (c, next) => {
-  const path = new URL(c.req.url).pathname
+  // mlsRouter is mounted at `/spaces` in index.ts, so `c.req.path` still
+  // contains the mount prefix — strip it before splitting into segments.
+  // Without this, segments[0] would be "spaces" and every request would
+  // fail UUID validation with "Invalid spaceId: must be a UUID".
+  const path = new URL(c.req.url).pathname.replace(/^\/spaces/, '')
   const segments = path.split('/').filter(Boolean)
 
   // segments[0] is always spaceId
