@@ -5,7 +5,7 @@ import { db, spaces, spaceMembers } from '../db'
 import { authDispatcher } from '../middleware/authDispatcher'
 import { requireCapability } from '../middleware/ucanAuth'
 import { resolveDidIdentity } from '../middleware/didAuth'
-import { eq, and } from 'drizzle-orm'
+import { eq, and, sql } from 'drizzle-orm'
 import { SpaceCapabilities } from '@haex-space/ucan'
 import { broadcastToSpace, updateMembershipCache } from './ws'
 import { getFederationLinkForSpace, federatedProxyAsync } from '../services/federationClient'
@@ -83,6 +83,18 @@ spacesRouter.post('/', zValidator('json', createSpaceSchema), async (c) => {
     }
 
     await db.transaction(async (tx) => {
+      // Serialize concurrent createSpace transactions.
+      //
+      // Why: the AFTER INSERT trigger on spaces does
+      // CREATE TABLE ... PARTITION OF sync_changes + ALTER PUBLICATION
+      // supabase_realtime ADD TABLE. These DDL statements take
+      // ShareUpdateExclusive/ShareRowExclusive locks on the parent table and
+      // publication catalog. Two concurrent createSpace transactions acquire
+      // those locks in opposite orders and deadlock (SQLSTATE 40P01 → 500).
+      //
+      // The advisory xact lock is released at commit/rollback.
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('haex.create_space')::bigint)`)
+
       await tx.insert(spaces).values({
         id: body.id,
         ownerId: didAuth.did,
