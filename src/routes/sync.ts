@@ -15,6 +15,8 @@ import { getServerIdentity } from '../services/serverIdentity'
 import vaultRoutes from './sync.vaults'
 import { broadcastToSpace } from './ws'
 
+import { validateBatches } from '../utils/syncUtils'
+
 // Re-export sync utilities
 export { validateBatches, type SyncChange, type BatchValidationError } from '../utils/syncUtils'
 
@@ -119,50 +121,16 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
       spaceAuthenticatedPublicKey = authenticatedPublicKey
     }
 
-    // Validate batch completeness if batch metadata is present
-    const batchMap = new Map<string, typeof changes>()
-
-    for (const change of changes) {
-      if (change.batchId && change.batchSeq && change.batchTotal) {
-        if (!batchMap.has(change.batchId)) {
-          batchMap.set(change.batchId, [])
-        }
-        batchMap.get(change.batchId)!.push(change)
-      }
-    }
-
-    // Validate each batch is complete
-    for (const [batchId, batchChanges] of batchMap.entries()) {
-      const batchTotal = batchChanges[0]?.batchTotal
-      if (!batchTotal) continue
-
-      // Check we have all sequence numbers from 1 to batchTotal
-      const sequences = new Set(batchChanges.map(c => c.batchSeq))
-      const missingSeqs: number[] = []
-
-      for (let i = 1; i <= batchTotal; i++) {
-        if (!sequences.has(i)) {
-          missingSeqs.push(i)
-        }
-      }
-
-      if (missingSeqs.length > 0) {
-        return c.json({
-          error: 'Incomplete batch',
-          batchId,
-          missingSequences: missingSeqs,
-          expected: batchTotal,
-          received: batchChanges.length,
-        }, 400)
-      }
-
-      // Check for duplicate sequence numbers
-      if (sequences.size !== batchChanges.length) {
-        return c.json({
-          error: 'Duplicate sequence numbers in batch',
-          batchId,
-        }, 400)
-      }
+    // Validate batch completeness + duplicate-sequence detection.
+    //
+    // Delegates to validateBatches() in utils/syncUtils.ts — the previous
+    // inline duplicate of this logic checked completeness before duplicates,
+    // so a batch like seq=[1,1,3] with batchTotal=3 reported "Incomplete
+    // batch (missing 2)" instead of "Duplicate sequence numbers", masking
+    // the real client bug. The shared util has the correct check order.
+    const batchError = validateBatches(changes)
+    if (batchError) {
+      return c.json(batchError, 400)
     }
 
     // All batches are complete - apply changes atomically in a transaction

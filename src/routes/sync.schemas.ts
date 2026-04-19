@@ -26,10 +26,22 @@ export const updateVaultNameSchema = z.object({
   vaultNameSalt: z.string(), // HKDF salt for vault name encryption
 })
 
+// SQL identifier validation: letters, digits, underscores; must start with
+// letter or underscore; max 63 chars (PG's NAMEDATALEN - 1). Drizzle already
+// parameterizes values, but accepting arbitrary strings as table/column
+// identifiers at the API boundary is still a defense-in-depth gap — bad
+// payloads pollute storage and could become exploitable if a future code
+// path interpolates these into raw SQL.
+const sqlIdentifier = z
+  .string()
+  .min(1)
+  .max(63)
+  .regex(/^[a-zA-Z_][a-zA-Z0-9_]*$/, 'must be a valid SQL identifier')
+
 export const pushChangeSchema = z.object({
-  tableName: z.string(),
+  tableName: sqlIdentifier,
   rowPks: z.string(), // JSON string
-  columnName: z.string().nullable(),
+  columnName: sqlIdentifier.nullable(),
   hlcTimestamp: z.string(),
   deviceId: z.string().optional(),
   encryptedValue: z.string().nullable(),
