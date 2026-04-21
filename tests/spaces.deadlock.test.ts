@@ -40,6 +40,9 @@ async function waitForPg(host: string, port: number, maxMs = 60_000): Promise<vo
   throw new Error(`Postgres at ${host}:${port} not ready after ${maxMs}ms`)
 }
 
+// CI runners have a cold docker cache: pulling postgres:15 alone takes ~5s,
+// plus container boot and all migrations replay. Bun's default hook timeout
+// of 5s is not enough. 120s is comfortably over the observed ~10s cost.
 beforeAll(async () => {
   // Spawn postgres via plain `docker run` — avoids the testcontainers library's
   // wait-strategy hangs observed with Bun. Ports are randomized to avoid
@@ -93,12 +96,12 @@ beforeAll(async () => {
     'utf-8',
   )
   await sql.unsafe(partitioningSql)
-})
+}, 120_000)
 
 afterAll(async () => {
   await sql?.end()
   spawnSync('docker', ['rm', '-f', CONTAINER_NAME], { stdio: 'ignore' })
-})
+}, 30_000)
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
