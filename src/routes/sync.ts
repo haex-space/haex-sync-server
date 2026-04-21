@@ -15,10 +15,8 @@ import { getServerIdentity } from '../services/serverIdentity'
 import vaultRoutes from './sync.vaults'
 import { broadcastToSpace } from './ws'
 
-import { validateBatches } from '../utils/syncUtils'
-
 // Re-export sync utilities
-export { validateBatches, type SyncChange, type BatchValidationError } from '../utils/syncUtils'
+export { type SyncChange } from '../utils/syncUtils'
 
 const sync = new Hono()
 
@@ -38,9 +36,13 @@ function getCallerDid(c: any): string | null {
 
 /**
  * POST /sync/push
- * Push CRDT changes to server with unencrypted metadata for deduplication
- * Uses INSERT ... ON CONFLICT DO UPDATE to keep only latest value per cell
- * Validates batch completeness if batchId/batchSeq/batchTotal are provided
+ * Push CRDT changes to server with unencrypted metadata for deduplication.
+ * Uses INSERT ... ON CONFLICT DO UPDATE to keep only latest value per cell.
+ *
+ * HLC atomicity: every change in a push shares its sender-side transaction HLC,
+ * and all changes in one request are persisted in a single db.transaction() —
+ * so an HLC-group is never split across partial inserts. The client chunks
+ * at HLC boundaries, the server never splits what the client sends.
  */
 sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
   const { spaceId, changes: rawChanges } = c.req.valid('json')
@@ -121,20 +123,10 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
       spaceAuthenticatedPublicKey = authenticatedPublicKey
     }
 
-    // Validate batch completeness + duplicate-sequence detection.
-    //
-    // Delegates to validateBatches() in utils/syncUtils.ts — the previous
-    // inline duplicate of this logic checked completeness before duplicates,
-    // so a batch like seq=[1,1,3] with batchTotal=3 reported "Incomplete
-    // batch (missing 2)" instead of "Duplicate sequence numbers", masking
-    // the real client bug. The shared util has the correct check order.
-    const batchError = validateBatches(changes)
-    if (batchError) {
-      return c.json(batchError, 400)
-    }
-
-    // All batches are complete - apply changes atomically in a transaction
-    // This ensures either ALL changes are applied or NONE (on error/constraint violation)
+    // Apply changes atomically in a transaction so either ALL changes are
+    // applied or NONE. HLC-group atomicity is guaranteed by the client
+    // chunking at HLC boundaries before calling this endpoint — the server
+    // trusts the sender's grouping and does no completeness verification.
     //
     // PostgreSQL has a limit of 65534 parameters per query.
     // Each change has ~9 parameters, so we can safely insert ~5000 changes per query.
