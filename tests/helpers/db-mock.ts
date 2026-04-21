@@ -6,6 +6,12 @@
  * To avoid that, every test file that mocks db should export the SAME set of
  * table names from this shape. Tests can still supply custom implementations
  * for `db.select/insert/…` by overriding the returned object.
+ *
+ * The same hazard applies to any `mock.module('../src/services/…', …)` call:
+ * a partial mock in file A will leak into file B's dynamic import. If you need
+ * the real module in another test, either (a) don't mock at all and model the
+ * behaviour in the db mock, or (b) ensure your mock factory exports every
+ * function callers might access.
  */
 
 export interface DbMockChain {
