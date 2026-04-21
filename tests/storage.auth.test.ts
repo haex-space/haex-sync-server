@@ -101,9 +101,12 @@ mock.module('../src/services/minioAdmin', () => ({
   provisionUserStorage: async () => {},
 }))
 
-mock.module('../src/services/storageCredentials', () => ({
-  getCredentialsByAccessKeyId: async () => null,
-}))
+// NOTE: we intentionally DO NOT mock '../src/services/storageCredentials'.
+// These tests only exercise the DID-Auth path, which never calls
+// getCredentialsByAccessKeyId. Mocking the module would leak a partial
+// shape (missing getOrCreateStorageCredentials, …) into any later test
+// that dynamically imports it — Bun's mock.module is process-global.
+// See tests/helpers/db-mock.ts for the general hazard.
 
 let storageAuthMiddleware: (c: any, next: () => Promise<void>) => Promise<any>
 

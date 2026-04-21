@@ -16,6 +16,7 @@
 
 import { describe, test, expect, mock, beforeAll, beforeEach } from 'bun:test'
 import { sql } from 'drizzle-orm'
+import { buildDbMock } from './helpers/db-mock'
 
 // ── In-memory fake Postgres for user_storage_credentials ────────────────
 // The fake understands the exact surface area our module uses:
@@ -130,12 +131,18 @@ mock.module('drizzle-orm', () => ({
   sql: sql,
 }))
 
-mock.module('../src/db', () => ({
-  db: {
-    select: (cols: Record<string, any>) => makeSelectChain(cols),
-    insert: () => makeInsertChain(),
-    delete: () => makeDeleteChain(),
-  },
+// Use buildDbMock to export the full table surface — otherwise other test
+// files that already imported something like `identities` from '../src/db'
+// lose the binding when Bun re-resolves after our mock.module call.
+mock.module('../src/db', () => buildDbMock({
+  select: (cols: Record<string, any>) => makeSelectChain(cols),
+  insert: () => makeInsertChain(),
+  delete: () => makeDeleteChain(),
+}))
+
+// Override the userStorageCredentials table specifically — the race test's
+// fake select/insert chains depend on these exact column markers.
+mock.module('../src/db/schema', () => ({
   userStorageCredentials: {
     userId: 'user_id_col',
     accessKeyId: 'access_key_id_col',
