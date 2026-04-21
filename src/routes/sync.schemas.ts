@@ -42,13 +42,10 @@ export const pushChangeSchema = z.object({
   tableName: sqlIdentifier,
   rowPks: z.string(), // JSON string
   columnName: sqlIdentifier.nullable(),
-  hlcTimestamp: z.string(),
+  hlcTimestamp: z.string(), // Transaction-scope HLC; shared by every change from one sender-side tx
   deviceId: z.string().optional(),
   encryptedValue: z.string().nullable(),
   nonce: z.string().nullable(),
-  batchId: z.string().optional(), // UUID for grouping related changes
-  batchSeq: z.number().int().positive().optional(), // 1-based sequence within batch
-  batchTotal: z.number().int().positive().optional(), // Total changes in this batch
   // MLS epoch (for shared spaces with epoch-key encryption)
   epoch: z.number().int().nonnegative().optional().nullable(),
   // Space-specific fields (required for space pushes, ignored for personal vaults)
