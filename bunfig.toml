@@ -1,0 +1,8 @@
+[test]
+# Preload runs once per test process, before any test file is imported.
+# We use it to set env vars that source modules capture at load time
+# (e.g. STORAGE_ENCRYPTION_KEY in src/services/storageCredentials.ts).
+# Without this, the first test file to indirectly load the module would
+# freeze an undefined value into the module-scope constant, breaking
+# every subsequent test that expects the key to be configured.
+preload = ["./tests/helpers/setup.ts"]

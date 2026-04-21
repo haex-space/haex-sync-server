@@ -153,7 +153,9 @@ mock.module('../src/db/schema', () => ({
 let getOrCreateStorageCredentials: (userId: string) => Promise<{ accessKeyId: string; secretAccessKey: string }>
 
 beforeAll(async () => {
-  process.env.STORAGE_ENCRYPTION_KEY = process.env.STORAGE_ENCRYPTION_KEY ?? 'test-encryption-key-32-bytes-long!!'
+  // STORAGE_ENCRYPTION_KEY is set by tests/helpers/setup.ts (preloaded via
+  // bunfig.toml) — setting it here would be too late if another test file
+  // already caused storageCredentials.ts to load.
   ;({ getOrCreateStorageCredentials } = await import('../src/services/storageCredentials'))
 })
 
