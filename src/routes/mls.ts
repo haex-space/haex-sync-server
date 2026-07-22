@@ -15,6 +15,16 @@ import { isValidUuid } from '../utils/uuid'
 
 const mlsRouter = new Hono()
 
+// Every KeyPackage-upload schema carries a `pops` array that must line up
+// 1:1 with `keyPackages` — shared here instead of duplicating the refine
+// across acceptInviteSchema / uploadKeyPackagesSchema / claimTokenSchema.
+function requireMatchingPops<T extends { keyPackages: string[]; pops: string[] }>(schema: z.ZodType<T>) {
+  return schema.refine((v) => v.keyPackages.length === v.pops.length, {
+    message: 'pops must have the same length as keyPackages',
+    path: ['pops'],
+  })
+}
+
 // Validate UUID-format path params for every route. Runs before authDispatcher
 // so malformed IDs are rejected with 400 before any DB lookup (including the
 // identity resolution done inside authDispatcher).
@@ -218,9 +228,10 @@ mlsRouter.get('/:spaceId/invites', async (c) => {
 })
 
 // POST /:spaceId/invites/:inviteId/accept — Accept invite + upload KeyPackages
-const acceptInviteSchema = z.object({
+const acceptInviteSchema = requireMatchingPops(z.object({
   keyPackages: z.array(z.string()).min(1).max(20),
-})
+  pops: z.array(z.string()).min(1).max(20),
+}))
 
 mlsRouter.post('/:spaceId/invites/:inviteId/accept', zValidator('json', acceptInviteSchema), async (c) => {
   const spaceId = c.req.param('spaceId')
@@ -379,9 +390,10 @@ mlsRouter.delete('/:spaceId/invites/:inviteId', async (c) => {
 // ============================================
 
 // POST /:spaceId/mls/key-packages — Upload KeyPackages (batch, for existing members)
-const uploadKeyPackagesSchema = z.object({
+const uploadKeyPackagesSchema = requireMatchingPops(z.object({
   keyPackages: z.array(z.string()).min(1).max(100),
-})
+  pops: z.array(z.string()).min(1).max(100),
+}))
 
 mlsRouter.post('/:spaceId/mls/key-packages', zValidator('json', uploadKeyPackagesSchema), async (c) => {
   const spaceId = c.req.param('spaceId')
@@ -890,10 +902,11 @@ mlsRouter.delete('/:spaceId/invite-tokens/:tokenId', async (c) => {
 })
 
 // POST /:spaceId/invite-tokens/:tokenId/claim — Claim a token (no auth required, token IS the auth)
-const claimTokenSchema = z.object({
+const claimTokenSchema = requireMatchingPops(z.object({
   keyPackages: z.array(z.string()).min(1).max(20),
+  pops: z.array(z.string()).min(1).max(20),
   label: z.string().max(200).optional(),
-})
+}))
 
 mlsRouter.post('/:spaceId/invite-tokens/:tokenId/claim', zValidator('json', claimTokenSchema), async (c) => {
   const spaceId = c.req.param('spaceId')
