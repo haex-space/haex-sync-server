@@ -301,6 +301,9 @@ export const mlsKeyPackages = pgTable(
       .references(() => spaces.id, { onDelete: "cascade" }),
     identityPublicKey: text("identity_public_key").notNull(),
     keyPackage: bytea("key_package").notNull(),
+    pop: bytea("pop"), // proof-of-possession binding the KeyPackage's MLS sig key to the
+                       // uploader's identity key; NULL only for rows uploaded before this
+                       // column existed (see Task 4 — those are never served).
     consumed: boolean("consumed").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
