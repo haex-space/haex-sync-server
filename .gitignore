@@ -42,3 +42,6 @@ db_data
 CLAUDE.md
 .claude
 pnpm-workspace.yaml
+
+# Git worktrees (project-local, used for isolated feature work)
+.worktrees
