@@ -1,5 +1,6 @@
 import { describe, test, expect, mock, beforeAll } from 'bun:test'
-import { buildDbMock, emptyChain } from './helpers/db-mock'
+import { isNotNull } from 'drizzle-orm'
+import { buildDbMock, emptyChain, flattenSqlChunks } from './helpers/db-mock'
 import { makeIdentity, createDidAuthHeader } from './integration/helpers'
 
 const VALID_UUID = '11111111-1111-4111-8111-111111111111'
@@ -243,21 +244,39 @@ describe('mlsRouter — upload stores pop alongside keyPackage', () => {
 const POP_COLUMN_MARKER = 'POP_COLUMN_MARKER_FOR_WHERE_INTROSPECTION'
 
 function whereFiltersNotNullOnPop(cond: any): boolean {
-  if (cond == null) return false
-  if (Array.isArray(cond.queryChunks)) {
-    const chunks = cond.queryChunks
-    for (let i = 0; i < chunks.length; i++) {
-      if (chunks[i] === POP_COLUMN_MARKER) {
-        const next = chunks[i + 1]
-        if (next && Array.isArray(next.value) && String(next.value[0]).includes('is not null')) {
-          return true
-        }
+  const chunks = flattenSqlChunks(cond)
+  for (let i = 0; i < chunks.length; i++) {
+    if (chunks[i] === POP_COLUMN_MARKER) {
+      const next = chunks[i + 1]
+      if (next && Array.isArray(next.value) && String(next.value[0]).includes('is not null')) {
+        return true
       }
-      if (whereFiltersNotNullOnPop(chunks[i])) return true
     }
   }
   return false
 }
+
+// Pins the drizzle-orm internal shape that flattenSqlChunks()/
+// whereFiltersNotNullOnPop() above depend on. If a future drizzle-orm bump
+// changes how isNotNull() builds its queryChunks (e.g. wraps the param in a
+// Param instance instead of embedding it raw, or reorders the chunks), this
+// fails right here with a shape assertion — instead of surfacing as a
+// confusing 500-vs-404 mismatch in the fetch-handler tests below.
+test('drizzle isNotNull() produces the queryChunks shape our mock helper assumes (pins internal API surface)', () => {
+  const marker = 'PINNING_TEST_MARKER_XYZ'
+  const cond: any = isNotNull(marker as any)
+  const chunks = flattenSqlChunks(cond)
+
+  // isNotNull(x) is sql`${x} is not null`, which drizzle-orm compiles to
+  // exactly three queryChunks: a leading empty StringChunk, the raw param
+  // embedded as-is (drizzle does NOT wrap primitive sql`` params in a Param
+  // instance — see node_modules/drizzle-orm/sql/sql.js `function sql`), and
+  // a trailing StringChunk(" is not null").
+  expect(chunks.length).toBe(3)
+  expect(chunks[0].value).toEqual([''])
+  expect(chunks[1]).toBe(marker)
+  expect(chunks[2].value[0]).toContain('is not null')
+})
 
 describe('mlsRouter — fetch key package returns pop and skips legacy rows', () => {
   const TARGET_DID = 'did:key:zTargetDidForFetchPopTest0000000000000001'
