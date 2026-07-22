@@ -46,6 +46,28 @@ export function emptyChain(): DbMockChain {
 }
 
 /**
+ * Recursively flattens a Drizzle SQL condition's internal `queryChunks` tree
+ * into a flat array, so tests can assert a specific sub-condition (e.g.
+ * `isNotNull(col)`) is genuinely present in a `.where()` clause built with
+ * `and(...)`, rather than trusting the mock blindly.
+ *
+ * NOTE: `queryChunks` / nested `SQL` instances are drizzle-orm's INTERNAL
+ * representation, not public API (verified against
+ * node_modules/drizzle-orm/sql/sql.js and
+ * node_modules/drizzle-orm/sql/expressions/conditions.js for
+ * drizzle-orm@^0.45.1). A future drizzle-orm version bump could change this
+ * shape; if this helper starts failing, check whether the internal
+ * representation changed before assuming your test logic is wrong.
+ */
+export function flattenSqlChunks(node: any): any[] {
+  if (node == null) return []
+  if (Array.isArray(node.queryChunks)) {
+    return node.queryChunks.flatMap((chunk: any) => flattenSqlChunks(chunk))
+  }
+  return [node]
+}
+
+/**
  * Build a db-module mock with every table exported. Pass a custom `db` to
  * control the select/insert/update/delete behaviour for your test.
  */

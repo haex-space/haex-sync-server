@@ -16,7 +16,7 @@
 
 import { describe, test, expect, mock, beforeAll, beforeEach } from 'bun:test'
 import { sql } from 'drizzle-orm'
-import { buildDbMock } from './helpers/db-mock'
+import { buildDbMock, flattenSqlChunks } from './helpers/db-mock'
 
 // ── In-memory fake Postgres for user_storage_credentials ────────────────
 // The fake understands the exact surface area our module uses:
@@ -74,7 +74,15 @@ function makeInsertChain() {
     let secret: string
     if (raw && typeof raw === 'object' && 'queryChunks' in raw) {
       // sql template — grab the inner string param which is the plaintext
-      secret = (raw.queryChunks.find((c: any) => typeof c === 'object' && 'value' in c)?.value) ?? 'x'
+      //
+      // KNOWN BUG (pre-existing, out of scope for this PR): this .find() matches the
+      // leading StringChunk's .value (SQL literal text, e.g. "pgp_sym_encrypt("), not
+      // the actual secretAccessKey/STORAGE_ENCRYPTION_KEY param — raw sql`` params are
+      // embedded unwrapped, not as {value: ...} objects (see flattenSqlChunks() in
+      // ./helpers/db-mock.ts and the isNotNull pinning test in
+      // mls-keypackage-pop.test.ts for the same shape). The secretAccessKey equality
+      // assertions below never actually exercise the real generated secret.
+      secret = (flattenSqlChunks(raw).find((c: any) => typeof c === 'object' && 'value' in c)?.value) ?? 'x'
     } else if (typeof raw === 'string') {
       secret = raw
     } else {

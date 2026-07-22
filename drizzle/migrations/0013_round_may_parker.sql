@@ -1,0 +1,1 @@
+ALTER TABLE "mls_key_packages" ADD COLUMN "pop" "bytea";

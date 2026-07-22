@@ -5,7 +5,7 @@ import { db, spaceMembers, identities, mlsKeyPackages, mlsMessages, mlsWelcomeMe
 import { authDispatcher } from '../middleware/authDispatcher'
 import { requireCapability } from '../middleware/ucanAuth'
 import { resolveDidIdentity } from '../middleware/didAuth'
-import { eq, and, gt, sql } from 'drizzle-orm'
+import { eq, and, gt, sql, isNotNull } from 'drizzle-orm'
 import { broadcastToSpace, sendToDid } from './ws'
 import { didToSpkiPublicKey } from '../utils/didIdentity'
 import { getFederationLinkForSpace, federatedProxyAsync } from '../services/federationClient'
@@ -14,6 +14,16 @@ import { getServerIdentity } from '../services/serverIdentity'
 import { isValidUuid } from '../utils/uuid'
 
 const mlsRouter = new Hono()
+
+// Every KeyPackage-upload schema carries a `pops` array that must line up
+// 1:1 with `keyPackages` — shared here instead of duplicating the refine
+// across acceptInviteSchema / uploadKeyPackagesSchema / claimTokenSchema.
+function requireMatchingPops<T extends { keyPackages: string[]; pops: string[] }>(schema: z.ZodType<T>) {
+  return schema.refine((v) => v.keyPackages.length === v.pops.length, {
+    message: 'pops must have the same length as keyPackages',
+    path: ['pops'],
+  })
+}
 
 // Validate UUID-format path params for every route. Runs before authDispatcher
 // so malformed IDs are rejected with 400 before any DB lookup (including the
@@ -218,9 +228,10 @@ mlsRouter.get('/:spaceId/invites', async (c) => {
 })
 
 // POST /:spaceId/invites/:inviteId/accept — Accept invite + upload KeyPackages
-const acceptInviteSchema = z.object({
+const acceptInviteSchema = requireMatchingPops(z.object({
   keyPackages: z.array(z.string()).min(1).max(20),
-})
+  pops: z.array(z.string()).min(1).max(20),
+}))
 
 mlsRouter.post('/:spaceId/invites/:inviteId/accept', zValidator('json', acceptInviteSchema), async (c) => {
   const spaceId = c.req.param('spaceId')
@@ -256,10 +267,11 @@ mlsRouter.post('/:spaceId/invites/:inviteId/accept', zValidator('json', acceptIn
         .where(eq(spaceInvites.id, inviteId))
 
       // Upload KeyPackages in the same transaction
-      const values = body.keyPackages.map((kp) => ({
+      const values = body.keyPackages.map((kp, i) => ({
         spaceId,
         identityPublicKey: identity.publicKey,
         keyPackage: Buffer.from(kp, 'base64'),
+        pop: Buffer.from(body.pops[i]!, 'base64'),
       }))
       await tx.insert(mlsKeyPackages).values(values)
     })
@@ -379,9 +391,10 @@ mlsRouter.delete('/:spaceId/invites/:inviteId', async (c) => {
 // ============================================
 
 // POST /:spaceId/mls/key-packages — Upload KeyPackages (batch, for existing members)
-const uploadKeyPackagesSchema = z.object({
+const uploadKeyPackagesSchema = requireMatchingPops(z.object({
   keyPackages: z.array(z.string()).min(1).max(100),
-})
+  pops: z.array(z.string()).min(1).max(100),
+}))
 
 mlsRouter.post('/:spaceId/mls/key-packages', zValidator('json', uploadKeyPackagesSchema), async (c) => {
   const spaceId = c.req.param('spaceId')
@@ -399,10 +412,11 @@ mlsRouter.post('/:spaceId/mls/key-packages', zValidator('json', uploadKeyPackage
     const identity = await resolveDidIdentity(callerDid)
     if (!identity) return c.json({ error: 'Identity not found' }, 404)
 
-    const values = body.keyPackages.map((kp) => ({
+    const values = body.keyPackages.map((kp, i) => ({
       spaceId,
       identityPublicKey: identity.publicKey,
       keyPackage: Buffer.from(kp, 'base64'),
+      pop: Buffer.from(body.pops[i]!, 'base64'),
     }))
 
     await db.insert(mlsKeyPackages).values(values)
@@ -453,6 +467,7 @@ mlsRouter.get('/:spaceId/mls/key-packages/:did', async (c) => {
         eq(mlsKeyPackages.spaceId, spaceId),
         eq(mlsKeyPackages.identityPublicKey, targetIdentity.publicKey),
         eq(mlsKeyPackages.consumed, false),
+        isNotNull(mlsKeyPackages.pop),
       ))
       .limit(1)
 
@@ -464,6 +479,7 @@ mlsRouter.get('/:spaceId/mls/key-packages/:did', async (c) => {
 
     return c.json({
       keyPackage: keyPackage.keyPackage.toString('base64'),
+      pop: keyPackage.pop!.toString('base64'), // non-null: guaranteed by isNotNull() above
       includeHistory: acceptedInvite.includeHistory,
     })
   } catch (error) {
@@ -890,10 +906,11 @@ mlsRouter.delete('/:spaceId/invite-tokens/:tokenId', async (c) => {
 })
 
 // POST /:spaceId/invite-tokens/:tokenId/claim — Claim a token (no auth required, token IS the auth)
-const claimTokenSchema = z.object({
+const claimTokenSchema = requireMatchingPops(z.object({
   keyPackages: z.array(z.string()).min(1).max(20),
+  pops: z.array(z.string()).min(1).max(20),
   label: z.string().max(200).optional(),
-})
+}))
 
 mlsRouter.post('/:spaceId/invite-tokens/:tokenId/claim', zValidator('json', claimTokenSchema), async (c) => {
   const spaceId = c.req.param('spaceId')
@@ -952,10 +969,11 @@ mlsRouter.post('/:spaceId/invite-tokens/:tokenId/claim', zValidator('json', clai
       }).onConflictDoNothing()
 
       // Upload KeyPackages
-      const values = body.keyPackages.map((kp) => ({
+      const values = body.keyPackages.map((kp, i) => ({
         spaceId,
         identityPublicKey: identityPublicKey,
         keyPackage: Buffer.from(kp, 'base64'),
+        pop: Buffer.from(body.pops[i]!, 'base64'),
       }))
       await tx.insert(mlsKeyPackages).values(values)
 
