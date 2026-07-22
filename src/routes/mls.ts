@@ -267,10 +267,11 @@ mlsRouter.post('/:spaceId/invites/:inviteId/accept', zValidator('json', acceptIn
         .where(eq(spaceInvites.id, inviteId))
 
       // Upload KeyPackages in the same transaction
-      const values = body.keyPackages.map((kp) => ({
+      const values = body.keyPackages.map((kp, i) => ({
         spaceId,
         identityPublicKey: identity.publicKey,
         keyPackage: Buffer.from(kp, 'base64'),
+        pop: Buffer.from(body.pops[i]!, 'base64'),
       }))
       await tx.insert(mlsKeyPackages).values(values)
     })
@@ -411,10 +412,11 @@ mlsRouter.post('/:spaceId/mls/key-packages', zValidator('json', uploadKeyPackage
     const identity = await resolveDidIdentity(callerDid)
     if (!identity) return c.json({ error: 'Identity not found' }, 404)
 
-    const values = body.keyPackages.map((kp) => ({
+    const values = body.keyPackages.map((kp, i) => ({
       spaceId,
       identityPublicKey: identity.publicKey,
       keyPackage: Buffer.from(kp, 'base64'),
+      pop: Buffer.from(body.pops[i]!, 'base64'),
     }))
 
     await db.insert(mlsKeyPackages).values(values)
@@ -965,10 +967,11 @@ mlsRouter.post('/:spaceId/invite-tokens/:tokenId/claim', zValidator('json', clai
       }).onConflictDoNothing()
 
       // Upload KeyPackages
-      const values = body.keyPackages.map((kp) => ({
+      const values = body.keyPackages.map((kp, i) => ({
         spaceId,
         identityPublicKey: identityPublicKey,
         keyPackage: Buffer.from(kp, 'base64'),
+        pop: Buffer.from(body.pops[i]!, 'base64'),
       }))
       await tx.insert(mlsKeyPackages).values(values)
 

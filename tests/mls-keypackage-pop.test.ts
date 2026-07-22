@@ -56,3 +56,175 @@ describe('mlsRouter — pops array must match keyPackages length', () => {
     expect(res.status).toBe(403)
   })
 })
+
+// These tests exercise the full happy path (real DID-Auth header, requireCapability
+// satisfied, handler body reached) with a custom db mock that captures what's passed
+// to insert(...).values(...), so we can assert the `pop` column is genuinely the
+// base64-decoded bytes of body.pops[i] — not just that the response is 2xx.
+describe('mlsRouter — upload stores pop alongside keyPackage', () => {
+  const INVITE_ID = '22222222-2222-4222-8222-222222222222'
+  const TOKEN_ID = '33333333-3333-4333-8333-333333333333'
+
+  let identityCaller: { did: string; keyPair: CryptoKeyPair }
+
+  beforeAll(async () => {
+    const id = await makeIdentity()
+    identityCaller = { did: id.did, keyPair: id.keyPair }
+  })
+
+  test('POST /:spaceId/mls/key-packages inserts pop as base64-decoded bytes', async () => {
+    let inserted: any[] = []
+    let selectCallCount = 0
+
+    mock.module('../src/db', () => buildDbMock({
+      select: () => {
+        selectCallCount++
+        const isFirst = selectCallCount === 1
+        const chain: any = {}
+        chain.from = () => chain
+        chain.where = () => chain
+        chain.limit = () =>
+          Promise.resolve(
+            isFirst
+              // requireCapability's DID-Auth branch: caller must be the space owner
+              ? [{ ownerId: identityCaller.did }]
+              // resolveDidIdentity
+              : [{ did: identityCaller.did, publicKey: 'test-pubkey' }],
+          )
+        return chain
+      },
+      insert: () => ({
+        values: (v: any[]) => { inserted = v; return Promise.resolve([]) },
+      }),
+    }))
+
+    const { default: router } = await import('../src/routes/mls')
+
+    const body = JSON.stringify({ keyPackages: ['a2V5'], pops: ['cG9w'] })
+    const header = await createDidAuthHeader(identityCaller.keyPair.privateKey, identityCaller.did, 'mls-write', body)
+    const res = await router.request(`/${VALID_UUID}/mls/key-packages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: header },
+      body,
+    })
+
+    expect(res.status).toBe(201)
+    expect(inserted.length).toBe(1)
+    expect(inserted[0].pop).toEqual(Buffer.from('cG9w', 'base64'))
+    expect(inserted[0].keyPackage).toEqual(Buffer.from('a2V5', 'base64'))
+  })
+
+  test('POST /:spaceId/invites/:inviteId/accept inserts pop as base64-decoded bytes', async () => {
+    let inserted: any[] = []
+    let selectCallCount = 0
+
+    mock.module('../src/db', () => buildDbMock({
+      select: () => {
+        selectCallCount++
+        const isFirst = selectCallCount === 1
+        const chain: any = {}
+        chain.from = () => chain
+        chain.where = () => chain
+        chain.limit = () =>
+          Promise.resolve(
+            isFirst
+              // resolveDidIdentity
+              ? [{ did: identityCaller.did, publicKey: 'test-pubkey' }]
+              // pending invite lookup
+              : [{ id: INVITE_ID, spaceId: VALID_UUID, inviteeDid: identityCaller.did, status: 'pending' }],
+          )
+        return chain
+      },
+      insert: () => emptyChain(),
+      transaction: async (fn: (tx: any) => any) => {
+        const tx = {
+          update: () => emptyChain(),
+          insert: () => ({
+            values: (v: any[]) => { inserted = v; return Promise.resolve([]) },
+          }),
+        }
+        return fn(tx)
+      },
+    }))
+
+    const { default: router } = await import('../src/routes/mls')
+
+    const body = JSON.stringify({ keyPackages: ['a2V5'], pops: ['cG9w'] })
+    const header = await createDidAuthHeader(identityCaller.keyPair.privateKey, identityCaller.did, 'mls-write', body)
+    const res = await router.request(`/${VALID_UUID}/invites/${INVITE_ID}/accept`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: header },
+      body,
+    })
+
+    expect(res.status).toBe(200)
+    expect(inserted.length).toBe(1)
+    expect(inserted[0].pop).toEqual(Buffer.from('cG9w', 'base64'))
+    expect(inserted[0].keyPackage).toEqual(Buffer.from('a2V5', 'base64'))
+  })
+
+  test('POST /:spaceId/invite-tokens/:tokenId/claim inserts pop as base64-decoded bytes', async () => {
+    let inserted: any[] = []
+    let selectCallCount = 0
+
+    mock.module('../src/db', () => buildDbMock({
+      select: () => {
+        selectCallCount++
+        const isFirst = selectCallCount === 1
+        const chain: any = {}
+        chain.from = () => chain
+        chain.where = () => chain
+        chain.limit = () =>
+          Promise.resolve(
+            isFirst
+              // resolveDidIdentity — empty means "cross-server claim" branch
+              ? []
+              // invite token lookup
+              : [{
+                  id: TOKEN_ID,
+                  spaceId: VALID_UUID,
+                  createdByDid: 'did:key:zInviterPlaceholder',
+                  expiresAt: new Date(Date.now() + 60_000),
+                  usedCount: 0,
+                  maxUses: 5,
+                  capability: 'space/read',
+                }],
+          )
+        return chain
+      },
+      insert: () => emptyChain(),
+      transaction: async (fn: (tx: any) => any) => {
+        const tx = {
+          update: () => emptyChain(),
+          insert: () => ({
+            values: (v: any[]) => {
+              // Three different inserts happen in this transaction (spaceInvites,
+              // mlsKeyPackages, spaceMembers) — all tables resolve to the same mock
+              // stub, so distinguish by shape: only the KeyPackage rows carry `keyPackage`.
+              if (Array.isArray(v) && v[0] && 'keyPackage' in v[0]) inserted = v
+              const p: any = Promise.resolve([])
+              p.onConflictDoNothing = () => Promise.resolve([])
+              return p
+            },
+          }),
+        }
+        return fn(tx)
+      },
+    }))
+
+    const { default: router } = await import('../src/routes/mls')
+
+    const body = JSON.stringify({ keyPackages: ['a2V5'], pops: ['cG9w'] })
+    const header = await createDidAuthHeader(identityCaller.keyPair.privateKey, identityCaller.did, 'mls-write', body)
+    const res = await router.request(`/${VALID_UUID}/invite-tokens/${TOKEN_ID}/claim`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: header },
+      body,
+    })
+
+    expect(res.status).toBe(200)
+    expect(inserted.length).toBe(1)
+    expect(inserted[0].pop).toEqual(Buffer.from('cG9w', 'base64'))
+    expect(inserted[0].keyPackage).toEqual(Buffer.from('a2V5', 'base64'))
+  })
+})
