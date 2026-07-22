@@ -5,7 +5,7 @@ import { db, spaceMembers, identities, mlsKeyPackages, mlsMessages, mlsWelcomeMe
 import { authDispatcher } from '../middleware/authDispatcher'
 import { requireCapability } from '../middleware/ucanAuth'
 import { resolveDidIdentity } from '../middleware/didAuth'
-import { eq, and, gt, sql } from 'drizzle-orm'
+import { eq, and, gt, sql, isNotNull } from 'drizzle-orm'
 import { broadcastToSpace, sendToDid } from './ws'
 import { didToSpkiPublicKey } from '../utils/didIdentity'
 import { getFederationLinkForSpace, federatedProxyAsync } from '../services/federationClient'
@@ -467,6 +467,7 @@ mlsRouter.get('/:spaceId/mls/key-packages/:did', async (c) => {
         eq(mlsKeyPackages.spaceId, spaceId),
         eq(mlsKeyPackages.identityPublicKey, targetIdentity.publicKey),
         eq(mlsKeyPackages.consumed, false),
+        isNotNull(mlsKeyPackages.pop),
       ))
       .limit(1)
 
@@ -478,6 +479,7 @@ mlsRouter.get('/:spaceId/mls/key-packages/:did', async (c) => {
 
     return c.json({
       keyPackage: keyPackage.keyPackage.toString('base64'),
+      pop: keyPackage.pop!.toString('base64'), // non-null: guaranteed by isNotNull() above
       includeHistory: acceptedInvite.includeHistory,
     })
   } catch (error) {

@@ -228,3 +228,120 @@ describe('mlsRouter — upload stores pop alongside keyPackage', () => {
     expect(inserted[0].keyPackage).toEqual(Buffer.from('a2V5', 'base64'))
   })
 })
+
+// ============================================
+// GET /:spaceId/mls/key-packages/:did — serves pop, skips legacy null-pop rows
+// ============================================
+
+// mlsKeyPackages.pop is normally a real drizzle Column; the shared tableStub
+// proxy (see buildDbMock) collapses every column access to the same 'col'
+// string, which would make it impossible to tell "the where-clause filters on
+// pop" from "it filters on anything else." These tests substitute a unique
+// marker string only for `pop` so we can walk the actual SQL condition tree
+// built by isNotNull()/and() and confirm the fetch handler genuinely applies
+// the filter — not just that it returns whatever row we hand it.
+const POP_COLUMN_MARKER = 'POP_COLUMN_MARKER_FOR_WHERE_INTROSPECTION'
+
+function whereFiltersNotNullOnPop(cond: any): boolean {
+  if (cond == null) return false
+  if (Array.isArray(cond.queryChunks)) {
+    const chunks = cond.queryChunks
+    for (let i = 0; i < chunks.length; i++) {
+      if (chunks[i] === POP_COLUMN_MARKER) {
+        const next = chunks[i + 1]
+        if (next && Array.isArray(next.value) && String(next.value[0]).includes('is not null')) {
+          return true
+        }
+      }
+      if (whereFiltersNotNullOnPop(chunks[i])) return true
+    }
+  }
+  return false
+}
+
+describe('mlsRouter — fetch key package returns pop and skips legacy rows', () => {
+  const TARGET_DID = 'did:key:zTargetDidForFetchPopTest0000000000000001'
+  let owner: { did: string; keyPair: CryptoKeyPair }
+
+  beforeAll(async () => {
+    const id = await makeIdentity()
+    owner = { did: id.did, keyPair: id.keyPair }
+  })
+
+  // Sets up the full happy-path chain: requireCapability (owner match) ->
+  // accepted-invite lookup -> target identity lookup -> key package lookup.
+  // `row` is what the (mocked) key-package query resolves to when the where
+  // clause does NOT filter out a null pop; when the where clause DOES include
+  // isNotNull(pop) and `row.pop` is null, the mock reports zero rows instead —
+  // mirroring what a real Postgres filter would do to a legacy row.
+  function mockHappyPathWithKeyPackageRow(row: { id: number; keyPackage: Buffer; pop: Buffer | null } | null) {
+    let selectCallCount = 0
+
+    const dbExports = buildDbMock({
+      select: () => {
+        selectCallCount++
+        const callIndex = selectCallCount
+        const chain: any = {}
+        let whereArg: any = null
+        chain.from = () => chain
+        chain.where = (cond: any) => { whereArg = cond; return chain }
+        chain.limit = () => {
+          if (callIndex === 1) return Promise.resolve([{ ownerId: owner.did }]) // requireCapability
+          if (callIndex === 2) return Promise.resolve([{ spaceId: VALID_UUID, inviteeDid: TARGET_DID, status: 'accepted', includeHistory: true }]) // accepted invite
+          if (callIndex === 3) return Promise.resolve([{ did: TARGET_DID, publicKey: 'target-pubkey' }]) // target identity
+          // key package lookup
+          if (!row) return Promise.resolve([])
+          if (row.pop === null && whereFiltersNotNullOnPop(whereArg)) return Promise.resolve([])
+          return Promise.resolve([row])
+        }
+        return chain
+      },
+      update: () => ({
+        set: () => ({
+          where: () => Promise.resolve([]),
+        }),
+      }),
+    })
+    dbExports.mlsKeyPackages = {
+      pop: POP_COLUMN_MARKER,
+      spaceId: 'MOCK_SPACE_ID_COL',
+      identityPublicKey: 'MOCK_IDENTITY_PK_COL',
+      consumed: 'MOCK_CONSUMED_COL',
+      id: 'MOCK_ID_COL',
+    }
+    mock.module('../src/db', () => dbExports)
+  }
+
+  test('GET returns pop as base64 for a row that has one', async () => {
+    const popBytes = Buffer.from([1, 2, 3, 4, 5])
+    const keyPackageBytes = Buffer.from([9, 9, 9])
+    mockHappyPathWithKeyPackageRow({ id: 42, keyPackage: keyPackageBytes, pop: popBytes })
+
+    const { default: router } = await import('../src/routes/mls')
+    const header = await createDidAuthHeader(owner.keyPair.privateKey, owner.did, 'mls-read', '')
+    const res = await router.request(`/${VALID_UUID}/mls/key-packages/${encodeURIComponent(TARGET_DID)}`, {
+      method: 'GET',
+      headers: { Authorization: header },
+    })
+
+    expect(res.status).toBe(200)
+    const body = await res.json() as any
+    expect(body.pop).toBe(popBytes.toString('base64'))
+    expect(body.keyPackage).toBe(keyPackageBytes.toString('base64'))
+  })
+
+  test('GET treats a legacy row with pop = NULL as unavailable (404, not served without PoP)', async () => {
+    mockHappyPathWithKeyPackageRow({ id: 43, keyPackage: Buffer.from([1]), pop: null })
+
+    const { default: router } = await import('../src/routes/mls')
+    const header = await createDidAuthHeader(owner.keyPair.privateKey, owner.did, 'mls-read', '')
+    const res = await router.request(`/${VALID_UUID}/mls/key-packages/${encodeURIComponent(TARGET_DID)}`, {
+      method: 'GET',
+      headers: { Authorization: header },
+    })
+
+    expect(res.status).toBe(404)
+    const body = await res.json() as any
+    expect(body.error).toContain('No key packages available')
+  })
+})
