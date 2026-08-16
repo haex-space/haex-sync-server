@@ -1,7 +1,13 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { eq, and, ne, sql, max, asc } from 'drizzle-orm'
-import { multibaseDecode } from '@haex-space/ucan'
+import {
+  holdsSpaceCap,
+  multibaseDecode,
+  spaceCapabilitySet,
+  type SpaceCap,
+  type SpaceCapabilitySet,
+} from '@haex-space/ucan'
 import {
   buildDidDocument,
   isFederationEnabled,
@@ -36,6 +42,81 @@ function getCallerDid(c: any): string | null {
   const didAuth = c.get('didAuth')
   if (didAuth) return didAuth.did
   return null
+}
+
+function ownerCapabilitySet(): SpaceCapabilitySet {
+  return spaceCapabilitySet()
+    .read(true)
+    .write(true)
+    .invite(true)
+    .admin(true)
+    .build()
+}
+
+function membershipCapabilitySet(capability: string | null): SpaceCapabilitySet | null {
+  switch (capability) {
+    case 'space/read':
+      return spaceCapabilitySet().read(true).build()
+    case 'space/write':
+      return spaceCapabilitySet().write(true).build()
+    case 'space/invite':
+      return spaceCapabilitySet().invite(true).build()
+    case 'space/admin':
+      return spaceCapabilitySet().admin(true).build()
+    default:
+      return null
+  }
+}
+
+/**
+ * Authorize the signed end user of a federated request for one space operation.
+ *
+ * The space owner receives every grant explicitly. Legacy membership rows are
+ * normalized to a single orthogonal grant, so admin does not imply write/read.
+ */
+async function requireFederatedUserCapability(
+  c: any,
+  spaceId: string,
+  required: SpaceCap,
+): Promise<Response | undefined> {
+  const federationContext = c.get('federation') as FederationContext
+  const userAuth = federationContext.userAuth
+  if (!userAuth) return undefined
+
+  if (userAuth.spaceId !== spaceId) {
+    return c.json({ error: 'Federated user authorization is scoped to a different space' }, 403)
+  }
+
+  const [space] = await db
+    .select({ ownerId: spaces.ownerId })
+    .from(spaces)
+    .where(eq(spaces.id, spaceId))
+    .limit(1)
+
+  if (!space) {
+    return c.json({ error: 'Space not found' }, 404)
+  }
+
+  let capabilities: SpaceCapabilitySet | null
+  if (space.ownerId === userAuth.did) {
+    capabilities = ownerCapabilitySet()
+  } else {
+    const [member] = await db
+      .select({ capability: spaceMembers.capability })
+      .from(spaceMembers)
+      .where(and(
+        eq(spaceMembers.spaceId, spaceId),
+        eq(spaceMembers.did, userAuth.did),
+      ))
+      .limit(1)
+    capabilities = membershipCapabilitySet(member?.capability ?? null)
+  }
+
+  if (!capabilities || !holdsSpaceCap(capabilities, required)) {
+    return c.json({ error: `Insufficient capability — need ${required} for this operation` }, 403)
+  }
+
+  return undefined
 }
 
 // ─── Public Endpoints (no auth) ──────────────────────────────────────
@@ -478,21 +559,8 @@ federationRouter.post('/push', async (c) => {
     const relayError = requireFederationRelay(c, spaceId)
     if (relayError) return relayError
 
-    // Verify the end user has write capability (if user auth is present)
-    if (federationContext.userAuth) {
-      const [member] = await db
-        .select({ capability: spaceMembers.capability })
-        .from(spaceMembers)
-        .where(and(
-          eq(spaceMembers.spaceId, spaceId),
-          eq(spaceMembers.did, federationContext.userAuth.did),
-        ))
-        .limit(1)
-
-      if (!member || member.capability !== 'space/write') {
-        return c.json({ error: 'Insufficient capability — need space/write to push' }, 403)
-      }
-    }
+    const userCapabilityError = await requireFederatedUserCapability(c, spaceId, 'write')
+    if (userCapabilityError) return userCapabilityError
 
     // Resolve space owner's userId for billing
     const ownerUserId = await resolveSpaceOwnerUserId(spaceId)
@@ -615,22 +683,8 @@ federationRouter.get('/pull', async (c) => {
     const relayError = requireFederationRelay(c, spaceId)
     if (relayError) return relayError
 
-    // Verify the end user has read capability (if user auth is present)
-    const federationContext = c.get('federation') as FederationContext
-    if (federationContext.userAuth) {
-      const [member] = await db
-        .select({ capability: spaceMembers.capability })
-        .from(spaceMembers)
-        .where(and(
-          eq(spaceMembers.spaceId, spaceId),
-          eq(spaceMembers.did, federationContext.userAuth.did),
-        ))
-        .limit(1)
-
-      if (!member || member.capability !== 'space/read') {
-        return c.json({ error: 'Insufficient capability — need space/read to pull' }, 403)
-      }
-    }
+    const userCapabilityError = await requireFederatedUserCapability(c, spaceId, 'read')
+    if (userCapabilityError) return userCapabilityError
 
     // Verify space exists and is shared
     const [space] = await db
