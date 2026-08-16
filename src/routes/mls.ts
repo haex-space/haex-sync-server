@@ -133,7 +133,7 @@ mlsRouter.post('/:spaceId/invites', zValidator('json', createInviteSchema), asyn
 
   const body = c.req.valid('json')
 
-  const error = await requireCapability(c, spaceId, 'space/invite')
+  const error = await requireCapability(c, spaceId, 'invite')
   if (error) return error
 
   try {
@@ -173,7 +173,7 @@ mlsRouter.get('/:spaceId/invites', async (c) => {
   const relayResponse = await federationRelay(c, spaceId)
   if (relayResponse) return relayResponse
 
-  const capError = await requireCapability(c, spaceId, 'space/read')
+  const capError = await requireCapability(c, spaceId, 'read')
   if (capError) return capError
 
   try {
@@ -337,7 +337,7 @@ mlsRouter.patch('/:spaceId/invites/:inviteId/ucan', zValidator('json', setInvite
   const inviteId = c.req.param('inviteId')
   const body = c.req.valid('json')
 
-  const capError = await requireCapability(c, spaceId, 'space/invite')
+  const capError = await requireCapability(c, spaceId, 'invite')
   if (capError) return capError
 
   try {
@@ -369,7 +369,7 @@ mlsRouter.delete('/:spaceId/invites/:inviteId', async (c) => {
   const relayResponse = await federationRelay(c, spaceId)
   if (relayResponse) return relayResponse
 
-  const capError = await requireCapability(c, spaceId, 'space/invite')
+  const capError = await requireCapability(c, spaceId, 'invite')
   if (capError) return capError
 
   try {
@@ -404,7 +404,7 @@ mlsRouter.post('/:spaceId/mls/key-packages', zValidator('json', uploadKeyPackage
 
   const body = c.req.valid('json')
 
-  const capError = await requireCapability(c, spaceId, 'space/read')
+  const capError = await requireCapability(c, spaceId, 'read')
   if (capError) return capError
 
   try {
@@ -437,7 +437,7 @@ mlsRouter.get('/:spaceId/mls/key-packages/:did', async (c) => {
 
   const targetDid = decodeURIComponent(c.req.param('did'))
 
-  const capError = await requireCapability(c, spaceId, 'space/invite')
+  const capError = await requireCapability(c, spaceId, 'invite')
   if (capError) return capError
 
   try {
@@ -508,7 +508,7 @@ mlsRouter.post('/:spaceId/mls/messages', zValidator('json', sendMessageSchema), 
 
   const body = c.req.valid('json')
 
-  const capError = await requireCapability(c, spaceId, 'space/write')
+  const capError = await requireCapability(c, spaceId, 'write')
   if (capError) return capError
 
   try {
@@ -570,7 +570,7 @@ mlsRouter.get('/:spaceId/mls/messages', async (c) => {
   }
   const { after, limit } = parsedQuery.data
 
-  const capError = await requireCapability(c, spaceId, 'space/read')
+  const capError = await requireCapability(c, spaceId, 'read')
   if (capError) return capError
 
   try {
@@ -617,7 +617,7 @@ mlsRouter.post('/:spaceId/mls/welcome', zValidator('json', sendWelcomeSchema), a
 
   const body = c.req.valid('json')
 
-  const capError = await requireCapability(c, spaceId, 'space/invite')
+  const capError = await requireCapability(c, spaceId, 'invite')
   if (capError) return capError
 
   try {
@@ -649,7 +649,7 @@ mlsRouter.get('/:spaceId/mls/welcome', async (c) => {
   const relayResponse = await federationRelay(c, spaceId)
   if (relayResponse) return relayResponse
 
-  const capError = await requireCapability(c, spaceId, 'space/read')
+  const capError = await requireCapability(c, spaceId, 'read')
   if (capError) return capError
 
   try {
@@ -686,7 +686,7 @@ mlsRouter.delete('/:spaceId/mls/welcome/:id', async (c) => {
   const relayResponse = await federationRelay(c, spaceId)
   if (relayResponse) return relayResponse
 
-  const capError = await requireCapability(c, spaceId, 'space/read')
+  const capError = await requireCapability(c, spaceId, 'read')
   if (capError) return capError
 
   try {
@@ -730,7 +730,7 @@ mlsRouter.post('/:spaceId/mls/rejoin', async (c) => {
   const relayResponse = await federationRelay(c, spaceId)
   if (relayResponse) return relayResponse
 
-  const capError = await requireCapability(c, spaceId, 'space/read')
+  const capError = await requireCapability(c, spaceId, 'read')
   if (capError) return capError
 
   try {
@@ -767,7 +767,7 @@ mlsRouter.post('/:spaceId/mls/external-commit', zValidator('json', externalCommi
 
   const { commit } = c.req.valid('json')
 
-  const capError = await requireCapability(c, spaceId, 'space/read')
+  const capError = await requireCapability(c, spaceId, 'read')
   if (capError) return capError
 
   try {
@@ -815,7 +815,7 @@ mlsRouter.post('/:spaceId/invite-tokens', zValidator('json', createTokenSchema),
 
   const body = c.req.valid('json')
 
-  const capError = await requireCapability(c, spaceId, 'space/invite')
+  const capError = await requireCapability(c, spaceId, 'invite')
   if (capError) return capError
 
   try {
@@ -853,7 +853,7 @@ mlsRouter.get('/:spaceId/invite-tokens', async (c) => {
   const relayResponse = await federationRelay(c, spaceId)
   if (relayResponse) return relayResponse
 
-  const capError = await requireCapability(c, spaceId, 'space/invite')
+  const capError = await requireCapability(c, spaceId, 'invite')
   if (capError) return capError
 
   try {
@@ -889,7 +889,7 @@ mlsRouter.delete('/:spaceId/invite-tokens/:tokenId', async (c) => {
 
   const tokenId = c.req.param('tokenId')
 
-  const capError = await requireCapability(c, spaceId, 'space/invite')
+  const capError = await requireCapability(c, spaceId, 'invite')
   if (capError) return capError
 
   try {

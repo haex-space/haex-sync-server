@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { eq, and, ne, sql, max, asc } from 'drizzle-orm'
-import { multibaseDecode, SpaceCapabilities, satisfies, type SpaceCapability } from '@haex-space/ucan'
+import { multibaseDecode } from '@haex-space/ucan'
 import {
   buildDidDocument,
   isFederationEnabled,
@@ -256,7 +256,7 @@ federation.post('/federation/setup', authDispatcher, async (c) => {
         publicKey: callerPublicKey,
         did: callerDid,
         label: 'Federation member',
-        capability: SpaceCapabilities.WRITE,
+        capability: 'space/write',
       })
       .onConflictDoNothing()
 
@@ -489,8 +489,8 @@ federationRouter.post('/push', async (c) => {
         ))
         .limit(1)
 
-      if (!member || !satisfies(member.capability as SpaceCapability, SpaceCapabilities.WRITE)) {
-        return c.json({ error: 'Insufficient capability — need at least space/write to push' }, 403)
+      if (!member || member.capability !== 'space/write') {
+        return c.json({ error: 'Insufficient capability — need space/write to push' }, 403)
       }
     }
 
@@ -627,8 +627,8 @@ federationRouter.get('/pull', async (c) => {
         ))
         .limit(1)
 
-      if (!member || !satisfies(member.capability as SpaceCapability, SpaceCapabilities.READ)) {
-        return c.json({ error: 'Insufficient capability — need at least space/read to pull' }, 403)
+      if (!member || member.capability !== 'space/read') {
+        return c.json({ error: 'Insufficient capability — need space/read to pull' }, 403)
       }
     }
 

@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'bun:test'
 import { Hono } from 'hono'
-import { createUcan, createWebCryptoSigner, spaceResource } from '@haex-space/ucan'
+import { createUcan, createWebCryptoSigner, spaceCapabilitySet, spaceResource } from '@haex-space/ucan'
 import { authDispatcher } from '../../src/middleware/authDispatcher'
 
 const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
@@ -74,7 +74,7 @@ describe('Auth Dispatcher', () => {
     const token = await createUcan({
       issuer: id.did,
       audience: id.did,
-      capabilities: { [spaceResource('test')]: 'space/admin' },
+      capabilities: { [spaceResource('test')]: spaceCapabilitySet().admin(true).build() },
       expiration: Math.floor(Date.now() / 1000) + 3600,
     }, id.sign)
 

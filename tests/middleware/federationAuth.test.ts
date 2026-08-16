@@ -1,7 +1,6 @@
 import { describe, test, expect, mock, beforeAll, afterAll } from 'bun:test'
 import { Hono } from 'hono'
-import { spaceResource } from '@haex-space/ucan'
-import { createUcan } from '@haex-space/ucan'
+import { createUcan, spaceCapabilitySet, spaceResource } from '@haex-space/ucan'
 import {
   makeIdentity,
   makeServerIdentity,
@@ -234,7 +233,7 @@ describe('Federation Auth — FEDERATION layer', () => {
     const wrongCapUcan = await createUcan({
       issuer: user.did,
       audience: relay.did,
-      capabilities: { [spaceResource(TEST_SPACE_ID)]: 'space/read' },
+      capabilities: { [spaceResource(TEST_SPACE_ID)]: spaceCapabilitySet().read(true).build() },
       expiration: Math.floor(Date.now() / 1000) + 3600,
     }, user.sign)
 
