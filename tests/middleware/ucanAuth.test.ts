@@ -3,6 +3,7 @@ import { Hono } from 'hono'
 import {
   createUcan,
   createWebCryptoSigner,
+  spaceCapabilitySet,
   spaceResource,
   type Capabilities,
   type SignFn,
@@ -118,7 +119,7 @@ function createApp() {
   })
   app.get('/space/:spaceId', async (c) => {
     const spaceId = c.req.param('spaceId')
-    const error = await requireCapability(c, spaceId, 'space/write')
+    const error = await requireCapability(c, spaceId, 'write')
     if (error) return error
     return c.json({ ok: true })
   })
@@ -151,7 +152,7 @@ describe('ucanAuthMiddleware', () => {
     const audience = 'did:key:zServer123'
     const spaceId = crypto.randomUUID()
     const token = await makeToken(issuer, audience, {
-      [spaceResource(spaceId)]: 'space/admin',
+      [spaceResource(spaceId)]: spaceCapabilitySet().admin(true).build(),
     })
 
     const app = createApp()
@@ -196,7 +197,7 @@ describe('ucanAuthMiddleware - attack scenarios', () => {
     const spaceId = crypto.randomUUID()
 
     const token = await makeToken(attacker, attacker.did, {
-      [spaceResource(spaceId)]: 'space/admin',
+      [spaceResource(spaceId)]: spaceCapabilitySet().admin(true).write(true).build(),
     })
 
     const app = createApp()
@@ -221,7 +222,7 @@ describe('ucanAuthMiddleware - attack scenarios', () => {
       {
         issuer: admin.did,
         audience: member.did,
-        capabilities: { [spaceResource(spaceId)]: 'space/write' },
+        capabilities: { [spaceResource(spaceId)]: spaceCapabilitySet().write(true).build() },
         expiration: Math.floor(Date.now() / 1000) + 3600,
         proofs: [],
       },
@@ -233,7 +234,7 @@ describe('ucanAuthMiddleware - attack scenarios', () => {
       {
         issuer: member.did,
         audience: member.did,
-        capabilities: { [spaceResource(spaceId)]: 'space/admin' },
+        capabilities: { [spaceResource(spaceId)]: spaceCapabilitySet().admin(true).build() },
         expiration: Math.floor(Date.now() / 1000) + 3600,
         proofs: [delegationToken],
       },
@@ -244,7 +245,7 @@ describe('ucanAuthMiddleware - attack scenarios', () => {
     app.use('*', ucanAuthMiddleware)
     app.get('/space/:spaceId', async (c) => {
       const spaceId = c.req.param('spaceId')
-      const error = await requireCapability(c, spaceId, 'space/admin')
+      const error = await requireCapability(c, spaceId, 'admin')
       if (error) return error
       return c.json({ ok: true })
     })
@@ -267,7 +268,7 @@ describe('ucanAuthMiddleware - attack scenarios', () => {
       {
         issuer: admin.did,
         audience: member.did,
-        capabilities: { [spaceResource(spaceId)]: 'space/write' },
+        capabilities: { [spaceResource(spaceId)]: spaceCapabilitySet().write(true).build() },
         expiration: Math.floor(Date.now() / 1000) - 60,
         proofs: [],
       },
@@ -279,7 +280,7 @@ describe('ucanAuthMiddleware - attack scenarios', () => {
       {
         issuer: member.did,
         audience: member.did,
-        capabilities: { [spaceResource(spaceId)]: 'space/write' },
+        capabilities: { [spaceResource(spaceId)]: spaceCapabilitySet().write(true).build() },
         expiration: Math.floor(Date.now() / 1000) + 3600,
         proofs: [expiredDelegation],
       },
@@ -301,13 +302,13 @@ describe('ucanAuthMiddleware - attack scenarios', () => {
     const spaceId = crypto.randomUUID()
 
     const token = await makeToken(issuer, issuer.did, {
-      [spaceResource(spaceId)]: 'space/read',
+      [spaceResource(spaceId)]: spaceCapabilitySet().read(true).build(),
     })
 
     // Tamper: change space/read to space/admin in the payload
     const parts = token.split('.')
     const payloadJson = JSON.parse(atob(parts[1]!.replace(/-/g, '+').replace(/_/g, '/')))
-    payloadJson.cap[spaceResource(spaceId)] = 'space/admin'
+    payloadJson.cap[spaceResource(spaceId)] = spaceCapabilitySet().admin(true).build()
     const tamperedPayload = btoa(JSON.stringify(payloadJson))
       .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
     const tamperedToken = `${parts[0]}.${tamperedPayload}.${parts[2]}`
@@ -327,7 +328,7 @@ describe('ucanAuthMiddleware - attack scenarios', () => {
 
     // Token grants access to ownedSpaceId, not targetSpaceId
     const token = await makeToken(issuer, issuer.did, {
-      [spaceResource(ownedSpaceId)]: 'space/admin',
+      [spaceResource(ownedSpaceId)]: spaceCapabilitySet().admin(true).build(),
     })
 
     const app = createApp()
@@ -359,7 +360,7 @@ describe('requireCapability', () => {
     const audience = 'did:key:zServer123'
     const spaceId = crypto.randomUUID()
     const token = await makeToken(issuer, audience, {
-      [spaceResource(spaceId)]: 'space/read',
+      [spaceResource(spaceId)]: spaceCapabilitySet().read(true).build(),
     })
 
     const app = createApp()
@@ -377,7 +378,7 @@ describe('requireCapability', () => {
     const audience = 'did:key:zServer123'
     const spaceId = crypto.randomUUID()
     const token = await makeToken(issuer, audience, {
-      [spaceResource(spaceId)]: 'space/admin',
+      [spaceResource(spaceId)]: spaceCapabilitySet().admin(true).write(true).build(),
     })
 
     const app = createApp()
@@ -401,7 +402,7 @@ describe('requireCapability', () => {
       {
         issuer: admin.did,
         audience: member.did,
-        capabilities: { [spaceResource(spaceId)]: 'space/write' },
+        capabilities: { [spaceResource(spaceId)]: spaceCapabilitySet().write(true).build() },
         expiration: Math.floor(Date.now() / 1000) + 3600,
         proofs: [],
       },
@@ -413,7 +414,7 @@ describe('requireCapability', () => {
       {
         issuer: member.did,
         audience,
-        capabilities: { [spaceResource(spaceId)]: 'space/write' },
+        capabilities: { [spaceResource(spaceId)]: spaceCapabilitySet().write(true).build() },
         expiration: Math.floor(Date.now() / 1000) + 3600,
         proofs: [delegationToken],
       },

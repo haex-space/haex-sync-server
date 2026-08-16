@@ -1,6 +1,6 @@
 import { describe, test, expect, mock } from 'bun:test'
 import { Hono } from 'hono'
-import { createUcan, spaceResource, type Capability } from '@haex-space/ucan'
+import { createUcan, spaceCapabilitySet, spaceResource } from '@haex-space/ucan'
 
 // Mock DB before importing middleware
 mock.module('../../src/db', () => ({
@@ -45,28 +45,28 @@ function createDispatcherApp() {
   // UCAN-protected space endpoint with capability check
   app.get('/spaces/:spaceId', async (c) => {
     const spaceId = c.req.param('spaceId')
-    const error = await requireCapability(c, spaceId, 'space/read')
+    const error = await requireCapability(c, spaceId, 'read')
     if (error) return error
     return c.json({ ok: true, spaceId })
   })
 
   app.put('/spaces/:spaceId', async (c) => {
     const spaceId = c.req.param('spaceId')
-    const error = await requireCapability(c, spaceId, 'space/write')
+    const error = await requireCapability(c, spaceId, 'write')
     if (error) return error
     return c.json({ ok: true, spaceId })
   })
 
   app.post('/spaces/:spaceId/invite', async (c) => {
     const spaceId = c.req.param('spaceId')
-    const error = await requireCapability(c, spaceId, 'space/invite')
+    const error = await requireCapability(c, spaceId, 'invite')
     if (error) return error
     return c.json({ ok: true, spaceId })
   })
 
   app.delete('/spaces/:spaceId', async (c) => {
     const spaceId = c.req.param('spaceId')
-    const error = await requireCapability(c, spaceId, 'space/admin')
+    const error = await requireCapability(c, spaceId, 'admin')
     if (error) return error
     return c.json({ ok: true, spaceId })
   })
@@ -143,11 +143,11 @@ describe('Space operations require UCAN with correct capability', () => {
     expect(res.status).toBe(403)
   })
 
-  test('space/admin satisfies space/write requirement', async () => {
+  test('space/write satisfies space/write requirement', async () => {
     const app = createDispatcherApp()
     const id = await makeIdentity()
     const spaceId = crypto.randomUUID()
-    const header = await createUcanHeader(id, spaceId, 'space/admin')
+    const header = await createUcanHeader(id, spaceId, 'space/write')
 
     const res = await app.request(`/spaces/${spaceId}`, {
       method: 'PUT',
@@ -371,7 +371,7 @@ describe('Attack: expired UCAN', () => {
       {
         issuer: admin.did,
         audience: member.did,
-        capabilities: { [spaceResource(spaceId)]: 'space/write' },
+        capabilities: { [spaceResource(spaceId)]: spaceCapabilitySet().write(true).build() },
         expiration: Math.floor(Date.now() / 1000) + 3600,
         proofs: [],
       },
@@ -383,7 +383,7 @@ describe('Attack: expired UCAN', () => {
       {
         issuer: member.did,
         audience: member.did,
-        capabilities: { [spaceResource(spaceId)]: 'space/write' },
+        capabilities: { [spaceResource(spaceId)]: spaceCapabilitySet().write(true).build() },
         expiration: Math.floor(Date.now() / 1000) - 10, // expired
         proofs: [delegationToken],
       },
@@ -402,13 +402,10 @@ describe('Attack: expired UCAN', () => {
 // 8. Capability hierarchy respected
 // ============================================
 
-describe('Capability hierarchy', () => {
-  const capabilities: Capability[] = ['space/admin', 'space/invite', 'space/write', 'space/read']
+describe('Orthogonal capabilities', () => {
+  // Each route requires its exact capability; no cap implies another.
 
-  // admin > invite > write > read
-  // Each route requires a specific level
-
-  test('space/admin satisfies space/write', async () => {
+  test('space/admin does not satisfy space/write', async () => {
     const app = createDispatcherApp()
     const id = await makeIdentity()
     const spaceId = crypto.randomUUID()
@@ -418,10 +415,10 @@ describe('Capability hierarchy', () => {
       method: 'PUT',
       headers: { Authorization: header },
     })
-    expect(res.status).toBe(200)
+    expect(res.status).toBe(403)
   })
 
-  test('space/admin satisfies space/read', async () => {
+  test('space/admin does not satisfy space/read', async () => {
     const app = createDispatcherApp()
     const id = await makeIdentity()
     const spaceId = crypto.randomUUID()
@@ -431,10 +428,10 @@ describe('Capability hierarchy', () => {
       method: 'GET',
       headers: { Authorization: header },
     })
-    expect(res.status).toBe(200)
+    expect(res.status).toBe(403)
   })
 
-  test('space/admin satisfies space/invite', async () => {
+  test('space/admin does not satisfy space/invite', async () => {
     const app = createDispatcherApp()
     const id = await makeIdentity()
     const spaceId = crypto.randomUUID()
@@ -444,7 +441,7 @@ describe('Capability hierarchy', () => {
       method: 'POST',
       headers: { Authorization: header },
     })
-    expect(res.status).toBe(200)
+    expect(res.status).toBe(403)
   })
 
   test('space/admin satisfies space/admin', async () => {
@@ -460,7 +457,7 @@ describe('Capability hierarchy', () => {
     expect(res.status).toBe(200)
   })
 
-  test('space/write satisfies space/read', async () => {
+  test('space/write does not satisfy space/read', async () => {
     const app = createDispatcherApp()
     const id = await makeIdentity()
     const spaceId = crypto.randomUUID()
@@ -470,7 +467,7 @@ describe('Capability hierarchy', () => {
       method: 'GET',
       headers: { Authorization: header },
     })
-    expect(res.status).toBe(200)
+    expect(res.status).toBe(403)
   })
 
   test('space/write does NOT satisfy space/invite', async () => {
@@ -538,7 +535,7 @@ describe('Capability hierarchy', () => {
     expect(res.status).toBe(403)
   })
 
-  test('space/invite satisfies space/write', async () => {
+  test('space/invite does not satisfy space/write', async () => {
     const app = createDispatcherApp()
     const id = await makeIdentity()
     const spaceId = crypto.randomUUID()
@@ -548,10 +545,10 @@ describe('Capability hierarchy', () => {
       method: 'PUT',
       headers: { Authorization: header },
     })
-    expect(res.status).toBe(200)
+    expect(res.status).toBe(403)
   })
 
-  test('space/invite satisfies space/read', async () => {
+  test('space/invite does not satisfy space/read', async () => {
     const app = createDispatcherApp()
     const id = await makeIdentity()
     const spaceId = crypto.randomUUID()
@@ -561,7 +558,7 @@ describe('Capability hierarchy', () => {
       method: 'GET',
       headers: { Authorization: header },
     })
-    expect(res.status).toBe(200)
+    expect(res.status).toBe(403)
   })
 
   test('space/invite does NOT satisfy space/admin', async () => {

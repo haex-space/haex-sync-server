@@ -3,8 +3,9 @@ import {
   createWebCryptoSigner,
   spaceResource,
   multibaseEncode,
+  spaceCapabilitySetFromEntries,
   type Capabilities,
-  type Capability,
+  type SpaceCap,
   type SignFn,
 } from '@haex-space/ucan'
 import {
@@ -53,6 +54,12 @@ export interface Identity {
   sign: SignFn
   keyPair: CryptoKeyPair
   rawPublicKey: Uint8Array
+}
+
+type LegacySpaceCap = `space/${SpaceCap}`
+
+function normalizeSpaceCap(capability: SpaceCap | LegacySpaceCap): SpaceCap {
+  return capability.replace('space/', '') as SpaceCap
 }
 
 export async function makeIdentity(): Promise<Identity> {
@@ -113,7 +120,7 @@ export async function createDidAuthHeader(
 export async function createUcanHeader(
   identity: Identity,
   spaceId: string,
-  capability: Capability,
+  capability: SpaceCap | LegacySpaceCap,
   options?: {
     audience?: string
     expiration?: number
@@ -123,7 +130,9 @@ export async function createUcanHeader(
 ): Promise<string> {
   const now = Math.floor(Date.now() / 1000)
   const capabilities: Capabilities = {
-    [spaceResource(spaceId)]: capability,
+    [spaceResource(spaceId)]: spaceCapabilitySetFromEntries([
+      { cap: normalizeSpaceCap(capability), delegatable: true },
+    ]),
     ...options?.extraCapabilities,
   }
 

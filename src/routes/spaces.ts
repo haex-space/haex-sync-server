@@ -6,7 +6,6 @@ import { authDispatcher } from '../middleware/authDispatcher'
 import { requireCapability } from '../middleware/ucanAuth'
 import { resolveDidIdentity } from '../middleware/didAuth'
 import { eq, and, sql } from 'drizzle-orm'
-import { SpaceCapabilities } from '@haex-space/ucan'
 import { broadcastToSpace, updateMembershipCache } from './ws'
 import { getFederationLinkForSpace, federatedProxyAsync } from '../services/federationClient'
 import { parseFederatedAuthHeader } from '@haex-space/federation-sdk'
@@ -160,7 +159,7 @@ spacesRouter.delete('/my-admin-spaces', async (c) => {
       spaceId: spaceMembers.spaceId,
     })
       .from(spaceMembers)
-      .where(and(eq(spaceMembers.did, callerDid), eq(spaceMembers.capability, SpaceCapabilities.ADMIN)))
+      .where(and(eq(spaceMembers.did, callerDid), eq(spaceMembers.capability, 'space/admin')))
 
     const deletedSpaceIds: string[] = []
     for (const membership of adminMemberships) {
@@ -185,7 +184,7 @@ spacesRouter.get('/:spaceId', async (c) => {
   const relayResponse = await federationRelay(c, spaceId)
   if (relayResponse) return relayResponse
 
-  const error = await requireCapability(c, spaceId, 'space/read')
+  const error = await requireCapability(c, spaceId, 'read')
   if (error) return error
 
   try {
@@ -236,7 +235,7 @@ spacesRouter.patch('/:spaceId', zValidator('json', updateSpaceSchema), async (c)
   const relayResponse = await federationRelay(c, spaceId)
   if (relayResponse) return relayResponse
 
-  const error = await requireCapability(c, spaceId, 'space/admin')
+  const error = await requireCapability(c, spaceId, 'admin')
   if (error) return error
 
   try {
@@ -265,7 +264,7 @@ spacesRouter.delete('/:spaceId', async (c) => {
   const relayResponse = await federationRelay(c, spaceId)
   if (relayResponse) return relayResponse
 
-  const error = await requireCapability(c, spaceId, 'space/admin')
+  const error = await requireCapability(c, spaceId, 'admin')
   if (error) return error
 
   try {
@@ -282,7 +281,7 @@ spacesRouter.delete('/:spaceId', async (c) => {
 const inviteMemberSchema = z.object({
   did: z.string().min(1),
   label: z.string().min(1),
-  capability: z.enum([SpaceCapabilities.WRITE, SpaceCapabilities.READ]),
+  capability: z.enum(['space/write', 'space/read']),
 })
 
 spacesRouter.post('/:spaceId/members', zValidator('json', inviteMemberSchema), async (c) => {
@@ -296,7 +295,7 @@ spacesRouter.post('/:spaceId/members', zValidator('json', inviteMemberSchema), a
   const relayResponse = await federationRelay(c, spaceId)
   if (relayResponse) return relayResponse
 
-  const capError = await requireCapability(c, spaceId, 'space/invite')
+  const capError = await requireCapability(c, spaceId, 'invite')
   if (capError) return capError
 
   const callerDid = getCallerDid(c)
@@ -357,7 +356,7 @@ spacesRouter.delete('/:spaceId/members/:memberDid', async (c) => {
 
   // If not self-leave, require admin capability
   if (!isSelf) {
-    const capError = await requireCapability(c, spaceId, 'space/admin')
+    const capError = await requireCapability(c, spaceId, 'admin')
     if (capError) return capError
   }
 
@@ -441,7 +440,7 @@ spacesRouter.post('/:spaceId/transfer-ownership', zValidator('json', transferOwn
   const relayResponse = await federationRelay(c, spaceId)
   if (relayResponse) return relayResponse
 
-  const capError = await requireCapability(c, spaceId, 'space/admin')
+  const capError = await requireCapability(c, spaceId, 'admin')
   if (capError) return capError
 
   const callerDid = getCallerDid(c)
@@ -468,12 +467,12 @@ spacesRouter.post('/:spaceId/transfer-ownership', zValidator('json', transferOwn
 
       // Promote target to admin capability
       await tx.update(spaceMembers)
-        .set({ capability: SpaceCapabilities.ADMIN })
+        .set({ capability: 'space/admin' })
         .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.did, body.targetDid)))
 
       // Demote caller to write capability
       await tx.update(spaceMembers)
-        .set({ capability: SpaceCapabilities.WRITE })
+        .set({ capability: 'space/write' })
         .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.did, callerDid)))
 
       return null

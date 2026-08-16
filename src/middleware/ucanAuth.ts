@@ -4,10 +4,11 @@ import {
   verifyUcan,
   createWebCryptoVerifier,
   decodeUcan,
-  satisfies,
+  holdsSpaceCap,
+  isSpaceCapValue,
   spaceResource,
   findRootIssuer,
-  type Capability,
+  type SpaceCap,
 } from '@haex-space/ucan'
 import type { UcanContext } from './types'
 import { db, spaces, spaceMembers } from '../db'
@@ -68,14 +69,14 @@ export const ucanAuthMiddleware = async (c: Context, next: Next) => {
  *
  * Usage in route handlers:
  * ```ts
- * const error = requireCapability(c, spaceId, 'space/write')
+ * const error = requireCapability(c, spaceId, 'write')
  * if (error) return error
  * ```
  */
 export async function requireCapability(
   c: Context,
   spaceId: string,
-  required: Capability,
+  required: SpaceCap,
 ): Promise<Response | undefined> {
   const ucan = c.get('ucan') as UcanContext | null
 
@@ -84,7 +85,7 @@ export async function requireCapability(
     const resource = spaceResource(spaceId)
     const held = ucan.capabilities[resource]
 
-    if (!held || !satisfies(held, required)) {
+    if (!isSpaceCapValue(held) || !holdsSpaceCap(held, required)) {
       return c.json(
         { error: `Forbidden - Insufficient capability for ${resource}, requires ${required}` },
         403,

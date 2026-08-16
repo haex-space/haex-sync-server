@@ -6,7 +6,12 @@ import { requireCapability } from '../middleware/ucanAuth'
 import { resolveDidIdentity } from '../middleware/didAuth'
 import { eq, and, ne, sql, max, asc, or } from 'drizzle-orm'
 import { pushChangesSchema, pullChangesSchema, pullColumnsSchema, SpacePushValidationError, type PushChange } from './sync.schemas'
-import { spaceResource, type Capability } from '@haex-space/ucan'
+import {
+  isSpaceCapValue,
+  spaceCapabilitySet,
+  spaceResource,
+  type SpaceCapabilitySet,
+} from '@haex-space/ucan'
 import { getSpaceType, validateSpacePush } from './sync.helpers'
 import { getUserQuotaAsync } from '../services/quota'
 import { getFederationLinkForSpace, federatedPushAsync, federatedPullAsync } from '../services/federationClient'
@@ -78,7 +83,7 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
 
     // Authorization based on space type
     if (spaceType === 'shared') {
-      const capError = await requireCapability(c, spaceId, 'space/write')
+      const capError = await requireCapability(c, spaceId, 'write')
       if (capError) return capError
     }
 
@@ -101,7 +106,7 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
 
     // Space-scoped push validation
     let spaceAuthenticatedPublicKey: string | undefined
-    let spaceCapability: Capability | undefined
+    let spaceCapabilities: SpaceCapabilitySet | undefined
 
     if (isSpaceSync) {
       const authenticatedPublicKey = identity!.publicKey
@@ -110,14 +115,23 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
       }
 
       const ucan = c.get('ucan')
-      spaceCapability = ucan?.capabilities?.[spaceResource(spaceId)]
-
-      // Owner via DID-Auth gets implicit admin capability (no UCAN needed)
-      if (!spaceCapability && c.get('didAuth')) {
-        spaceCapability = 'space/admin' as Capability
+      const held = ucan?.capabilities?.[spaceResource(spaceId)]
+      if (isSpaceCapValue(held)) {
+        spaceCapabilities = held
       }
 
-      if (!spaceCapability) {
+      // Owner via DID-Auth receives each capability explicitly, matching the
+      // orthogonal UCAN model rather than relying on an Admin hierarchy.
+      if (!spaceCapabilities && c.get('didAuth')) {
+        spaceCapabilities = spaceCapabilitySet()
+          .read(true)
+          .write(true)
+          .invite(true)
+          .admin(true)
+          .build()
+      }
+
+      if (!spaceCapabilities) {
         return c.json({ error: 'No capability for this space' }, 403)
       }
       spaceAuthenticatedPublicKey = authenticatedPublicKey
@@ -148,7 +162,7 @@ sync.post('/push', zValidator('json', pushChangesSchema), async (c) => {
     const result = await db.transaction(async (tx) => {
       // Validate space push inside transaction to prevent TOCTOU races
       if (isSpaceSync) {
-        const validation = await validateSpacePush(changes, spaceId, spaceAuthenticatedPublicKey!, spaceCapability!, tx)
+        const validation = await validateSpacePush(changes, spaceId, spaceAuthenticatedPublicKey!, spaceCapabilities!, tx)
         if (!validation.valid) {
           throw new SpacePushValidationError(validation.error ?? 'Space push validation failed')
         }
@@ -296,7 +310,7 @@ sync.get('/pull', zValidator('query', pullChangesSchema), async (c) => {
 
     // Authorization based on space type
     if (spaceType === 'shared') {
-      const capError = await requireCapability(c, spaceId, 'space/read')
+      const capError = await requireCapability(c, spaceId, 'read')
       if (capError) return capError
     }
 
@@ -446,7 +460,7 @@ sync.post('/pull-columns', zValidator('json', pullColumnsSchema), async (c) => {
 
     // Authorization based on space type
     if (spaceType === 'shared') {
-      const capError = await requireCapability(c, spaceId, 'space/read')
+      const capError = await requireCapability(c, spaceId, 'read')
       if (capError) return capError
     }
 

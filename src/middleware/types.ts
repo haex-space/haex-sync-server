@@ -1,4 +1,4 @@
-import type { UcanContext } from '@haex-space/ucan'
+import type { Capabilities, UcanContext } from '@haex-space/ucan'
 import type { VerifiedFederatedAuth } from '@haex-space/federation-sdk'
 
 export type { UcanContext }
@@ -16,7 +16,7 @@ export interface FederationContext {
   serverPublicKey: Uint8Array
   issuerDid: string
   ucanToken: string
-  ucanCapabilities: Record<string, string>
+  ucanCapabilities: Capabilities
   action: string
   userAuth: VerifiedFederatedAuth | null
 }

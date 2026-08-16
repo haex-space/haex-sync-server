@@ -1,6 +1,6 @@
 import { db, syncChanges, spaces } from '../db'
 import { verifyRecordSignatureAsync } from '@haex-space/vault-sdk'
-import { satisfies, type Capability } from '@haex-space/ucan'
+import { holdsSpaceCap, type SpaceCapabilitySet } from '@haex-space/ucan'
 import { eq, and } from 'drizzle-orm'
 import type { PushChange } from './sync.schemas'
 
@@ -18,12 +18,12 @@ export async function validateSpacePush(
   changes: PushChange[],
   spaceId: string,
   authenticatedPublicKey: string,
-  capability: Capability,
+  capabilities: SpaceCapabilitySet,
   tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
 ): Promise<{ valid: boolean; error?: string }> {
-  // 1. Capability check: need at least space/write to push
-  if (!satisfies(capability, 'space/write')) {
-    return { valid: false, error: 'Insufficient capability: need space/write to push changes' }
+  // 1. Capability check: Write is explicit; no other cap implies it.
+  if (!holdsSpaceCap(capabilities, 'write')) {
+    return { valid: false, error: 'Insufficient capability: need write to push changes' }
   }
 
   for (const change of changes) {
@@ -87,7 +87,7 @@ export async function validateSpacePush(
       // Data modification: owner, collaborative, or space admin/invite (management capabilities)
       const isRecordOwner = change.signedBy === existing.recordOwner
       const isCollaborative = existing.collaborative === true
-      const canManageSpace = satisfies(capability, 'space/invite')
+      const canManageSpace = holdsSpaceCap(capabilities, 'invite')
       if (!isRecordOwner && !isCollaborative && !canManageSpace) {
         return { valid: false, error: `Cannot modify record owned by ${existing.recordOwner}` }
       }

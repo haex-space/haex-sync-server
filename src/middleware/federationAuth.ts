@@ -183,7 +183,7 @@ export const federationAuthMiddleware = async (c: Context, next: Next) => {
   }
 
   // Verify the UCAN token
-  let ucanPayload: { iss: string; aud: string; cap: Record<string, string>; exp: number; iat: number }
+  let ucanPayload: ReturnType<typeof decodeUcan>['payload']
   try {
     const decoded = decodeUcan(payload.ucan)
     ucanPayload = decoded.payload
