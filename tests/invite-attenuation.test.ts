@@ -2,6 +2,7 @@ import { describe, test, expect } from 'bun:test'
 import { spaceCapabilitySet } from '@haex-space/ucan'
 import {
   assertGrantWithinCallerAuthority,
+  ownerCapabilitySet,
   presetForLegacyTier,
 } from '../src/middleware/capabilities'
 
@@ -17,7 +18,9 @@ import {
 describe('grant attenuation', () => {
   const inviteOnly = spaceCapabilitySet().read(true).invite(true).build()
 
-  test('rejects an admin grant from an invite-only caller', () => {
+  // write is the first cap the inviter lacks, so it is reported before admin.
+  // The admin boundary itself is pinned by the delegated-admin case below.
+  test('rejects a full four-cap grant from an invite-only caller', () => {
     const granted = spaceCapabilitySet()
       .read(true).write(true).invite(true).admin(true).build()
     expect(assertGrantWithinCallerAuthority(inviteOnly, granted))
@@ -37,11 +40,11 @@ describe('grant attenuation', () => {
       .toEqual({ kind: 'not_delegatable', cap: 'read' })
   })
 
-  test('reports a cap the caller does not hold at all as missing', () => {
-    const readerInviter = spaceCapabilitySet().read(true).invite(true).build()
-    const granted = spaceCapabilitySet().read(false).write(false).build()
-    expect(assertGrantWithinCallerAuthority(readerInviter, granted))
-      .toEqual({ kind: 'missing', cap: 'write' })
+  test('rejects an invite grant from a caller who holds no invite', () => {
+    const writerNoInvite = spaceCapabilitySet().read(true).write(true).build()
+    const granted = spaceCapabilitySet().read(true).invite(true).build()
+    expect(assertGrantWithinCallerAuthority(writerNoInvite, granted))
+      .toEqual({ kind: 'missing', cap: 'invite' })
   })
 
   test('rejects an admin grant from a delegated admin caller', () => {
@@ -62,6 +65,25 @@ describe('grant attenuation', () => {
       .read(true).write(true).invite(true).admin(true).build()
     expect(assertGrantWithinCallerAuthority(owner, presetForLegacyTier('space/admin')))
       .toBeNull()
+  })
+})
+
+// ============================================
+// ownerCapabilitySet
+// ============================================
+
+describe('ownerCapabilitySet', () => {
+  // The space root holds every cap explicitly — no cap implies another under
+  // the orthogonal model — and all of them delegatably. admin(false) here
+  // would strip the root's ability to mint admins at all, so this pins the
+  // exact array rather than probing it through an attenuation check.
+  test('grants all four caps, every one delegatable', () => {
+    expect(ownerCapabilitySet()).toEqual([
+      { cap: 'read', delegatable: true },
+      { cap: 'write', delegatable: true },
+      { cap: 'invite', delegatable: true },
+      { cap: 'admin', delegatable: true },
+    ])
   })
 })
 
