@@ -1,0 +1,106 @@
+import { describe, test, expect } from 'bun:test'
+import { spaceCapabilitySet } from '@haex-space/ucan'
+import {
+  assertGrantWithinCallerAuthority,
+  presetForLegacyTier,
+} from '../src/middleware/capabilities'
+
+// ============================================
+// assertGrantWithinCallerAuthority
+// ============================================
+
+// A member may only hand out capabilities they hold *and* may delegate.
+// enforceDelegatable reports the first offender in SPACE_CAP_ORDER
+// (read, write, invite, admin), so a caller whose own read is
+// non-delegatable trips on read before any later cap is considered.
+
+describe('grant attenuation', () => {
+  const inviteOnly = spaceCapabilitySet().read(false).invite(true).build()
+
+  test('rejects an admin grant from an invite-only caller', () => {
+    const granted = spaceCapabilitySet()
+      .read(true).write(true).invite(true).admin(true).build()
+    expect(assertGrantWithinCallerAuthority(inviteOnly, granted))
+      .toEqual({ kind: 'not_delegatable', cap: 'read' })
+  })
+
+  test('rejects a write grant from an invite-only caller', () => {
+    const granted = spaceCapabilitySet().read(false).write(false).build()
+    expect(assertGrantWithinCallerAuthority(inviteOnly, granted))
+      .toEqual({ kind: 'not_delegatable', cap: 'read' })
+  })
+
+  test('rejects a grant of a cap the caller holds non-delegatably', () => {
+    const writerNonDelegatable = spaceCapabilitySet().read(false).write(false).build()
+    const granted = spaceCapabilitySet().read(false).write(false).build()
+    expect(assertGrantWithinCallerAuthority(writerNonDelegatable, granted))
+      .toEqual({ kind: 'not_delegatable', cap: 'read' })
+  })
+
+  test('reports a cap the caller does not hold at all as missing', () => {
+    const readerInviter = spaceCapabilitySet().read(true).invite(true).build()
+    const granted = spaceCapabilitySet().read(false).write(false).build()
+    expect(assertGrantWithinCallerAuthority(readerInviter, granted))
+      .toEqual({ kind: 'missing', cap: 'write' })
+  })
+
+  test('rejects an admin grant from a delegated admin caller', () => {
+    const admin = presetForLegacyTier('space/admin')
+    expect(assertGrantWithinCallerAuthority(admin, presetForLegacyTier('space/admin')))
+      .toEqual({ kind: 'not_delegatable', cap: 'admin' })
+  })
+
+  test('accepts a reader grant from an admin caller', () => {
+    const admin = spaceCapabilitySet()
+      .read(true).write(true).invite(true).admin(false).build()
+    const granted = spaceCapabilitySet().read(false).build()
+    expect(assertGrantWithinCallerAuthority(admin, granted)).toBeNull()
+  })
+
+  test('accepts an admin grant from the space owner', () => {
+    const owner = spaceCapabilitySet()
+      .read(true).write(true).invite(true).admin(true).build()
+    expect(assertGrantWithinCallerAuthority(owner, presetForLegacyTier('space/admin')))
+      .toBeNull()
+  })
+})
+
+// ============================================
+// presetForLegacyTier
+// ============================================
+
+describe('presetForLegacyTier', () => {
+  test('space/read maps to a non-delegatable reader', () => {
+    expect(presetForLegacyTier('space/read')).toEqual([
+      { cap: 'read', delegatable: false },
+    ])
+  })
+
+  test('space/write maps to a non-delegatable writer', () => {
+    expect(presetForLegacyTier('space/write')).toEqual([
+      { cap: 'read', delegatable: false },
+      { cap: 'write', delegatable: false },
+    ])
+  })
+
+  test('space/invite maps to a reader that may delegate invite', () => {
+    expect(presetForLegacyTier('space/invite')).toEqual([
+      { cap: 'read', delegatable: false },
+      { cap: 'invite', delegatable: true },
+    ])
+  })
+
+  test('space/admin may delegate read/write/invite but not admin', () => {
+    expect(presetForLegacyTier('space/admin')).toEqual([
+      { cap: 'read', delegatable: true },
+      { cap: 'write', delegatable: true },
+      { cap: 'invite', delegatable: true },
+      { cap: 'admin', delegatable: false },
+    ])
+  })
+
+  test('throws on an unknown tier instead of downgrading', () => {
+    expect(() => presetForLegacyTier('space/superuser')).toThrow()
+    expect(() => presetForLegacyTier('read')).toThrow()
+  })
+})
