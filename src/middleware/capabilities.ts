@@ -121,6 +121,17 @@ export function assertGrantWithinCallerAuthority(
  * instead of one `space/*` string. Read is a baseline on every preset; a
  * delegated admin may grant read/write/invite but not create further admins.
  *
+ * Invariant: in any preset that carries `invite`, every other cap is
+ * delegatable — except `admin`. Attenuation reports the first offender in
+ * SPACE_CAP_ORDER, so an inviter whose own `read` were non-delegatable would
+ * trip on `read` and never reach `invite`, making the cap inert. Holding
+ * `admin` non-delegatable is what reserves minting admins to the space root.
+ * `invite` itself stays delegatable, so an inviter may create further
+ * inviters — bounded, since they can only ever pass on read and invite.
+ *
+ * Presets without `invite` keep `read` non-delegatable: they can never reach
+ * a grant boundary, so least privilege is the honest default there.
+ *
  * Throws on an unknown tier — an unrecognized value at a wire boundary must
  * never be silently downgraded to a weaker preset.
  */
@@ -131,7 +142,7 @@ export function presetForLegacyTier(tier: string): SpaceCapabilitySet {
     case 'space/write':
       return spaceCapabilitySet().read(false).write(false).build()
     case 'space/invite':
-      return spaceCapabilitySet().read(false).invite(true).build()
+      return spaceCapabilitySet().read(true).invite(true).build()
     case 'space/admin':
       return spaceCapabilitySet().read(true).write(true).invite(true).admin(false).build()
     default:

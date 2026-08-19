@@ -15,19 +15,19 @@ import {
 // non-delegatable trips on read before any later cap is considered.
 
 describe('grant attenuation', () => {
-  const inviteOnly = spaceCapabilitySet().read(false).invite(true).build()
+  const inviteOnly = spaceCapabilitySet().read(true).invite(true).build()
 
   test('rejects an admin grant from an invite-only caller', () => {
     const granted = spaceCapabilitySet()
       .read(true).write(true).invite(true).admin(true).build()
     expect(assertGrantWithinCallerAuthority(inviteOnly, granted))
-      .toEqual({ kind: 'not_delegatable', cap: 'read' })
+      .toEqual({ kind: 'missing', cap: 'write' })
   })
 
   test('rejects a write grant from an invite-only caller', () => {
     const granted = spaceCapabilitySet().read(false).write(false).build()
     expect(assertGrantWithinCallerAuthority(inviteOnly, granted))
-      .toEqual({ kind: 'not_delegatable', cap: 'read' })
+      .toEqual({ kind: 'missing', cap: 'write' })
   })
 
   test('rejects a grant of a cap the caller holds non-delegatably', () => {
@@ -83,11 +83,22 @@ describe('presetForLegacyTier', () => {
     ])
   })
 
-  test('space/invite maps to a reader that may delegate invite', () => {
+  test('space/invite maps to a reader that may delegate read and invite', () => {
     expect(presetForLegacyTier('space/invite')).toEqual([
-      { cap: 'read', delegatable: false },
+      { cap: 'read', delegatable: true },
       { cap: 'invite', delegatable: true },
     ])
+  })
+
+  // The inviter row's read MUST stay delegatable. Attenuation reports the
+  // first offender in SPACE_CAP_ORDER, so a non-delegatable read would trip
+  // before invite is ever considered and the cap would grant nothing at all.
+  test('an inviter can grant a reader but not a writer', () => {
+    const inviter = presetForLegacyTier('space/invite')
+    expect(assertGrantWithinCallerAuthority(inviter, presetForLegacyTier('space/read')))
+      .toBeNull()
+    expect(assertGrantWithinCallerAuthority(inviter, presetForLegacyTier('space/write')))
+      .toEqual({ kind: 'missing', cap: 'write' })
   })
 
   test('space/admin may delegate read/write/invite but not admin', () => {
