@@ -66,6 +66,20 @@ function inviteRows() {
       createdAt: new Date(),
       respondedAt: null,
     },
+    {
+      // Token-based invite: no UCAN stored yet. This is the case the inviter's
+      // device uses hasUcan to detect, so it must report false.
+      id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      inviterPublicKey: 'owner-pubkey',
+      inviteeDid: 'did:key:zTokenJoiner',
+      ucan: null,
+      tokenId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      status: 'accepted',
+      includeHistory: false,
+      expiresAt: null,
+      createdAt: new Date(),
+      respondedAt: null,
+    },
   ]
 }
 
@@ -162,10 +176,19 @@ describe('GET /:spaceId/invites — UCANs are not shared across invitees', () =>
     expect(body.invites.find((i: any) => i.inviteeDid === member.did).hasUcan).toBe(true)
   })
 
-  test('still lists both invites with their non-secret fields', async () => {
+  test('reports hasUcan false for a token invite with no UCAN yet', async () => {
     const { body } = await listInvites()
 
-    expect(body.invites).toHaveLength(2)
-    expect(body.invites.map((i: any) => i.status).sort()).toEqual(['accepted', 'pending'])
+    const tokenInvite = body.invites.find((i: any) => i.inviteeDid === 'did:key:zTokenJoiner')
+    expect(tokenInvite).toBeDefined()
+    expect(tokenInvite.hasUcan).toBe(false)
+    expect(tokenInvite.ucan).toBeNull()
+  })
+
+  test('still lists every invite with its non-secret fields', async () => {
+    const { body } = await listInvites()
+
+    expect(body.invites).toHaveLength(3)
+    expect(body.invites.map((i: any) => i.status).sort()).toEqual(['accepted', 'accepted', 'pending'])
   })
 })
