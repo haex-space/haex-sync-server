@@ -4,6 +4,11 @@ import { z } from 'zod'
 import { db, spaces, spaceMembers } from '../db'
 import { authDispatcher } from '../middleware/authDispatcher'
 import { requireCapability } from '../middleware/ucanAuth'
+import {
+  grantExceedingCallerAuthority,
+  presetForLegacyTier,
+  requireCapabilityWithAuthority,
+} from '../middleware/capabilities'
 import { resolveDidIdentity } from '../middleware/didAuth'
 import { eq, and, sql } from 'drizzle-orm'
 import { broadcastToSpace, updateMembershipCache } from './ws'
@@ -295,8 +300,22 @@ spacesRouter.post('/:spaceId/members', zValidator('json', inviteMemberSchema), a
   const relayResponse = await federationRelay(c, spaceId)
   if (relayResponse) return relayResponse
 
-  const capError = await requireCapability(c, spaceId, 'invite')
-  if (capError) return capError
+  // Holding `invite` says nothing about *what* may be granted. body.capability
+  // is written straight into space_members, so it has to be attenuated against
+  // what the caller may actually delegate.
+  const authorized = await requireCapabilityWithAuthority(c, spaceId, 'invite')
+  if (!authorized.ok) return authorized.response
+
+  // Unreachable throw: inviteMemberSchema's enum admits only tiers
+  // presetForLegacyTier handles, so anything else is a 400 from zValidator.
+  const requested = presetForLegacyTier(body.capability)
+  const offender = grantExceedingCallerAuthority(authorized.capabilities, requested)
+  if (offender) {
+    return c.json(
+      { error: `Forbidden - requested grant exceeds caller authority (${offender.kind}: ${offender.cap})` },
+      403,
+    )
+  }
 
   const callerDid = getCallerDid(c)
   if (!callerDid) {
