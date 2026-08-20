@@ -86,7 +86,7 @@ const OWNER_ROOT_ERROR = {
   ok: false,
   status: 403,
   error: 'Forbidden - UCAN chain must root in the space owner',
-}
+} as const
 
 // ============================================
 // resolveCallerAuthority — proof-forest root of trust
