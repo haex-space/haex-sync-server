@@ -3,12 +3,10 @@ import {
   verifyUcan,
   createWebCryptoVerifier,
   decodeUcan,
-  holdsSpaceCap,
-  spaceResource,
   type SpaceCap,
 } from '@haex-space/ucan'
 import type { UcanContext } from './types'
-import { resolveCallerAuthority } from './capabilities'
+import { requireCapabilityWithAuthority } from './capabilities'
 
 const verify = createWebCryptoVerifier()
 
@@ -75,21 +73,6 @@ export async function requireCapability(
   spaceId: string,
   required: SpaceCap,
 ): Promise<Response | undefined> {
-  const authority = await resolveCallerAuthority(c, spaceId)
-
-  if (!authority.ok) {
-    return c.json({ error: authority.error }, authority.status)
-  }
-
-  // Exact match only — no capability implies another under the orthogonal model.
-  if (!holdsSpaceCap(authority.capabilities, required)) {
-    return c.json(
-      {
-        error: `Forbidden - Insufficient capability for ${spaceResource(spaceId)}, requires ${required}`,
-      },
-      403,
-    )
-  }
-
-  return undefined
+  const authorized = await requireCapabilityWithAuthority(c, spaceId, required)
+  return authorized.ok ? undefined : authorized.response
 }

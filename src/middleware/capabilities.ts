@@ -2,10 +2,12 @@ import type { Context } from 'hono'
 import { eq } from 'drizzle-orm'
 import {
   enforceDelegatable,
+  holdsSpaceCap,
   isSpaceCapValue,
   spaceCapabilitySet,
   spaceResource,
   type DelegationError,
+  type SpaceCap,
   type SpaceCapabilitySet,
   type VerifiedUcan,
 } from '@haex-space/ucan'
@@ -134,6 +136,46 @@ export async function resolveCallerAuthority(
   }
 
   return { ok: false, status: 403, error: 'Forbidden - No auth context' }
+}
+
+/**
+ * Authorize a caller for one capability AND hand back what they hold.
+ *
+ * For grant sites, which need both: the gate, and the caller's actual set to
+ * attenuate a requested grant against. Calling `requireCapability` and then
+ * resolving again would repeat the owner lookup on every such request.
+ *
+ * `requireCapability` delegates here, so the rejection strings live in exactly
+ * one place and the two entry points cannot drift apart.
+ */
+export async function requireCapabilityWithAuthority(
+  c: Context,
+  spaceId: string,
+  required: SpaceCap,
+): Promise<
+  | { ok: true; capabilities: SpaceCapabilitySet }
+  | { ok: false; response: Response }
+> {
+  const authority = await resolveCallerAuthority(c, spaceId)
+
+  if (!authority.ok) {
+    return { ok: false, response: c.json({ error: authority.error }, authority.status) }
+  }
+
+  // Exact match only — no capability implies another under the orthogonal model.
+  if (!holdsSpaceCap(authority.capabilities, required)) {
+    return {
+      ok: false,
+      response: c.json(
+        {
+          error: `Forbidden - Insufficient capability for ${spaceResource(spaceId)}, requires ${required}`,
+        },
+        403,
+      ),
+    }
+  }
+
+  return { ok: true, capabilities: authority.capabilities }
 }
 
 /**
