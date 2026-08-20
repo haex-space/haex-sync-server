@@ -137,15 +137,18 @@ export async function resolveCallerAuthority(
 }
 
 /**
- * Check that a grant stays within what the caller may delegate.
+ * The part of a grant that exceeds what the caller may delegate.
  *
  * Deliberately the same predicate the UCAN chain walker applies, so an HTTP
  * invite and a UCAN delegation cannot diverge on what a member may hand out.
  *
+ * Named for what it returns rather than what it checks: a truthy result means
+ * the grant is NOT allowed. Call sites read `if (grantExceeding…) return 403`.
+ *
  * @returns The first offending cap in SPACE_CAP_ORDER, or null if the grant
  *          is fully covered by the caller's delegatable authority.
  */
-export function assertGrantWithinCallerAuthority(
+export function grantExceedingCallerAuthority(
   caller: SpaceCapabilitySet,
   granted: SpaceCapabilitySet,
 ): DelegationError | null {

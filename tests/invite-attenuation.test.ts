@@ -1,13 +1,13 @@
 import { describe, test, expect } from 'bun:test'
 import { spaceCapabilitySet } from '@haex-space/ucan'
 import {
-  assertGrantWithinCallerAuthority,
+  grantExceedingCallerAuthority,
   ownerCapabilitySet,
   presetForLegacyTier,
 } from '../src/middleware/capabilities'
 
 // ============================================
-// assertGrantWithinCallerAuthority
+// grantExceedingCallerAuthority
 // ============================================
 
 // A member may only hand out capabilities they hold *and* may delegate.
@@ -23,33 +23,33 @@ describe('grant attenuation', () => {
   test('rejects a full four-cap grant from an invite-only caller', () => {
     const granted = spaceCapabilitySet()
       .read(true).write(true).invite(true).admin(true).build()
-    expect(assertGrantWithinCallerAuthority(inviteOnly, granted))
+    expect(grantExceedingCallerAuthority(inviteOnly, granted))
       .toEqual({ kind: 'missing', cap: 'write' })
   })
 
   test('rejects a write grant from an invite-only caller', () => {
     const granted = spaceCapabilitySet().read(false).write(false).build()
-    expect(assertGrantWithinCallerAuthority(inviteOnly, granted))
+    expect(grantExceedingCallerAuthority(inviteOnly, granted))
       .toEqual({ kind: 'missing', cap: 'write' })
   })
 
   test('rejects a grant of a cap the caller holds non-delegatably', () => {
     const writerNonDelegatable = spaceCapabilitySet().read(false).write(false).build()
     const granted = spaceCapabilitySet().read(false).write(false).build()
-    expect(assertGrantWithinCallerAuthority(writerNonDelegatable, granted))
+    expect(grantExceedingCallerAuthority(writerNonDelegatable, granted))
       .toEqual({ kind: 'not_delegatable', cap: 'read' })
   })
 
   test('rejects an invite grant from a caller who holds no invite', () => {
     const writerNoInvite = spaceCapabilitySet().read(true).write(true).build()
     const granted = spaceCapabilitySet().read(true).invite(true).build()
-    expect(assertGrantWithinCallerAuthority(writerNoInvite, granted))
+    expect(grantExceedingCallerAuthority(writerNoInvite, granted))
       .toEqual({ kind: 'missing', cap: 'invite' })
   })
 
   test('rejects an admin grant from a delegated admin caller', () => {
     const admin = presetForLegacyTier('space/admin')
-    expect(assertGrantWithinCallerAuthority(admin, presetForLegacyTier('space/admin')))
+    expect(grantExceedingCallerAuthority(admin, presetForLegacyTier('space/admin')))
       .toEqual({ kind: 'not_delegatable', cap: 'admin' })
   })
 
@@ -57,13 +57,13 @@ describe('grant attenuation', () => {
     const admin = spaceCapabilitySet()
       .read(true).write(true).invite(true).admin(false).build()
     const granted = spaceCapabilitySet().read(false).build()
-    expect(assertGrantWithinCallerAuthority(admin, granted)).toBeNull()
+    expect(grantExceedingCallerAuthority(admin, granted)).toBeNull()
   })
 
   test('accepts an admin grant from the space owner', () => {
     const owner = spaceCapabilitySet()
       .read(true).write(true).invite(true).admin(true).build()
-    expect(assertGrantWithinCallerAuthority(owner, presetForLegacyTier('space/admin')))
+    expect(grantExceedingCallerAuthority(owner, presetForLegacyTier('space/admin')))
       .toBeNull()
   })
 })
@@ -117,9 +117,9 @@ describe('presetForLegacyTier', () => {
   // before invite is ever considered and the cap would grant nothing at all.
   test('an inviter can grant a reader but not a writer', () => {
     const inviter = presetForLegacyTier('space/invite')
-    expect(assertGrantWithinCallerAuthority(inviter, presetForLegacyTier('space/read')))
+    expect(grantExceedingCallerAuthority(inviter, presetForLegacyTier('space/read')))
       .toBeNull()
-    expect(assertGrantWithinCallerAuthority(inviter, presetForLegacyTier('space/write')))
+    expect(grantExceedingCallerAuthority(inviter, presetForLegacyTier('space/write')))
       .toEqual({ kind: 'missing', cap: 'write' })
   })
 
