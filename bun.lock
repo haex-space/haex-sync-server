@@ -6,7 +6,7 @@
       "name": "haex-sync-server",
       "dependencies": {
         "@haex-space/federation-sdk": "0.2.2",
-        "@haex-space/ucan": "0.2.0",
+        "@haex-space/ucan": "0.3.0",
         "@haex-space/vault-sdk": "2.8.0",
         "@hono/zod-validator": "^0.7.4",
         "@supabase/supabase-js": "^2.79.0",
@@ -86,7 +86,7 @@
 
     "@haex-space/federation-sdk": ["@haex-space/federation-sdk@0.2.2", "", {}, "sha512-g4cxbWDH1vCF70my4b9mxxCoS6jxiQVItNoErNxLz1Ktb67TUXXcEjY8PrI08lTVrgpefUgfiMJgpITnY2W4Mg=="],
 
-    "@haex-space/ucan": ["@haex-space/ucan@0.2.0", "", {}, "sha512-xCY/4jDy9XVm4ndrhFtZfMg4Q9NdgpCPZv9IHPG3LDTwWQMqU7tuN4EjVoutsOpeHrAYk0PszvqiPW79jr2U1w=="],
+    "@haex-space/ucan": ["@haex-space/ucan@0.3.0", "", {}, "sha512-B7j1a4Q+D62NWCtf9TEgqwm56iXE0cN3lPHR1hnFi1bf2O1/aEOXNMx2I2gthEVq92GkZCRLJS7GKwZLbXcfYA=="],
 
     "@haex-space/vault-sdk": ["@haex-space/vault-sdk@2.8.0", "", { "dependencies": { "archiver": "7.0.1", "commander": "14.0.3", "drizzle-orm": "0.45.1", "jszip": "3.10.1" }, "bin": { "haex": "dist/cli/index.js" } }, "sha512-kDcnqTA79TnJ/WxPRnDy5XcMtkmxYnCk3mNZt1S/9hPSeiO4gSx1rzXYDCg1ivr8M6oCJpYl9VsNrPR0b5hO4A=="],
 
