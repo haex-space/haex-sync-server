@@ -181,8 +181,12 @@ export async function requireCapabilityWithAuthority(
 /**
  * The part of a grant that exceeds what the caller may delegate.
  *
- * Deliberately the same predicate the UCAN chain walker applies, so an HTTP
- * invite and a UCAN delegation cannot diverge on what a member may hand out.
+ * Deliberately the same predicate the UCAN chain walker applies, so the two
+ * routes where a caller names the granted capability — invite tokens and
+ * direct member invitation — cannot diverge from a UCAN delegation on what a
+ * member may hand out. Routes that set a capability from a constant rather
+ * than from caller input (space creation, ownership transfer, federation
+ * setup) are not grants and deliberately do not use this.
  *
  * Named for what it returns rather than what it checks: a truthy result means
  * the grant is NOT allowed. Call sites read `if (grantExceeding…) return 403`.
