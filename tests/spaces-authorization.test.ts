@@ -211,3 +211,44 @@ describe('POST /:spaceId/members — grant attenuation', () => {
     expect(insertedMember.invitedBy).toBe(owner.did)
   })
 })
+// ============================================
+// Task 1.5 — DELETE /my-admin-spaces ownership
+// ============================================
+
+async function deleteMyAdminSpaces(caller: Identity) {
+  deletedSpaceIds = []
+  const header = await createDidAuthHeader(caller.keyPair.privateKey, caller.did, 'space-delete', '')
+  return spacesRouter.request('/my-admin-spaces', {
+    method: 'DELETE',
+    headers: { Authorization: header },
+  })
+}
+
+describe('DELETE /my-admin-spaces — scoped to owned spaces', () => {
+  // The final step of the escalation chain: space_members.capability is a
+  // cached column an attacker could have written. Administering a space must
+  // not authorize destroying it — that would delete someone else's space.
+  test('deletes nothing for an admin who does not own the space', async () => {
+    ownedRows = []
+    adminMembershipRows = [{ spaceId: OWNED_A }, { spaceId: OWNED_B }]
+
+    const res = await deleteMyAdminSpaces(inviter)
+
+    expect(res.status).toBe(200)
+    const json = (await res.json()) as any
+    expect(json.deletedSpaces).toBe(0)
+    expect(deletedSpaceIds).toEqual([])
+  })
+
+  test('deletes exactly the spaces the caller owns', async () => {
+    ownedRows = [{ id: OWNED_A }, { id: OWNED_B }]
+    adminMembershipRows = []
+
+    const res = await deleteMyAdminSpaces(owner)
+
+    expect(res.status).toBe(200)
+    const json = (await res.json()) as any
+    expect(json.deletedSpaces).toBe(2)
+    expect(deletedSpaceIds).toEqual([OWNED_A, OWNED_B])
+  })
+})
