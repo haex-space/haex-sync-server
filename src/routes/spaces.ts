@@ -173,17 +173,18 @@ spacesRouter.delete('/my-admin-spaces', async (c) => {
   const callerDid = didAuth.did
 
   try {
-    const ownedSpaces = await db.select({
-      id: spaces.id,
-    })
-      .from(spaces)
-      .where(eq(spaces.ownerId, callerDid))
+    const deletedSpaceIds = await db.transaction(async (tx) => {
+      const ownedSpaces = await tx.select({ id: spaces.id })
+        .from(spaces)
+        .where(eq(spaces.ownerId, callerDid))
 
-    const deletedSpaceIds: string[] = []
-    for (const space of ownedSpaces) {
-      await db.delete(spaces).where(eq(spaces.id, space.id))
-      deletedSpaceIds.push(space.id)
-    }
+      const ids: string[] = []
+      for (const space of ownedSpaces) {
+        await tx.delete(spaces).where(eq(spaces.id, space.id))
+        ids.push(space.id)
+      }
+      return ids
+    })
 
     return c.json({ success: true, deletedSpaces: deletedSpaceIds.length })
   } catch (error) {
@@ -489,6 +490,10 @@ spacesRouter.post('/:spaceId/transfer-ownership', zValidator('json', transferOwn
   if (capError) return capError
 
   const callerDid = didAuth.did
+
+  if (body.targetDid === callerDid) {
+    return c.json({ error: 'Cannot transfer ownership to yourself' }, 400)
+  }
 
   try {
     const result = await db.transaction(async (tx) => {
