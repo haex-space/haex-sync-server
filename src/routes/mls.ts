@@ -4,6 +4,11 @@ import { z } from 'zod'
 import { db, spaceMembers, identities, mlsKeyPackages, mlsMessages, mlsWelcomeMessages, mlsGroupInfo, spaceInvites, spaceInviteTokens } from '../db'
 import { authDispatcher } from '../middleware/authDispatcher'
 import { requireCapability } from '../middleware/ucanAuth'
+import {
+  grantExceedingCallerAuthority,
+  presetForLegacyTier,
+  resolveCallerAuthority,
+} from '../middleware/capabilities'
 import { resolveDidIdentity } from '../middleware/didAuth'
 import { eq, and, gt, sql, isNotNull } from 'drizzle-orm'
 import { broadcastToSpace, sendToDid } from './ws'
@@ -817,6 +822,24 @@ mlsRouter.post('/:spaceId/invite-tokens', zValidator('json', createTokenSchema),
 
   const capError = await requireCapability(c, spaceId, 'invite')
   if (capError) return capError
+
+  // Holding `invite` says nothing about *what* may be granted. Claiming a
+  // token has no capability check of its own — the token UUID is the
+  // authorization, and the stored capability lands directly in space_members
+  // — so the requested grant has to be attenuated against the caller here.
+  const authority = await resolveCallerAuthority(c, spaceId)
+  if (!authority.ok) return c.json({ error: authority.error }, authority.status)
+
+  // Unreachable throw: createTokenSchema's enum admits only the three tiers
+  // presetForLegacyTier handles, so anything else is a 400 from zValidator.
+  const requested = presetForLegacyTier(body.capability)
+  const offender = grantExceedingCallerAuthority(authority.capabilities, requested)
+  if (offender) {
+    return c.json(
+      { error: `Forbidden - requested grant exceeds caller authority (${offender.kind}: ${offender.cap})` },
+      403,
+    )
+  }
 
   try {
     const callerDid = getCallerDid(c)!
