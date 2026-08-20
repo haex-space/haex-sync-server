@@ -1,14 +1,18 @@
 /**
- * Two authorization holes in spacesRouter, both rooted in trusting the cached
- * `space_members.capability` column:
+ * Authorization holes in spacesRouter:
  *
  *  1. POST /:spaceId/members is gated on `invite` but lets the caller name the
  *     capability granted to the invitee, written verbatim to space_members.
  *     An invite-only holder could grant `write`.
- *  2. DELETE /my-admin-spaces authorizes purely on that cached column, with no
- *     capability check at all, and cascade-deletes the space.
+ *  2. DELETE /my-admin-spaces authorized purely off the cached
+ *     space_members.capability column, with no capability check at all, and
+ *     cascade-deletes the space.
+ *  3. A UCAN carries no proof of possession, so a member's own credential —
+ *     the owner's delegation to them — can be presented verbatim to make
+ *     getCallerDid() report the owner. Routes whose authority is
+ *     identity-shaped therefore require DID-Auth.
  *
- * Both drive the real router with real signed auth and assert on the rows
+ * All drive the real router with real signed auth and assert on the rows
  * actually handed to the db, not just status codes.
  */
 import { describe, test, expect, mock, beforeAll } from 'bun:test'
@@ -35,6 +39,12 @@ const INVITEE_DID = 'did:key:zInvitee'
 let spacesRouter: { request: (path: string, init?: any) => Response | Promise<Response> }
 let owner: Identity
 let inviter: Identity
+let reader: Identity
+
+/** Captured from the transfer-ownership transaction. */
+let transferredOwnerTo: string | null = null
+/** Read through a call so TS control-flow narrowing does not collapse the type. */
+const takeTransferredOwner = (): string | null => transferredOwnerTo
 
 /** Row captured from db.insert(spaceMembers).values(...). */
 let insertedMember: any = null
@@ -61,6 +71,7 @@ function resultChain(rows: any[]) {
 beforeAll(async () => {
   owner = await makeIdentity()
   inviter = await makeIdentity()
+  reader = await makeIdentity()
 
   mock.module('../src/db', () => ({
     ...buildDbMock({
@@ -105,6 +116,28 @@ beforeAll(async () => {
       return chain
     },
     update: () => emptyChain(),
+    // transfer-ownership: target must resolve as a member, and the ownerId
+    // write is captured so the side effect is observable.
+    transaction: async (fn: (tx: any) => any) => fn({
+      select: () => {
+        const chain: any = {}
+        chain.from = () => chain
+        chain.where = () => chain
+        chain.limit = () => Promise.resolve([{ did: transferTargetDid }])
+        return chain
+      },
+      update: () => {
+        const chain: any = {}
+        chain.set = (values: any) => {
+          if (values.ownerId) transferredOwnerTo = values.ownerId
+          return chain
+        }
+        chain.where = () => Promise.resolve([])
+        return chain
+      },
+      insert: () => emptyChain(),
+      delete: () => emptyChain(),
+    }),
     }),
     // Override the `spaces` table so column access is observable. buildDbMock's
     // shared stub collapses every column to the same value, which would make a
@@ -120,6 +153,52 @@ beforeAll(async () => {
 
   spacesRouter = (await import('../src/routes/spaces')).default
 })
+
+let transferTargetDid = ''
+
+/** base64url JWT payload → object. */
+function decodePayload(jwt: string): any {
+  let b64 = jwt.split('.')[1]!.replace(/-/g, '+').replace(/_/g, '/')
+  while (b64.length % 4 !== 0) b64 += '='
+  return JSON.parse(atob(b64))
+}
+
+/**
+ * A lifted `prf[0]`: the owner's delegation to a reader, pulled back out of the
+ * reader's own re-issued token and presented directly.
+ *
+ * Nothing compares a UCAN's `aud` against the presenter, so this is a bearer
+ * token — and because its `iss` is the owner, `getCallerDid()` reports the
+ * OWNER while the capability set stays read-tier. Capability gates therefore
+ * still bind; gates that read caller identity do not.
+ */
+async function liftedOwnerDelegation(
+  holder: Identity = reader,
+  caps = spaceCapabilitySet().read(false).build(),
+): Promise<string> {
+  const expiration = Math.floor(Date.now() / 1000) + 3600
+  const delegation = await createUcan(
+    {
+      issuer: owner.did,
+      audience: holder.did,
+      capabilities: { [spaceResource(SPACE_ID)]: caps },
+      expiration,
+      proofs: [],
+    },
+    owner.sign,
+  )
+  const reissued = await createUcan(
+    {
+      issuer: holder.did,
+      audience: holder.did,
+      capabilities: { [spaceResource(SPACE_ID)]: caps },
+      expiration,
+      proofs: [delegation],
+    },
+    holder.sign,
+  )
+  return `UCAN ${decodePayload(reissued).prf[0]}`
+}
 
 /** Recover a did:key from a drizzle condition, whatever shape the live eq gave it. */
 function findDid(node: unknown, depth = 0): string | null {
@@ -300,5 +379,87 @@ describe('DELETE /my-admin-spaces — scoped to owned spaces', () => {
     await deleteMyAdminSpaces(owner)
 
     expect(columnReads).toContain('spaces.ownerId')
+  })
+})
+
+// ============================================
+// Task 1.6 — stopgaps for UCAN bearer semantics
+// ============================================
+
+// A UCAN carries no proof of possession: nothing checks `aud` against the
+// presenter. A member's own credential is the owner's delegation to them, so
+// presenting it verbatim makes getCallerDid() report the owner. Capability
+// gates still bind (caps do not escalate), but any route that authorizes off
+// caller identity — or has no capability gate at all — does not.
+//
+// The real remedy is an audience check, which is a wire-format change. These
+// tests pin the stopgap: routes whose authority is identity-shaped require
+// DID-Auth, which is genuine proof of possession.
+
+describe('DELETE /my-admin-spaces — rejects UCAN auth', () => {
+  test('a lifted owner delegation cannot delete the owner\'s spaces', async () => {
+    deletedSpaceIds = []
+    spacesByOwner = { [owner.did]: [{ id: OWNED_A }, { id: OWNED_B }] }
+
+    const res = await spacesRouter.request('/my-admin-spaces', {
+      method: 'DELETE',
+      headers: { Authorization: await liftedOwnerDelegation() },
+    })
+
+    expect(res.status).toBe(401)
+    expect(deletedSpaceIds).toEqual([])
+  })
+
+  test('DID-Auth still deletes the owner\'s spaces', async () => {
+    const res = await deleteMyAdminSpaces(owner)
+
+    expect(res.status).toBe(200)
+    expect(deletedSpaceIds).toEqual([OWNED_A, OWNED_B])
+  })
+})
+
+describe('POST /:spaceId/transfer-ownership — rejects UCAN auth', () => {
+  // A delegated admin holds admin(delegatable:false) precisely so it cannot
+  // mint further admins. Naming itself as transfer target would hand it the
+  // fully-delegatable owner set, defeating that invariant.
+  // A delegated admin cannot re-issue an admin token to itself — admin is
+  // non-delegatable, so verifyUcan rejects that outright. The reachable shape
+  // is presenting the owner's delegation verbatim, which passes the admin gate
+  // and names the holder as target.
+  test('a lifted admin delegation cannot transfer ownership to its holder', async () => {
+    transferredOwnerTo = null
+    transferTargetDid = inviter.did
+    const adminSet = spaceCapabilitySet().read(true).write(true).invite(true).admin(false).build()
+    const header = await liftedOwnerDelegation(inviter, adminSet)
+
+    const res = await spacesRouter.request(`/${SPACE_ID}/transfer-ownership`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: header },
+      body: JSON.stringify({ targetDid: inviter.did }),
+    })
+
+    expect(res.status).toBe(401)
+    expect(takeTransferredOwner()).toBeNull()
+  })
+
+  test('the owner can still transfer ownership over DID-Auth', async () => {
+    transferredOwnerTo = null
+    transferTargetDid = inviter.did
+    const body = JSON.stringify({ targetDid: inviter.did })
+    const header = await createDidAuthHeader(
+      owner.keyPair.privateKey,
+      owner.did,
+      'space-write',
+      body,
+    )
+
+    const res = await spacesRouter.request(`/${SPACE_ID}/transfer-ownership`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: header },
+      body,
+    })
+
+    expect(res.status).toBe(200)
+    expect(takeTransferredOwner()).toBe(inviter.did)
   })
 })
