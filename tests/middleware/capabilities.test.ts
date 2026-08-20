@@ -1,4 +1,5 @@
 import { describe, test, expect, mock } from 'bun:test'
+import { eq } from 'drizzle-orm'
 import type { Context } from 'hono'
 import {
   createUcan,
@@ -11,18 +12,29 @@ import {
 
 // Mock DB before importing the middleware — resolveCallerAuthority reads
 // spaces.ownerId to establish the root of trust for both auth modes.
-const SPACES = { id: 'id', ownerId: 'owner_id' }
-const SPACE_MEMBERS = { did: 'did', spaceId: 'space_id', capability: 'capability' }
+//
+// Columns carry unique marker strings rather than realistic names so the
+// captured `.where()` clause can be introspected: without this, "scoped to
+// this space id" and "scoped to some other column" are indistinguishable and
+// the most security-relevant half of the query goes unpinned.
+const SPACES = { id: 'SPACES_ID_MARKER', ownerId: 'SPACES_OWNER_ID_MARKER' }
+const SPACE_MEMBERS = {
+  did: 'MEMBERS_DID_MARKER',
+  spaceId: 'MEMBERS_SPACE_ID_MARKER',
+  capability: 'MEMBERS_CAPABILITY_MARKER',
+}
 
 let spaceRows: { ownerId: string }[] = []
+let lastWhere: unknown = null
 
 mock.module('../../src/db', () => ({
   db: {
     select: () => ({
       from: () => ({
-        where: () => ({
-          limit: () => Promise.resolve(spaceRows),
-        }),
+        where: (condition: unknown) => {
+          lastWhere = condition
+          return { limit: () => Promise.resolve(spaceRows) }
+        },
       }),
     }),
   },
@@ -32,6 +44,7 @@ mock.module('../../src/db', () => ({
 
 import { ownerCapabilitySet, resolveCallerAuthority } from '../../src/middleware/capabilities'
 import { makeIdentity, type Identity } from '../integration/helpers'
+import { flattenSqlChunks } from '../helpers/db-mock'
 
 // ============================================
 // Test Helpers
@@ -80,6 +93,25 @@ async function ucanContextFor(token: string) {
     capabilities: verified.payload.cap,
     verifiedUcan: verified,
   }
+}
+
+/**
+ * True when `cond` contains `eq(<columnMarker>, <expectedValue>)`.
+ *
+ * drizzle compiles eq(a, b) to sql`${a} = ${b}`, i.e. three consecutive
+ * chunks: the left operand, a StringChunk(" = "), and the right operand.
+ * Pinned by the shape test below so a drizzle bump fails loudly here rather
+ * than silently turning these assertions into no-ops.
+ */
+function whereFiltersEq(cond: unknown, columnMarker: string, expectedValue: string): boolean {
+  const chunks = flattenSqlChunks(cond)
+  for (let i = 0; i < chunks.length - 2; i++) {
+    if (chunks[i] !== columnMarker) continue
+    const operator = chunks[i + 1]
+    if (!operator || !Array.isArray(operator.value) || operator.value[0] !== ' = ') continue
+    if (chunks[i + 2] === expectedValue) return true
+  }
+  return false
 }
 
 const OWNER_ROOT_ERROR = {
@@ -218,6 +250,56 @@ describe('resolveCallerAuthority — proof-forest root of trust', () => {
     )
 
     expect(authority).toEqual({ ok: true, capabilities: WRITER_FINAL })
+  })
+})
+
+// ============================================
+// resolveCallerAuthority — query scoping
+// ============================================
+
+// The owner lookup is the only DB-side input to the root-of-trust decision,
+// so its predicate carries the whole weight of "this space". A mock that
+// discards .where() cannot tell a correctly scoped query from one filtering
+// on the wrong column entirely.
+
+describe('resolveCallerAuthority — owner lookup scoping', () => {
+  // Pins the drizzle-orm internal chunk shape whereFiltersEq() depends on. If
+  // a drizzle bump changes how eq() builds queryChunks, this fails here
+  // instead of quietly making the scoping assertions below vacuous.
+  test('drizzle eq() produces the queryChunks shape the helper assumes', () => {
+    const cond = eq('LEFT_MARKER' as never, 'right-value')
+    const chunks = flattenSqlChunks(cond)
+
+    expect(chunks.length).toBe(5)
+    expect(chunks[0].value).toEqual([''])
+    expect(chunks[1]).toBe('LEFT_MARKER')
+    expect(chunks[2].value).toEqual([' = '])
+    expect(chunks[3]).toBe('right-value')
+    expect(whereFiltersEq(cond, 'LEFT_MARKER', 'right-value')).toBe(true)
+    expect(whereFiltersEq(cond, 'SPACES_OWNER_ID_MARKER', 'right-value')).toBe(false)
+  })
+
+  test('scopes the UCAN-path owner lookup to spaces.id = spaceId', async () => {
+    const owner = await makeIdentity()
+    spaceRows = [{ ownerId: owner.did }]
+    const spaceId = crypto.randomUUID()
+    lastWhere = null
+
+    const token = await signUcan(owner, owner.did, spaceId, ADMIN_CAP)
+    await resolveCallerAuthority(contextWith({ ucan: await ucanContextFor(token) }), spaceId)
+
+    expect(whereFiltersEq(lastWhere, SPACES.id, spaceId)).toBe(true)
+  })
+
+  test('scopes the DID-auth owner lookup to spaces.id = spaceId', async () => {
+    const owner = await makeIdentity()
+    spaceRows = [{ ownerId: owner.did }]
+    const spaceId = crypto.randomUUID()
+    lastWhere = null
+
+    await resolveCallerAuthority(contextWith({ didAuth: { did: owner.did } }), spaceId)
+
+    expect(whereFiltersEq(lastWhere, SPACES.id, spaceId)).toBe(true)
   })
 })
 
