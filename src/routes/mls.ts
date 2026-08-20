@@ -217,7 +217,13 @@ mlsRouter.get('/:spaceId/invites', async (c) => {
         id: i.id,
         inviterPublicKey: i.inviterPublicKey,
         inviteeDid: i.inviteeDid,
-        ucan: i.ucan,
+        // A UCAN is bearer-usable: nothing binds it to its presenter. Members
+        // see every invite in the space, so emitting each invite's UCAN let a
+        // read-tier member lift a pending admin's token and replay it. Only the
+        // addressee gets the value; `hasUcan` carries the presence signal the
+        // inviter's device needs to decide whether to mint one.
+        ucan: i.inviteeDid === callerDid ? i.ucan : null,
+        hasUcan: i.ucan !== null,
         capability: i.tokenId ? tokenMap.get(i.tokenId) ?? null : null,
         status: i.status,
         includeHistory: i.includeHistory,
