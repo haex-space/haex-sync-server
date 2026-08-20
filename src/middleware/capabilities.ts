@@ -59,6 +59,15 @@ function collectRootIssuers(verified: VerifiedUcan, into = new Set<string>()): S
   return into
 }
 
+async function loadSpaceOwner(spaceId: string): Promise<string | null> {
+  const [space] = await db
+    .select({ ownerId: spaces.ownerId })
+    .from(spaces)
+    .where(eq(spaces.id, spaceId))
+    .limit(1)
+  return space?.ownerId ?? null
+}
+
 /**
  * Resolve what the authenticated caller actually holds for a space.
  *
@@ -96,18 +105,14 @@ export async function resolveCallerAuthority(
     }
 
     const roots = collectRootIssuers(ucan.verifiedUcan)
-    const [space] = await db
-      .select({ ownerId: spaces.ownerId })
-      .from(spaces)
-      .where(eq(spaces.id, spaceId))
-      .limit(1)
+    const ownerId = await loadSpaceOwner(spaceId)
 
     // Fail closed: an absent space, or an empty forest, must not pass. One
     // message covers both so space existence is not an oracle.
     const rootedInOwner =
-      space !== undefined
+      ownerId !== null
       && roots.size > 0
-      && [...roots].every((root) => root === space.ownerId)
+      && [...roots].every((root) => root === ownerId)
 
     if (!rootedInOwner) {
       return {
@@ -122,13 +127,9 @@ export async function resolveCallerAuthority(
 
   const didAuth = c.get('didAuth') as { did: string } | null
   if (didAuth) {
-    const [space] = await db
-      .select({ ownerId: spaces.ownerId })
-      .from(spaces)
-      .where(eq(spaces.id, spaceId))
-      .limit(1)
+    const ownerId = await loadSpaceOwner(spaceId)
 
-    if (space && space.ownerId === didAuth.did) {
+    if (ownerId === didAuth.did) {
       return { ok: true, capabilities: ownerCapabilitySet() }
     }
 
