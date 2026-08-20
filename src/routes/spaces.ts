@@ -152,7 +152,13 @@ spacesRouter.get('/', async (c) => {
   }
 })
 
-// DELETE /my-admin-spaces – Delete all spaces where the caller is admin
+// DELETE /my-admin-spaces – Delete all spaces the caller owns
+//
+// Scoped to ownership, not administration. This cascade-deletes the space, and
+// space_members.capability is a cached column a caller may have written, so
+// authorizing off it let an attacker destroy a space they merely administered
+// — someone else's space. The only caller is a user removing their own sync
+// backend, which is DID-auth, where authority is owner-only regardless.
 spacesRouter.delete('/my-admin-spaces', async (c) => {
   const callerDid = getCallerDid(c)
   if (!callerDid) {
@@ -160,16 +166,16 @@ spacesRouter.delete('/my-admin-spaces', async (c) => {
   }
 
   try {
-    const adminMemberships = await db.select({
-      spaceId: spaceMembers.spaceId,
+    const ownedSpaces = await db.select({
+      id: spaces.id,
     })
-      .from(spaceMembers)
-      .where(and(eq(spaceMembers.did, callerDid), eq(spaceMembers.capability, 'space/admin')))
+      .from(spaces)
+      .where(eq(spaces.ownerId, callerDid))
 
     const deletedSpaceIds: string[] = []
-    for (const membership of adminMemberships) {
-      await db.delete(spaces).where(eq(spaces.id, membership.spaceId))
-      deletedSpaceIds.push(membership.spaceId)
+    for (const space of ownedSpaces) {
+      await db.delete(spaces).where(eq(spaces.id, space.id))
+      deletedSpaceIds.push(space.id)
     }
 
     return c.json({ success: true, deletedSpaces: deletedSpaceIds.length })
