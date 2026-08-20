@@ -1,14 +1,20 @@
-import { describe, test, expect, mock } from 'bun:test'
+import { describe, test, expect, mock, beforeEach } from 'bun:test'
 import { Hono } from 'hono'
 import { createUcan, spaceCapabilitySet, spaceResource } from '@haex-space/ucan'
 
-// Mock DB before importing middleware
+// Mock DB before importing middleware — resolveCallerAuthority reads
+// spaces.ownerId to anchor the root of trust for the UCAN proof forest.
+// Defaults to an unrelated DID so forged/self-signed roots are rejected;
+// tests that exercise a legitimate grant set it to their own issuer.
+const UNRELATED_OWNER = 'did:key:zUnrelatedSpaceOwner'
+let mockSpaceOwnerDid = UNRELATED_OWNER
+
 mock.module('../../src/db', () => ({
   db: {
     select: () => ({
       from: () => ({
         where: () => ({
-          limit: () => Promise.resolve([{ did: 'mock-member' }]),
+          limit: () => Promise.resolve([{ ownerId: mockSpaceOwnerDid }]),
         }),
       }),
     }),
@@ -29,6 +35,12 @@ import {
 // ============================================
 // App Factories
 // ============================================
+
+// Never let one test's owner leak into the next — the cross-space and forged
+// authority tests depend on the space being owned by someone unrelated.
+beforeEach(() => {
+  mockSpaceOwnerDid = UNRELATED_OWNER
+})
 
 /** App with authDispatcher — routes check didAuth/ucan context */
 function createDispatcherApp() {
@@ -112,6 +124,7 @@ describe('Space creation requires DID-Auth', () => {
     const id = await makeIdentity()
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/admin')
+    mockSpaceOwnerDid = id.did
 
     const res = await app.request('/spaces', {
       method: 'POST',
@@ -135,6 +148,7 @@ describe('Space operations require UCAN with correct capability', () => {
     const id = await makeIdentity()
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/read')
+    mockSpaceOwnerDid = id.did
 
     const res = await app.request(`/spaces/${spaceId}`, {
       method: 'PUT',
@@ -148,6 +162,7 @@ describe('Space operations require UCAN with correct capability', () => {
     const id = await makeIdentity()
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/write')
+    mockSpaceOwnerDid = id.did
 
     const res = await app.request(`/spaces/${spaceId}`, {
       method: 'PUT',
@@ -198,6 +213,7 @@ describe('Mixed auth dispatching', () => {
     const id = await makeIdentity()
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/read')
+    mockSpaceOwnerDid = id.did
 
     const res = await app.request('/mixed', {
       headers: { Authorization: header },
@@ -410,6 +426,7 @@ describe('Orthogonal capabilities', () => {
     const id = await makeIdentity()
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/admin')
+    mockSpaceOwnerDid = id.did
 
     const res = await app.request(`/spaces/${spaceId}`, {
       method: 'PUT',
@@ -423,6 +440,7 @@ describe('Orthogonal capabilities', () => {
     const id = await makeIdentity()
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/admin')
+    mockSpaceOwnerDid = id.did
 
     const res = await app.request(`/spaces/${spaceId}`, {
       method: 'GET',
@@ -436,6 +454,7 @@ describe('Orthogonal capabilities', () => {
     const id = await makeIdentity()
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/admin')
+    mockSpaceOwnerDid = id.did
 
     const res = await app.request(`/spaces/${spaceId}/invite`, {
       method: 'POST',
@@ -449,6 +468,7 @@ describe('Orthogonal capabilities', () => {
     const id = await makeIdentity()
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/admin')
+    mockSpaceOwnerDid = id.did
 
     const res = await app.request(`/spaces/${spaceId}`, {
       method: 'DELETE',
@@ -462,6 +482,7 @@ describe('Orthogonal capabilities', () => {
     const id = await makeIdentity()
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/write')
+    mockSpaceOwnerDid = id.did
 
     const res = await app.request(`/spaces/${spaceId}`, {
       method: 'GET',
@@ -475,6 +496,7 @@ describe('Orthogonal capabilities', () => {
     const id = await makeIdentity()
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/write')
+    mockSpaceOwnerDid = id.did
 
     const res = await app.request(`/spaces/${spaceId}/invite`, {
       method: 'POST',
@@ -488,6 +510,7 @@ describe('Orthogonal capabilities', () => {
     const id = await makeIdentity()
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/write')
+    mockSpaceOwnerDid = id.did
 
     const res = await app.request(`/spaces/${spaceId}`, {
       method: 'DELETE',
@@ -501,6 +524,7 @@ describe('Orthogonal capabilities', () => {
     const id = await makeIdentity()
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/read')
+    mockSpaceOwnerDid = id.did
 
     const res = await app.request(`/spaces/${spaceId}`, {
       method: 'PUT',
@@ -514,6 +538,7 @@ describe('Orthogonal capabilities', () => {
     const id = await makeIdentity()
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/read')
+    mockSpaceOwnerDid = id.did
 
     const res = await app.request(`/spaces/${spaceId}/invite`, {
       method: 'POST',
@@ -527,6 +552,7 @@ describe('Orthogonal capabilities', () => {
     const id = await makeIdentity()
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/read')
+    mockSpaceOwnerDid = id.did
 
     const res = await app.request(`/spaces/${spaceId}`, {
       method: 'DELETE',
@@ -540,6 +566,7 @@ describe('Orthogonal capabilities', () => {
     const id = await makeIdentity()
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/invite')
+    mockSpaceOwnerDid = id.did
 
     const res = await app.request(`/spaces/${spaceId}`, {
       method: 'PUT',
@@ -553,6 +580,7 @@ describe('Orthogonal capabilities', () => {
     const id = await makeIdentity()
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/invite')
+    mockSpaceOwnerDid = id.did
 
     const res = await app.request(`/spaces/${spaceId}`, {
       method: 'GET',
@@ -566,6 +594,7 @@ describe('Orthogonal capabilities', () => {
     const id = await makeIdentity()
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/invite')
+    mockSpaceOwnerDid = id.did
 
     const res = await app.request(`/spaces/${spaceId}`, {
       method: 'DELETE',

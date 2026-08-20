@@ -1,16 +1,16 @@
 import type { Context } from 'hono'
-import { eq, and } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 import {
   enforceDelegatable,
-  findRootIssuer,
   isSpaceCapValue,
   spaceCapabilitySet,
   spaceResource,
   type DelegationError,
   type SpaceCapabilitySet,
+  type VerifiedUcan,
 } from '@haex-space/ucan'
 import type { UcanContext } from './types'
-import { db, spaces, spaceMembers } from '../db'
+import { db, spaces } from '../db'
 
 /**
  * The capability set the caller actually holds for one space, or the reason
@@ -34,12 +34,46 @@ export function ownerCapabilitySet(): SpaceCapabilitySet {
 }
 
 /**
+ * Every distinct root issuer in a verified proof forest.
+ *
+ * `findRootIssuer` from the library follows `proofs[0]` only, while
+ * `verifyDelegationChain` is satisfied by *any* proof whose audience matches
+ * the issuer. Those need not be the same proof, so a caller can launder a
+ * self-signed root by parking an unrelated borrowed proof in slot 0. Only
+ * inspecting every root closes that. Replaced by `findAllRootIssuers`
+ * upstream in Phase 2; walking locally until then.
+ *
+ * Depth is already bounded by `verifyUcan`'s MAX_PROOF_DEPTH, so a crafted
+ * token cannot drive this into unbounded recursion.
+ */
+function collectRootIssuers(verified: VerifiedUcan, into = new Set<string>()): Set<string> {
+  if (verified.proofs.length === 0) {
+    into.add(verified.payload.iss)
+    return into
+  }
+  for (const proof of verified.proofs) {
+    collectRootIssuers(proof, into)
+  }
+  return into
+}
+
+/**
  * Resolve what the authenticated caller actually holds for a space.
  *
  * UCAN callers are trusted only for the caps their token declares, and only
- * once the root issuer of the proof chain is confirmed to be a member of the
- * space — without that, anyone can forge a self-signed UCAN with arbitrary
- * capabilities. DID-Auth callers are accepted solely as the space owner.
+ * once every root of the proof forest is the space owner. A valid signature
+ * proves who issued a token, never that they had standing to issue it:
+ * `verifyUcan` skips the delegation-chain check entirely for a token with no
+ * proofs, so anchoring on the owner is what makes a self-signed capability
+ * worthless. Membership is deliberately NOT sufficient — a member could
+ * otherwise self-sign a root claiming caps their membership never granted.
+ *
+ * DID-Auth callers are accepted solely as the space owner.
+ *
+ * haex-vault's Rust verifier instead binds the space id to the root DID
+ * (`verify_space_id_binding`), which is not portable here: `spaces.id` is a
+ * uuid column enforced by `createSpaceSchema`, and UUID primary keys are a
+ * project invariant. `spaces.ownerId` is the server-side equivalent anchor.
  */
 export async function resolveCallerAuthority(
   c: Context,
@@ -59,21 +93,25 @@ export async function resolveCallerAuthority(
       }
     }
 
-    const rootIssuerDid = findRootIssuer(ucan.verifiedUcan)
-    const [member] = await db
-      .select({ did: spaceMembers.did })
-      .from(spaceMembers)
-      .where(and(
-        eq(spaceMembers.spaceId, spaceId),
-        eq(spaceMembers.did, rootIssuerDid),
-      ))
+    const roots = collectRootIssuers(ucan.verifiedUcan)
+    const [space] = await db
+      .select({ ownerId: spaces.ownerId })
+      .from(spaces)
+      .where(eq(spaces.id, spaceId))
       .limit(1)
 
-    if (!member) {
+    // Fail closed: an absent space, or an empty forest, must not pass. One
+    // message covers both so space existence is not an oracle.
+    const rootedInOwner =
+      space !== undefined
+      && roots.size > 0
+      && [...roots].every((root) => root === space.ownerId)
+
+    if (!rootedInOwner) {
       return {
         ok: false,
         status: 403,
-        error: `Forbidden - UCAN root issuer is not a member of this space`,
+        error: 'Forbidden - UCAN chain must root in the space owner',
       }
     }
 
