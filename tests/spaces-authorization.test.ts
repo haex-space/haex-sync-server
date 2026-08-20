@@ -40,10 +40,16 @@ let inviter: Identity
 let insertedMember: any = null
 /** Space ids passed to db.delete(spaces).where(...), in order. */
 let deletedSpaceIds: string[] = []
-/** Rows the mocked `spaces` owner-scan returns. */
-let ownedRows: { id: string }[] = []
+/**
+ * The `spaces` table, keyed by owner. The mock answers the owner-scan from
+ * this by the DID in the query's predicate, so ownership scoping is genuinely
+ * exercised rather than dictated by a per-test fixture.
+ */
+let spacesByOwner: Record<string, { id: string }[]> = {}
 /** Rows the mocked space_members admin-scan returns (pre-fix code path). */
 let adminMembershipRows: { spaceId: string }[] = []
+/** Columns the handlers touched, so a wrong-column query is detectable. */
+let columnReads: string[] = []
 
 /** A thenable that also answers .limit() — some call sites await, some paginate. */
 function resultChain(rows: any[]) {
@@ -56,21 +62,25 @@ beforeAll(async () => {
   owner = await makeIdentity()
   inviter = await makeIdentity()
 
-  mock.module('../src/db', () => buildDbMock({
+  mock.module('../src/db', () => ({
+    ...buildDbMock({
     // Discriminated by the requested projection rather than by call order, so
     // adding an unrelated lookup ahead of these cannot silently misroute them.
     select: (columns?: Record<string, any>) => {
       const wants = columns ? Object.keys(columns).sort().join(',') : '*'
-      const rows =
-        wants === 'ownerId' ? [{ ownerId: owner.did }] // root-of-trust lookup
-        : wants === 'id' ? ownedRows // owner scan (post-fix)
-        : wants === 'spaceId' ? adminMembershipRows // membership scan (pre-fix)
-        : wants === '*' ? [{ did: INVITEE_DID, publicKey: 'invitee-pubkey' }] // resolveDidIdentity
-        : [] // "already a member?" probe — never already a member here
       const chain: any = {}
       chain.from = () => chain
-      chain.where = () => resultChain(rows)
-      chain.limit = () => Promise.resolve(rows)
+      chain.where = (condition: any) => {
+        const rows =
+          // owner scan: answered from the DID the query actually filters on
+          wants === 'id' ? (spacesByOwner[findDid(condition) ?? ''] ?? [])
+          : wants === 'ownerId' ? [{ ownerId: owner.did }] // root-of-trust lookup
+          : wants === 'spaceId' ? adminMembershipRows // membership scan (pre-fix)
+          : wants === '*' ? [{ did: INVITEE_DID, publicKey: 'invitee-pubkey' }]
+          : [] // "already a member?" probe — never already a member here
+        return resultChain(rows)
+      }
+      chain.limit = () => Promise.resolve([])
       return chain
     },
     insert: () => {
@@ -95,10 +105,41 @@ beforeAll(async () => {
       return chain
     },
     update: () => emptyChain(),
+    }),
+    // Override the `spaces` table so column access is observable. buildDbMock's
+    // shared stub collapses every column to the same value, which would make a
+    // query on the wrong column indistinguishable from a correct one.
+    spaces: new Proxy({} as Record<string, string>, {
+      get: (_t, property) => {
+        if (typeof property !== 'string') return undefined
+        columnReads.push(`spaces.${property}`)
+        return `spaces.${property}`
+      },
+    }),
   }))
 
   spacesRouter = (await import('../src/routes/spaces')).default
 })
+
+/** Recover a did:key from a drizzle condition, whatever shape the live eq gave it. */
+function findDid(node: unknown, depth = 0): string | null {
+  if (depth > 20) return null
+  if (typeof node === 'string') return node.startsWith('did:key:') ? node : null
+  if (Array.isArray(node)) {
+    for (const n of node) {
+      const hit = findDid(n, depth + 1)
+      if (hit) return hit
+    }
+    return null
+  }
+  if (node && typeof node === 'object') {
+    for (const v of Object.values(node)) {
+      const hit = findDid(v, depth + 1)
+      if (hit) return hit
+    }
+  }
+  return null
+}
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
@@ -217,6 +258,10 @@ describe('POST /:spaceId/members — grant attenuation', () => {
 
 async function deleteMyAdminSpaces(caller: Identity) {
   deletedSpaceIds = []
+  columnReads = []
+  // The owner owns two spaces; the inviter owns none. Both tests share this,
+  // so which spaces get deleted depends on the query, not on the fixture.
+  spacesByOwner = { [owner.did]: [{ id: OWNED_A }, { id: OWNED_B }] }
   const header = await createDidAuthHeader(caller.keyPair.privateKey, caller.did, 'space-delete', '')
   return spacesRouter.request('/my-admin-spaces', {
     method: 'DELETE',
@@ -229,7 +274,7 @@ describe('DELETE /my-admin-spaces — scoped to owned spaces', () => {
   // cached column an attacker could have written. Administering a space must
   // not authorize destroying it — that would delete someone else's space.
   test('deletes nothing for an admin who does not own the space', async () => {
-    ownedRows = []
+    // space_members says this caller administers both spaces. Irrelevant now.
     adminMembershipRows = [{ spaceId: OWNED_A }, { spaceId: OWNED_B }]
 
     const res = await deleteMyAdminSpaces(inviter)
@@ -241,7 +286,6 @@ describe('DELETE /my-admin-spaces — scoped to owned spaces', () => {
   })
 
   test('deletes exactly the spaces the caller owns', async () => {
-    ownedRows = [{ id: OWNED_A }, { id: OWNED_B }]
     adminMembershipRows = []
 
     const res = await deleteMyAdminSpaces(owner)
@@ -250,5 +294,11 @@ describe('DELETE /my-admin-spaces — scoped to owned spaces', () => {
     const json = (await res.json()) as any
     expect(json.deletedSpaces).toBe(2)
     expect(deletedSpaceIds).toEqual([OWNED_A, OWNED_B])
+  })
+
+  test('scopes the space scan to spaces.ownerId', async () => {
+    await deleteMyAdminSpaces(owner)
+
+    expect(columnReads).toContain('spaces.ownerId')
   })
 })
