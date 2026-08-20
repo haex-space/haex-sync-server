@@ -111,8 +111,9 @@ async function makeToken(
   )
 }
 
-// Never let one test's owner leak into the next — the attack tests depend on
-// the space being owned by someone unrelated.
+// Defence in depth, not a correctness dependency: identities are freshly
+// generated per test, so a leaked owner can only ever be a stale unrelated
+// DID, which is fail-closed. Resetting keeps each test's setup self-evident.
 beforeEach(() => {
   mockSpaceOwnerDid = UNRELATED_OWNER
 })

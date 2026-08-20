@@ -36,8 +36,9 @@ import {
 // App Factories
 // ============================================
 
-// Never let one test's owner leak into the next — the cross-space and forged
-// authority tests depend on the space being owned by someone unrelated.
+// Defence in depth, not a correctness dependency: every test generates fresh
+// identities, so a leaked owner can only ever be a stale unrelated DID, which
+// is fail-closed anyway. Resetting keeps each test's setup self-evident.
 beforeEach(() => {
   mockSpaceOwnerDid = UNRELATED_OWNER
 })
@@ -124,7 +125,6 @@ describe('Space creation requires DID-Auth', () => {
     const id = await makeIdentity()
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/admin')
-    mockSpaceOwnerDid = id.did
 
     const res = await app.request('/spaces', {
       method: 'POST',
@@ -213,7 +213,6 @@ describe('Mixed auth dispatching', () => {
     const id = await makeIdentity()
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/read')
-    mockSpaceOwnerDid = id.did
 
     const res = await app.request('/mixed', {
       headers: { Authorization: header },

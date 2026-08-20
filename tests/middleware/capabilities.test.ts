@@ -20,7 +20,7 @@ import {
 // the property access happens before `eq` ever sees the value, so it holds
 // regardless of which `eq` won.
 let columnReads: string[] = []
-let spaceRows: { ownerId: string }[] = []
+let spaceRows: { ownerId: string | null }[] = []
 let lastWhere: unknown = null
 
 function watchedTable(table: string) {
@@ -204,6 +204,39 @@ describe('resolveCallerAuthority — proof-forest root of trust', () => {
     expect(authority).toEqual(OWNER_ROOT_ERROR)
   })
 
+  test('rejects when the space does not exist', async () => {
+    // Reachable: a UCAN may name a space this server has never seen. With no
+    // owner to anchor against, the only safe answer is no.
+    const owner = await makeIdentity()
+    spaceRows = []
+    const spaceId = crypto.randomUUID()
+
+    const token = await signUcan(owner, owner.did, spaceId, ADMIN_CAP)
+    const authority = await resolveCallerAuthority(
+      contextWith({ ucan: await ucanContextFor(token) }),
+      spaceId,
+    )
+
+    expect(authority).toEqual(OWNER_ROOT_ERROR)
+  })
+
+  test('rejects when the space row carries no owner', async () => {
+    // spaces.owner_id is notNull() in the schema, so this is defence in depth
+    // against a future schema change or a partially-populated row, not a state
+    // reachable today. A null owner must never authorize anyone.
+    const owner = await makeIdentity()
+    spaceRows = [{ ownerId: null }]
+    const spaceId = crypto.randomUUID()
+
+    const token = await signUcan(owner, owner.did, spaceId, ADMIN_CAP)
+    const authority = await resolveCallerAuthority(
+      contextWith({ ucan: await ucanContextFor(token) }),
+      spaceId,
+    )
+
+    expect(authority).toEqual(OWNER_ROOT_ERROR)
+  })
+
   test("accepts the owner's own root UCAN", async () => {
     const owner = await makeIdentity()
     spaceRows = [{ ownerId: owner.did }]
@@ -303,6 +336,23 @@ describe('resolveCallerAuthority — DID-auth ownership guard', () => {
     const caller = await makeIdentity()
     const owner = await makeIdentity()
     spaceRows = [{ ownerId: owner.did }]
+    const spaceId = crypto.randomUUID()
+
+    const authority = await resolveCallerAuthority(
+      contextWith({ didAuth: { did: caller.did } }),
+      spaceId,
+    )
+
+    expect(authority).toEqual({
+      ok: false,
+      status: 403,
+      error: 'Forbidden - Non-owners must provide a UCAN',
+    })
+  })
+
+  test('rejects a DID-auth caller when the space does not exist', async () => {
+    const caller = await makeIdentity()
+    spaceRows = []
     const spaceId = crypto.randomUUID()
 
     const authority = await resolveCallerAuthority(
