@@ -1,17 +1,12 @@
 import type { Context, Next } from 'hono'
-import { eq, and } from 'drizzle-orm'
 import {
   verifyUcan,
   createWebCryptoVerifier,
   decodeUcan,
-  holdsSpaceCap,
-  isSpaceCapValue,
-  spaceResource,
-  findRootIssuer,
   type SpaceCap,
 } from '@haex-space/ucan'
 import type { UcanContext } from './types'
-import { db, spaces, spaceMembers } from '../db'
+import { requireCapabilityWithAuthority } from './capabilities'
 
 const verify = createWebCryptoVerifier()
 
@@ -78,57 +73,6 @@ export async function requireCapability(
   spaceId: string,
   required: SpaceCap,
 ): Promise<Response | undefined> {
-  const ucan = c.get('ucan') as UcanContext | null
-
-  // If UCAN is present, check capabilities from the token
-  if (ucan) {
-    const resource = spaceResource(spaceId)
-    const held = ucan.capabilities[resource]
-
-    if (!isSpaceCapValue(held) || !holdsSpaceCap(held, required)) {
-      return c.json(
-        { error: `Forbidden - Insufficient capability for ${resource}, requires ${required}` },
-        403,
-      )
-    }
-
-    // Verify the root issuer of the UCAN chain is actually a member of this space.
-    // Without this, anyone can forge a self-signed UCAN with arbitrary capabilities.
-    const rootIssuerDid = findRootIssuer(ucan.verifiedUcan)
-    const [member] = await db
-      .select({ did: spaceMembers.did })
-      .from(spaceMembers)
-      .where(and(
-        eq(spaceMembers.spaceId, spaceId),
-        eq(spaceMembers.did, rootIssuerDid),
-      ))
-      .limit(1)
-
-    if (!member) {
-      return c.json(
-        { error: `Forbidden - UCAN root issuer is not a member of this space` },
-        403,
-      )
-    }
-
-    return undefined
-  }
-
-  // For DID-Auth: the space owner is the root authority — all capabilities are implicit
-  const didAuth = c.get('didAuth') as { did: string } | null
-  if (didAuth) {
-    const [space] = await db
-      .select({ ownerId: spaces.ownerId })
-      .from(spaces)
-      .where(eq(spaces.id, spaceId))
-      .limit(1)
-
-    if (space && space.ownerId === didAuth.did) {
-      return undefined
-    }
-
-    return c.json({ error: 'Forbidden - Non-owners must provide a UCAN' }, 403)
-  }
-
-  return c.json({ error: 'Forbidden - No auth context' }, 403)
+  const authorized = await requireCapabilityWithAuthority(c, spaceId, required)
+  return authorized.ok ? undefined : authorized.response
 }

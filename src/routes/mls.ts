@@ -4,6 +4,11 @@ import { z } from 'zod'
 import { db, spaceMembers, identities, mlsKeyPackages, mlsMessages, mlsWelcomeMessages, mlsGroupInfo, spaceInvites, spaceInviteTokens } from '../db'
 import { authDispatcher } from '../middleware/authDispatcher'
 import { requireCapability } from '../middleware/ucanAuth'
+import {
+  grantExceedingCallerAuthority,
+  presetForLegacyTier,
+  requireCapabilityWithAuthority,
+} from '../middleware/capabilities'
 import { resolveDidIdentity } from '../middleware/didAuth'
 import { eq, and, gt, sql, isNotNull } from 'drizzle-orm'
 import { broadcastToSpace, sendToDid } from './ws'
@@ -212,7 +217,13 @@ mlsRouter.get('/:spaceId/invites', async (c) => {
         id: i.id,
         inviterPublicKey: i.inviterPublicKey,
         inviteeDid: i.inviteeDid,
-        ucan: i.ucan,
+        // A UCAN is bearer-usable: nothing binds it to its presenter. Members
+        // see every invite in the space, so emitting each invite's UCAN let a
+        // read-tier member lift a pending admin's token and replay it. Only the
+        // addressee gets the value; `hasUcan` carries the presence signal the
+        // inviter's device needs to decide whether to mint one.
+        ucan: i.inviteeDid === identity.did ? i.ucan : null,
+        hasUcan: i.ucan !== null,
         capability: i.tokenId ? tokenMap.get(i.tokenId) ?? null : null,
         status: i.status,
         includeHistory: i.includeHistory,
@@ -815,8 +826,23 @@ mlsRouter.post('/:spaceId/invite-tokens', zValidator('json', createTokenSchema),
 
   const body = c.req.valid('json')
 
-  const capError = await requireCapability(c, spaceId, 'invite')
-  if (capError) return capError
+  // Holding `invite` says nothing about *what* may be granted. Claiming a
+  // token has no capability check of its own — the token UUID is the
+  // authorization, and the stored capability lands directly in space_members
+  // — so the requested grant has to be attenuated against the caller here.
+  const authorized = await requireCapabilityWithAuthority(c, spaceId, 'invite')
+  if (!authorized.ok) return authorized.response
+
+  // Unreachable throw: createTokenSchema's enum admits only the three tiers
+  // presetForLegacyTier handles, so anything else is a 400 from zValidator.
+  const requested = presetForLegacyTier(body.capability)
+  const offender = grantExceedingCallerAuthority(authorized.capabilities, requested)
+  if (offender) {
+    return c.json(
+      { error: `Forbidden - requested grant exceeds caller authority (${offender.kind}: ${offender.cap})` },
+      403,
+    )
+  }
 
   try {
     const callerDid = getCallerDid(c)!

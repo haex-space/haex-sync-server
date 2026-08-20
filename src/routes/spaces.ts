@@ -4,6 +4,11 @@ import { z } from 'zod'
 import { db, spaces, spaceMembers } from '../db'
 import { authDispatcher } from '../middleware/authDispatcher'
 import { requireCapability } from '../middleware/ucanAuth'
+import {
+  grantExceedingCallerAuthority,
+  presetForLegacyTier,
+  requireCapabilityWithAuthority,
+} from '../middleware/capabilities'
 import { resolveDidIdentity } from '../middleware/didAuth'
 import { eq, and, sql } from 'drizzle-orm'
 import { broadcastToSpace, updateMembershipCache } from './ws'
@@ -147,25 +152,39 @@ spacesRouter.get('/', async (c) => {
   }
 })
 
-// DELETE /my-admin-spaces – Delete all spaces where the caller is admin
+// DELETE /my-admin-spaces – Delete all spaces the caller owns
+//
+// Scoped to ownership, not administration. This cascade-deletes the space, and
+// space_members.capability is a cached column a caller may have written, so
+// authorizing off it let an attacker destroy a space they merely administered
+// — someone else's space. The only caller is a user removing their own sync
+// backend, which is DID-auth, where authority is owner-only regardless.
 spacesRouter.delete('/my-admin-spaces', async (c) => {
-  const callerDid = getCallerDid(c)
-  if (!callerDid) {
-    return c.json({ error: 'Could not resolve caller DID' }, 401)
+  // DID-Auth only. This route has no capability gate and ignores spaceId, so
+  // its whole authority is the caller's identity — and a UCAN proves only who
+  // issued it, not who presented it. A member's credential is the owner's
+  // delegation to them, so presenting it verbatim would make getCallerDid()
+  // report the owner and delete every space the owner has. DID-Auth is a fresh
+  // signature over {did, action, timestamp, bodyHash}, so it cannot be lifted.
+  const didAuth = c.get('didAuth')
+  if (!didAuth) {
+    return c.json({ error: 'Bulk space deletion requires DID-Auth' }, 401)
   }
+  const callerDid = didAuth.did
 
   try {
-    const adminMemberships = await db.select({
-      spaceId: spaceMembers.spaceId,
-    })
-      .from(spaceMembers)
-      .where(and(eq(spaceMembers.did, callerDid), eq(spaceMembers.capability, 'space/admin')))
+    const deletedSpaceIds = await db.transaction(async (tx) => {
+      const ownedSpaces = await tx.select({ id: spaces.id })
+        .from(spaces)
+        .where(eq(spaces.ownerId, callerDid))
 
-    const deletedSpaceIds: string[] = []
-    for (const membership of adminMemberships) {
-      await db.delete(spaces).where(eq(spaces.id, membership.spaceId))
-      deletedSpaceIds.push(membership.spaceId)
-    }
+      const ids: string[] = []
+      for (const space of ownedSpaces) {
+        await tx.delete(spaces).where(eq(spaces.id, space.id))
+        ids.push(space.id)
+      }
+      return ids
+    })
 
     return c.json({ success: true, deletedSpaces: deletedSpaceIds.length })
   } catch (error) {
@@ -295,8 +314,22 @@ spacesRouter.post('/:spaceId/members', zValidator('json', inviteMemberSchema), a
   const relayResponse = await federationRelay(c, spaceId)
   if (relayResponse) return relayResponse
 
-  const capError = await requireCapability(c, spaceId, 'invite')
-  if (capError) return capError
+  // Holding `invite` says nothing about *what* may be granted. body.capability
+  // is written straight into space_members, so it has to be attenuated against
+  // what the caller may actually delegate.
+  const authorized = await requireCapabilityWithAuthority(c, spaceId, 'invite')
+  if (!authorized.ok) return authorized.response
+
+  // Unreachable throw: inviteMemberSchema's enum admits only tiers
+  // presetForLegacyTier handles, so anything else is a 400 from zValidator.
+  const requested = presetForLegacyTier(body.capability)
+  const offender = grantExceedingCallerAuthority(authorized.capabilities, requested)
+  if (offender) {
+    return c.json(
+      { error: `Forbidden - requested grant exceeds caller authority (${offender.kind}: ${offender.cap})` },
+      403,
+    )
+  }
 
   const callerDid = getCallerDid(c)
   if (!callerDid) {
@@ -440,12 +473,26 @@ spacesRouter.post('/:spaceId/transfer-ownership', zValidator('json', transferOwn
   const relayResponse = await federationRelay(c, spaceId)
   if (relayResponse) return relayResponse
 
+  // DID-Auth only, in addition to the admin capability. A delegated admin
+  // holds admin(delegatable:false) exactly so it cannot mint further admins;
+  // naming itself as target here would hand it the fully-delegatable owner set
+  // instead. It cannot re-issue an admin token to itself (verifyUcan rejects a
+  // non-delegatable re-issue), but it could present the owner's delegation
+  // verbatim, which passes the admin gate. Requiring proof of possession
+  // reduces this route to the owner, who is the only party that should
+  // reassign the root of trust. No haex-vault caller uses this endpoint.
+  const didAuth = c.get('didAuth')
+  if (!didAuth) {
+    return c.json({ error: 'Ownership transfer requires DID-Auth' }, 401)
+  }
+
   const capError = await requireCapability(c, spaceId, 'admin')
   if (capError) return capError
 
-  const callerDid = getCallerDid(c)
-  if (!callerDid) {
-    return c.json({ error: 'Could not resolve caller DID' }, 401)
+  const callerDid = didAuth.did
+
+  if (body.targetDid === callerDid) {
+    return c.json({ error: 'Cannot transfer ownership to yourself' }, 400)
   }
 
   try {

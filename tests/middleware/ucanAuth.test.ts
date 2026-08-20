@@ -1,4 +1,4 @@
-import { describe, test, expect, mock } from 'bun:test'
+import { describe, test, expect, mock, beforeEach } from 'bun:test'
 import { Hono } from 'hono'
 import {
   createUcan,
@@ -9,21 +9,22 @@ import {
   type SignFn,
 } from '@haex-space/ucan'
 
-// Mock DB before importing middleware — requireCapability queries space_members
-let mockMemberDids: string[] = ['__any__']
+// Mock DB before importing middleware — resolveCallerAuthority reads
+// spaces.ownerId to anchor the root of trust for the UCAN proof forest.
+//
+// The default is an unrelated DID, so a self-signed or forged root is rejected
+// unless a test explicitly makes its own issuer the space owner. Tests about
+// capability sufficiency or proof expiry must set it; tests about forged
+// authority must leave it alone.
+const UNRELATED_OWNER = 'did:key:zUnrelatedSpaceOwner'
+let mockSpaceOwnerDid = UNRELATED_OWNER
 
 mock.module('../../src/db', () => ({
   db: {
     select: () => ({
       from: () => ({
         where: () => ({
-          limit: () => {
-            if (mockMemberDids.includes('__any__')) {
-              return Promise.resolve([{ did: 'mock-member' }])
-            }
-            const did = mockMemberDids[0]
-            return Promise.resolve(did ? [{ did }] : [])
-          },
+          limit: () => Promise.resolve([{ ownerId: mockSpaceOwnerDid }]),
         }),
       }),
     }),
@@ -109,6 +110,13 @@ async function makeToken(
     issuer.sign,
   )
 }
+
+// Defence in depth, not a correctness dependency: identities are freshly
+// generated per test, so a leaked owner can only ever be a stale unrelated
+// DID, which is fail-closed. Resetting keeps each test's setup self-evident.
+beforeEach(() => {
+  mockSpaceOwnerDid = UNRELATED_OWNER
+})
 
 function createApp() {
   const app = new Hono()
@@ -201,15 +209,14 @@ describe('ucanAuthMiddleware - attack scenarios', () => {
     })
 
     const app = createApp()
-    // The UCAN is cryptographically valid (self-signed), so middleware passes it
-    // But requireCapability will pass too — the REAL protection is in Phase 4 (Vault-side)
-    // Server-side enforcement is the first defense line, not the final one
+    // The UCAN is cryptographically valid (self-signed), so the middleware
+    // admits it — verifyUcan skips the delegation-chain check entirely when
+    // there are no proofs. requireCapability is what rejects it, because the
+    // forest roots in the attacker rather than in the space owner.
     const res = await app.request(`/space/${spaceId}`, {
       headers: { Authorization: `UCAN ${token}` },
     })
-    // This passes at middleware level — route handlers must additionally verify
-    // the delegation chain roots to the space admin (via identity lookup)
-    expect(res.status).toBe(200)
+    expect(res.status).toBe(403)
   })
 
   test('attack: delegation chain escalation (member tries to delegate admin)', async () => {
@@ -287,6 +294,9 @@ describe('ucanAuthMiddleware - attack scenarios', () => {
       member.sign,
     )
 
+    // Root of trust is sound here; this test is about proof expiry alone.
+    mockSpaceOwnerDid = admin.did
+
     const app = createApp()
     const res = await app.request(`/space/${spaceId}`, {
       headers: { Authorization: `UCAN ${memberToken}` },
@@ -363,6 +373,10 @@ describe('requireCapability', () => {
       [spaceResource(spaceId)]: spaceCapabilitySet().read(true).build(),
     })
 
+    // Owner the space to the issuer so this measures the capability check
+    // rather than the root-of-trust check.
+    mockSpaceOwnerDid = issuer.did
+
     const app = createApp()
     // Route expects space/write, but token only has space/read
     const res = await app.request(`/space/${spaceId}`, {
@@ -370,7 +384,7 @@ describe('requireCapability', () => {
     })
     expect(res.status).toBe(403)
     const body = await res.json() as any
-    expect(body.error).toBeDefined()
+    expect(body.error).toContain('Insufficient capability')
   })
 
   test('passes when capability is sufficient', async () => {
@@ -381,8 +395,10 @@ describe('requireCapability', () => {
       [spaceResource(spaceId)]: spaceCapabilitySet().admin(true).write(true).build(),
     })
 
+    mockSpaceOwnerDid = issuer.did
+
     const app = createApp()
-    // Route expects space/write, token has space/admin (sufficient)
+    // Route expects space/write, token declares write explicitly
     const res = await app.request(`/space/${spaceId}`, {
       headers: { Authorization: `UCAN ${token}` },
     })
@@ -420,6 +436,10 @@ describe('requireCapability', () => {
       },
       member.sign,
     )
+
+    // The chain roots in the admin, so the admin must be the space owner for
+    // this delegation to carry any authority.
+    mockSpaceOwnerDid = admin.did
 
     const app = createApp()
     const res = await app.request(`/space/${spaceId}`, {
