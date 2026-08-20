@@ -160,10 +160,17 @@ spacesRouter.get('/', async (c) => {
 // — someone else's space. The only caller is a user removing their own sync
 // backend, which is DID-auth, where authority is owner-only regardless.
 spacesRouter.delete('/my-admin-spaces', async (c) => {
-  const callerDid = getCallerDid(c)
-  if (!callerDid) {
-    return c.json({ error: 'Could not resolve caller DID' }, 401)
+  // DID-Auth only. This route has no capability gate and ignores spaceId, so
+  // its whole authority is the caller's identity — and a UCAN proves only who
+  // issued it, not who presented it. A member's credential is the owner's
+  // delegation to them, so presenting it verbatim would make getCallerDid()
+  // report the owner and delete every space the owner has. DID-Auth is a fresh
+  // signature over {did, action, timestamp, bodyHash}, so it cannot be lifted.
+  const didAuth = c.get('didAuth')
+  if (!didAuth) {
+    return c.json({ error: 'Bulk space deletion requires DID-Auth' }, 401)
   }
+  const callerDid = didAuth.did
 
   try {
     const ownedSpaces = await db.select({
@@ -465,13 +472,23 @@ spacesRouter.post('/:spaceId/transfer-ownership', zValidator('json', transferOwn
   const relayResponse = await federationRelay(c, spaceId)
   if (relayResponse) return relayResponse
 
+  // DID-Auth only, in addition to the admin capability. A delegated admin
+  // holds admin(delegatable:false) exactly so it cannot mint further admins;
+  // naming itself as target here would hand it the fully-delegatable owner set
+  // instead. It cannot re-issue an admin token to itself (verifyUcan rejects a
+  // non-delegatable re-issue), but it could present the owner's delegation
+  // verbatim, which passes the admin gate. Requiring proof of possession
+  // reduces this route to the owner, who is the only party that should
+  // reassign the root of trust. No haex-vault caller uses this endpoint.
+  const didAuth = c.get('didAuth')
+  if (!didAuth) {
+    return c.json({ error: 'Ownership transfer requires DID-Auth' }, 401)
+  }
+
   const capError = await requireCapability(c, spaceId, 'admin')
   if (capError) return capError
 
-  const callerDid = getCallerDid(c)
-  if (!callerDid) {
-    return c.json({ error: 'Could not resolve caller DID' }, 401)
-  }
+  const callerDid = didAuth.did
 
   try {
     const result = await db.transaction(async (tx) => {
