@@ -116,12 +116,19 @@ beforeAll(async () => {
       return chain
     },
     update: () => emptyChain(),
-    // transfer-ownership: target must resolve as a member, and the ownerId
-    // write is captured so the side effect is observable.
+    // Shared by transfer-ownership (select the target member, update rows) and
+    // the bulk-delete transaction (select owned spaces, delete each). The two
+    // selects are told apart by requested projection, same as the top-level
+    // select mock above.
     transaction: async (fn: (tx: any) => any) => fn({
-      select: () => {
+      select: (columns?: Record<string, any>) => {
+        const wants = columns ? Object.keys(columns).sort().join(',') : '*'
         const chain: any = {}
         chain.from = () => chain
+        if (wants === 'id') {
+          chain.where = (condition: any) => resultChain(spacesByOwner[findDid(condition) ?? ''] ?? [])
+          return chain
+        }
         chain.where = () => chain
         chain.limit = () => Promise.resolve([{ did: transferTargetDid }])
         return chain
@@ -136,7 +143,15 @@ beforeAll(async () => {
         return chain
       },
       insert: () => emptyChain(),
-      delete: () => emptyChain(),
+      delete: () => {
+        const chain: any = {}
+        chain.where = (condition: any) => {
+          const found = findUuid(condition)
+          if (found) deletedSpaceIds.push(found)
+          return Promise.resolve([])
+        }
+        return chain
+      },
     }),
     }),
     // Override the `spaces` table so column access is observable. buildDbMock's

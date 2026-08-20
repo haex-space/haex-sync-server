@@ -380,3 +380,37 @@ describe('resolveCallerAuthority — DID-auth ownership guard', () => {
     expect(authority).toEqual({ ok: true, capabilities: ownerCapabilitySet() })
   })
 })
+
+describe('resolveCallerAuthority — no auth context', () => {
+  test('rejects a request with neither a UCAN nor DID-auth', async () => {
+    const spaceId = crypto.randomUUID()
+
+    const authority = await resolveCallerAuthority(contextWith({}), spaceId)
+
+    expect(authority).toEqual({
+      ok: false,
+      status: 403,
+      error: 'Forbidden - No auth context',
+    })
+  })
+})
+
+describe('resolveCallerAuthority — missing capability entry', () => {
+  test('rejects a UCAN with no capability entry for this space resource', async () => {
+    const owner = await makeIdentity()
+    const otherSpaceId = crypto.randomUUID()
+    const spaceId = crypto.randomUUID()
+    spaceRows = [{ ownerId: owner.did }]
+
+    const token = await signUcan(owner, owner.did, otherSpaceId, ADMIN_CAP)
+    const ucan = await ucanContextFor(token)
+
+    const authority = await resolveCallerAuthority(contextWith({ ucan }), spaceId)
+
+    expect(authority).toEqual({
+      ok: false,
+      status: 403,
+      error: `Forbidden - Insufficient capability for ${spaceResource(spaceId)}`,
+    })
+  })
+})

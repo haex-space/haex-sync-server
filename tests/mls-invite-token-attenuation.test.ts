@@ -102,21 +102,23 @@ async function inviterHeader(): Promise<string> {
   return `UCAN ${token}`
 }
 
+function tokenBody(capability: string) {
+  return JSON.stringify({ capability, expiresInSeconds: 3600, maxUses: 1 })
+}
+
 async function createToken(header: string, capability: string) {
   insertedToken = null
-  const body = JSON.stringify({ capability, expiresInSeconds: 3600, maxUses: 1 })
   const res = await mlsRouter.request(`/${SPACE_ID}/invite-tokens`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: header },
-    body,
+    body: tokenBody(capability),
   })
   return res
 }
 
 /** DID-Auth header for the space owner, who is the root authority. */
 async function ownerHeader(capability: string) {
-  const body = JSON.stringify({ capability, expiresInSeconds: 3600, maxUses: 1 })
-  return createDidAuthHeader(owner.keyPair.privateKey, owner.did, 'mls-write', body)
+  return createDidAuthHeader(owner.keyPair.privateKey, owner.did, 'mls-write', tokenBody(capability))
 }
 
 // ============================================
