@@ -1,5 +1,4 @@
 import { describe, test, expect, mock } from 'bun:test'
-import { eq } from 'drizzle-orm'
 import type { Context } from 'hono'
 import {
   createUcan,
@@ -13,19 +12,27 @@ import {
 // Mock DB before importing the middleware — resolveCallerAuthority reads
 // spaces.ownerId to establish the root of trust for both auth modes.
 //
-// Columns carry unique marker strings rather than realistic names so the
-// captured `.where()` clause can be introspected: without this, "scoped to
-// this space id" and "scoped to some other column" are indistinguishable and
-// the most security-relevant half of the query goes unpinned.
-const SPACES = { id: 'SPACES_ID_MARKER', ownerId: 'SPACES_OWNER_ID_MARKER' }
-const SPACE_MEMBERS = {
-  did: 'MEMBERS_DID_MARKER',
-  spaceId: 'MEMBERS_SPACE_ID_MARKER',
-  capability: 'MEMBERS_CAPABILITY_MARKER',
-}
-
+// Query scoping is pinned by watching which COLUMN the query touches, not by
+// introspecting the SQL condition. tests/storageCredentials.race.test.ts
+// replaces drizzle-orm's `eq` process-globally with a stub that discards its
+// column argument, so a condition captured at `.where()` genuinely cannot
+// distinguish spaces.id from spaces.ownerId once that mock is live. Observing
+// the property access happens before `eq` ever sees the value, so it holds
+// regardless of which `eq` won.
+let columnReads: string[] = []
 let spaceRows: { ownerId: string }[] = []
 let lastWhere: unknown = null
+
+function watchedTable(table: string) {
+  return new Proxy({} as Record<string, string>, {
+    get: (_target, property) => {
+      if (typeof property !== 'string') return undefined
+      const column = `${table}.${property}`
+      columnReads.push(column)
+      return column
+    },
+  })
+}
 
 mock.module('../../src/db', () => ({
   db: {
@@ -38,13 +45,12 @@ mock.module('../../src/db', () => ({
       }),
     }),
   },
-  spaces: SPACES,
-  spaceMembers: SPACE_MEMBERS,
+  spaces: watchedTable('spaces'),
+  spaceMembers: watchedTable('space_members'),
 }))
 
 import { ownerCapabilitySet, resolveCallerAuthority } from '../../src/middleware/capabilities'
 import { makeIdentity, type Identity } from '../integration/helpers'
-import { flattenSqlChunks } from '../helpers/db-mock'
 
 // ============================================
 // Test Helpers
@@ -96,20 +102,16 @@ async function ucanContextFor(token: string) {
 }
 
 /**
- * True when `cond` contains `eq(<columnMarker>, <expectedValue>)`.
- *
- * drizzle compiles eq(a, b) to sql`${a} = ${b}`, i.e. three consecutive
- * chunks: the left operand, a StringChunk(" = "), and the right operand.
- * Pinned by the shape test below so a drizzle bump fails loudly here rather
- * than silently turning these assertions into no-ops.
+ * True when `value` appears anywhere inside a captured condition, whatever
+ * shape the live `eq` gave it. Deliberately structure-agnostic: it pins that
+ * the predicate carries this space id without depending on drizzle internals.
  */
-function whereFiltersEq(cond: unknown, columnMarker: string, expectedValue: string): boolean {
-  const chunks = flattenSqlChunks(cond)
-  for (let i = 0; i < chunks.length - 2; i++) {
-    if (chunks[i] !== columnMarker) continue
-    const operator = chunks[i + 1]
-    if (!operator || !Array.isArray(operator.value) || operator.value[0] !== ' = ') continue
-    if (chunks[i + 2] === expectedValue) return true
+function conditionMentions(node: unknown, value: string, depth = 0): boolean {
+  if (depth > 20) return false
+  if (node === value) return true
+  if (Array.isArray(node)) return node.some((n) => conditionMentions(n, value, depth + 1))
+  if (node && typeof node === 'object') {
+    return Object.values(node).some((v) => conditionMentions(v, value, depth + 1))
   }
   return false
 }
@@ -263,43 +265,32 @@ describe('resolveCallerAuthority — proof-forest root of trust', () => {
 // on the wrong column entirely.
 
 describe('resolveCallerAuthority — owner lookup scoping', () => {
-  // Pins the drizzle-orm internal chunk shape whereFiltersEq() depends on. If
-  // a drizzle bump changes how eq() builds queryChunks, this fails here
-  // instead of quietly making the scoping assertions below vacuous.
-  test('drizzle eq() produces the queryChunks shape the helper assumes', () => {
-    const cond = eq('LEFT_MARKER' as never, 'right-value')
-    const chunks = flattenSqlChunks(cond)
-
-    expect(chunks.length).toBe(5)
-    expect(chunks[0].value).toEqual([''])
-    expect(chunks[1]).toBe('LEFT_MARKER')
-    expect(chunks[2].value).toEqual([' = '])
-    expect(chunks[3]).toBe('right-value')
-    expect(whereFiltersEq(cond, 'LEFT_MARKER', 'right-value')).toBe(true)
-    expect(whereFiltersEq(cond, 'SPACES_OWNER_ID_MARKER', 'right-value')).toBe(false)
-  })
-
-  test('scopes the UCAN-path owner lookup to spaces.id = spaceId', async () => {
+  test('scopes the UCAN-path owner lookup to spaces.id and this space', async () => {
     const owner = await makeIdentity()
     spaceRows = [{ ownerId: owner.did }]
     const spaceId = crypto.randomUUID()
-    lastWhere = null
-
     const token = await signUcan(owner, owner.did, spaceId, ADMIN_CAP)
-    await resolveCallerAuthority(contextWith({ ucan: await ucanContextFor(token) }), spaceId)
+    const ucan = await ucanContextFor(token)
 
-    expect(whereFiltersEq(lastWhere, SPACES.id, spaceId)).toBe(true)
+    columnReads = []
+    lastWhere = null
+    await resolveCallerAuthority(contextWith({ ucan }), spaceId)
+
+    expect(columnReads).toContain('spaces.id')
+    expect(conditionMentions(lastWhere, spaceId)).toBe(true)
   })
 
-  test('scopes the DID-auth owner lookup to spaces.id = spaceId', async () => {
+  test('scopes the DID-auth owner lookup to spaces.id and this space', async () => {
     const owner = await makeIdentity()
     spaceRows = [{ ownerId: owner.did }]
     const spaceId = crypto.randomUUID()
-    lastWhere = null
 
+    columnReads = []
+    lastWhere = null
     await resolveCallerAuthority(contextWith({ didAuth: { did: owner.did } }), spaceId)
 
-    expect(whereFiltersEq(lastWhere, SPACES.id, spaceId)).toBe(true)
+    expect(columnReads).toContain('spaces.id')
+    expect(conditionMentions(lastWhere, spaceId)).toBe(true)
   })
 })
 
