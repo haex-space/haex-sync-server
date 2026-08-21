@@ -123,7 +123,10 @@ function createApp() {
   app.use('*', ucanAuthMiddleware)
   app.get('/test', (c) => {
     const ucan = c.get('ucan')
-    return c.json({ issuerDid: ucan?.issuerDid ?? null })
+    return c.json({
+      issuerDid: ucan?.issuerDid ?? null,
+      audienceDid: ucan?.audienceDid ?? null,
+    })
   })
   app.get('/space/:spaceId', async (c) => {
     const spaceId = c.req.param('spaceId')
@@ -170,6 +173,57 @@ describe('ucanAuthMiddleware', () => {
     expect(res.status).toBe(200)
     const body = await res.json() as any
     expect(body.issuerDid).toBe(issuer.did)
+  })
+
+  test('delegated leaf: caller identity is the audience, not the issuer', async () => {
+    // A UCAN says "iss grants capabilities to aud" — the bearer is aud.
+    // Historically the middleware exposed only `issuerDid` and callers were
+    // attributed to the delegator, misfiling KeyPackages and invite rows.
+    const owner = await makeIdentity()
+    const member = await makeIdentity()
+    mockSpaceOwnerDid = owner.did
+
+    const spaceId = crypto.randomUUID()
+    const rootUcan = await makeToken(owner, owner.did, {
+      [spaceResource(spaceId)]: spaceCapabilitySet()
+        .read(true).write(true).invite(true).admin(true).build(),
+    })
+    const delegated = await makeToken(owner, member.did, {
+      [spaceResource(spaceId)]: spaceCapabilitySet().read(true).build(),
+    }, { proofs: [rootUcan] })
+
+    const app = createApp()
+    const res = await app.request('/test', {
+      headers: { Authorization: `UCAN ${delegated}` },
+    })
+    expect(res.status).toBe(200)
+    const body = await res.json() as any
+    expect(body.audienceDid).toBe(member.did)
+    expect(body.issuerDid).toBe(owner.did)
+  })
+
+  test('self-signed owner root: audience equals issuer equals owner', async () => {
+    // The residual gap the caller-identity fix does NOT close: a self-signed
+    // owner root has iss == aud == owner, so lifting it still attributes the
+    // caller to the owner. Pinned here so a future reader is not misled into
+    // thinking the fix is a full proof-of-possession solution.
+    const owner = await makeIdentity()
+    mockSpaceOwnerDid = owner.did
+
+    const spaceId = crypto.randomUUID()
+    const rootUcan = await makeToken(owner, owner.did, {
+      [spaceResource(spaceId)]: spaceCapabilitySet()
+        .read(true).write(true).invite(true).admin(true).build(),
+    })
+
+    const app = createApp()
+    const res = await app.request('/test', {
+      headers: { Authorization: `UCAN ${rootUcan}` },
+    })
+    expect(res.status).toBe(200)
+    const body = await res.json() as any
+    expect(body.audienceDid).toBe(owner.did)
+    expect(body.issuerDid).toBe(owner.did)
   })
 
   test('rejects expired UCAN with 401', async () => {
