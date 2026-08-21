@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { db, spaceMembers, identities, mlsKeyPackages, mlsMessages, mlsWelcomeMessages, mlsGroupInfo, spaceInvites, spaceInviteTokens } from '../db'
+import { db, spaceMembers, identities, mlsKeyPackages, mlsMessages, mlsWelcomeMessages, mlsGroupInfo, spaceInvites, spaceInviteTokens, spaces } from '../db'
 import { authDispatcher } from '../middleware/authDispatcher'
 import { requireCapability } from '../middleware/ucanAuth'
 import {
@@ -921,6 +921,31 @@ mlsRouter.delete('/:spaceId/invite-tokens/:tokenId', async (c) => {
   if (capError) return capError
 
   try {
+    // Holding `invite` is not enough. A member should not revoke tokens
+    // they didn't mint — only the token's creator or the space owner may.
+    const callerDid = getCallerDid(c)!
+
+    const [existing] = await db
+      .select({ createdByDid: spaceInviteTokens.createdByDid })
+      .from(spaceInviteTokens)
+      .where(and(eq(spaceInviteTokens.id, tokenId), eq(spaceInviteTokens.spaceId, spaceId)))
+      .limit(1)
+    if (!existing) return c.json({ error: 'Token not found' }, 404)
+
+    if (existing.createdByDid !== callerDid) {
+      const [space] = await db
+        .select({ ownerId: spaces.ownerId })
+        .from(spaces)
+        .where(eq(spaces.id, spaceId))
+        .limit(1)
+      if (!space || space.ownerId !== callerDid) {
+        return c.json(
+          { error: 'Forbidden - only the token creator or the space owner may revoke this token' },
+          403,
+        )
+      }
+    }
+
     const [deleted] = await db.delete(spaceInviteTokens)
       .where(and(eq(spaceInviteTokens.id, tokenId), eq(spaceInviteTokens.spaceId, spaceId)))
       .returning()
