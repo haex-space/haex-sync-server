@@ -53,8 +53,10 @@ import { isValidUuid } from '../utils/uuid'
 
 /** Get caller DID from either UCAN or DID-Auth context */
 function getCallerDid(c: any): string | null {
+  // A UCAN caller is identified by `aud`, not `iss` — `iss` is the delegator.
+  // See src/middleware/ucanAuth.ts for the full rationale.
   const ucan = c.get('ucan')
-  if (ucan) return ucan.issuerDid
+  if (ucan) return ucan.audienceDid
   const didAuth = c.get('didAuth')
   if (didAuth) return didAuth.did
   return null

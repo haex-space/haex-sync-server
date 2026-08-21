@@ -43,8 +43,15 @@ export const ucanAuthMiddleware = async (c: Context, next: Next) => {
     // Full cryptographic verification (signature + proof chain)
     const verified = await verifyUcan(token, verify)
 
+    // A UCAN says "iss grants capabilities to aud" — the bearer is aud.
+    // Historically `issuerDid` was used as the caller identity, which
+    // attributed delegated-leaf calls to the delegator and misfiled
+    // KeyPackages, invites and MLS messages under the wrong principal.
+    // Callers should read `audienceDid`; `issuerDid` remains available
+    // for code that genuinely needs to know who granted the capability.
     c.set('ucan', {
       issuerDid: verified.payload.iss,
+      audienceDid: verified.payload.aud,
       publicKey: verified.payload.iss,
       capabilities: verified.payload.cap,
       verifiedUcan: verified,
