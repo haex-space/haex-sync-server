@@ -18,7 +18,12 @@
 import { describe, test, expect, mock, beforeAll } from 'bun:test'
 import { createUcan, spaceCapabilitySet, spaceResource } from '@haex-space/ucan'
 import { buildDbMock, emptyChain } from './helpers/db-mock'
-import { makeIdentity, createDidAuthHeader, type Identity } from './integration/helpers'
+import {
+  makeIdentity,
+  createDidAuthHeader,
+  ucanRequestHeaders,
+  type Identity,
+} from './integration/helpers'
 
 const SPACE_ID = '66666666-6666-4666-8666-666666666666'
 const OWNED_A = '77777777-7777-4777-8777-777777777777'
@@ -283,12 +288,16 @@ async function inviterHeader(): Promise<string> {
   return `UCAN ${token}`
 }
 
-async function inviteMember(header: string, capability: string) {
+async function inviteMember(header: string, capability: string, holder: Identity = inviter) {
   insertedMember = null
   const body = JSON.stringify({ did: INVITEE_DID, label: 'New member', capability })
-  return spacesRouter.request(`/${SPACE_ID}/members`, {
+  const path = `/${SPACE_ID}/members`
+  return spacesRouter.request(path, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: header },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(await ucanRequestHeaders(holder, header, { method: 'POST', path, body })),
+    },
     body,
   })
 }
@@ -446,11 +455,16 @@ describe('POST /:spaceId/transfer-ownership — rejects UCAN auth', () => {
     transferTargetDid = inviter.did
     const adminSet = spaceCapabilitySet().read(true).write(true).invite(true).admin(false).build()
     const header = await liftedOwnerDelegation(inviter, adminSet)
+    const path = `/${SPACE_ID}/transfer-ownership`
+    const body = JSON.stringify({ targetDid: inviter.did })
 
-    const res = await spacesRouter.request(`/${SPACE_ID}/transfer-ownership`, {
+    const res = await spacesRouter.request(path, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: header },
-      body: JSON.stringify({ targetDid: inviter.did }),
+      headers: {
+        'Content-Type': 'application/json',
+        ...(await ucanRequestHeaders(inviter, header, { method: 'POST', path, body })),
+      },
+      body,
     })
 
     expect(res.status).toBe(401)

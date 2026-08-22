@@ -1,7 +1,15 @@
 import { describe, test, expect } from 'bun:test'
 import { Hono } from 'hono'
-import { createUcan, createWebCryptoSigner, spaceCapabilitySet, spaceResource } from '@haex-space/ucan'
+import {
+  createUcan,
+  createUcanPopHeader,
+  createWebCryptoSigner,
+  spaceCapabilitySet,
+  spaceResource,
+  POP_HEADER_NAME,
+} from '@haex-space/ucan'
 import { authDispatcher } from '../../src/middleware/authDispatcher'
+import { destroyPopJtiCache } from '../../src/middleware/popJtiCache'
 
 const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
 
@@ -70,6 +78,7 @@ describe('Auth Dispatcher', () => {
   })
 
   test('dispatches to UCAN handler', async () => {
+    destroyPopJtiCache()
     const id = await makeIdentity()
     const token = await createUcan({
       issuer: id.did,
@@ -78,8 +87,20 @@ describe('Auth Dispatcher', () => {
       expiration: Math.floor(Date.now() / 1000) + 3600,
     }, id.sign)
 
+    const pop = await createUcanPopHeader({
+      privateKey: id.keyPair.privateKey,
+      ucanAud: id.did,
+      method: 'GET',
+      path: '/test',
+      rawQuery: '',
+      body: '',
+    })
+
     const res = await createApp().request('/test', {
-      headers: { Authorization: `UCAN ${token}` },
+      headers: {
+        Authorization: `UCAN ${token}`,
+        [POP_HEADER_NAME]: pop,
+      },
     })
     expect(res.status).toBe(200)
     const json = await res.json() as any

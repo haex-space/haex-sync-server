@@ -11,7 +11,12 @@
 import { describe, test, expect, mock, beforeAll, beforeEach } from 'bun:test'
 import { createUcan, spaceCapabilitySet, spaceResource } from '@haex-space/ucan'
 import { buildDbMock, emptyChain } from './helpers/db-mock'
-import { makeIdentity, createDidAuthHeader, type Identity } from './integration/helpers'
+import {
+  makeIdentity,
+  createDidAuthHeader,
+  ucanRequestHeaders,
+  type Identity,
+} from './integration/helpers'
 
 const SPACE_ID = '77777777-7777-4777-8777-777777777777'
 const TOKEN_ID = '88888888-8888-4888-8888-888888888888'
@@ -117,9 +122,18 @@ async function revoke(header: string): Promise<Response> {
   }) as Promise<Response>
 }
 
+async function revokeUcan(who: Identity): Promise<Response> {
+  const header = await inviterUcanHeader(who)
+  const path = `/${SPACE_ID}/invite-tokens/${TOKEN_ID}`
+  return mlsRouter.request(path, {
+    method: 'DELETE',
+    headers: await ucanRequestHeaders(who, header, { method: 'DELETE', path }),
+  }) as Promise<Response>
+}
+
 describe('DELETE /:spaceId/invite-tokens/:tokenId — per-creator scope', () => {
   test('rejects an invite-cap holder who did not mint the token', async () => {
-    const res = await revoke(await inviterUcanHeader(inviter))
+    const res = await revokeUcan(inviter)
 
     expect(res.status).toBe(403)
     const json = (await res.json()) as any
@@ -132,7 +146,7 @@ describe('DELETE /:spaceId/invite-tokens/:tokenId — per-creator scope', () => 
   })
 
   test('allows the creator to revoke their own token', async () => {
-    const res = await revoke(await inviterUcanHeader(creator))
+    const res = await revokeUcan(creator)
 
     expect(res.status).toBe(200)
     const json = (await res.json()) as any

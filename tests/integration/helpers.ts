@@ -1,9 +1,12 @@
 import {
   createUcan,
+  createUcanPopHeader,
   createWebCryptoSigner,
+  decodeUcan,
   spaceResource,
   multibaseEncode,
   spaceCapabilitySetFromEntries,
+  POP_HEADER_NAME,
   type Capabilities,
   type SpaceCap,
   type SignFn,
@@ -148,6 +151,52 @@ export async function createUcanHeader(
   )
 
   return `UCAN ${token}`
+}
+
+/**
+ * Build a request-headers object for a UCAN-authed call that carries BOTH
+ * `Authorization: UCAN <token>` and the companion `X-UCAN-PoP` header signed
+ * by the token's audience against the request line + body.
+ *
+ * The PoP audience is decoded from the UCAN, so the same helper works whether
+ * the token is self-issued (aud == iss) or delegated (aud == holder).
+ * Method defaults to `GET` and body defaults to empty; `rawQuery` is the
+ * query string without the leading `?`.
+ */
+export async function ucanRequestHeaders(
+  holder: Identity,
+  ucanAuthorization: string,
+  request: { method?: string; path: string; rawQuery?: string; body?: string },
+): Promise<Record<string, string>> {
+  const token = ucanAuthorization.startsWith('UCAN ')
+    ? ucanAuthorization.slice(5)
+    : ucanAuthorization
+  const aud = decodeUcan(token).payload.aud
+  const method = (request.method ?? 'GET').toUpperCase()
+  const body = request.body ?? ''
+  const pop = await createUcanPopHeader({
+    privateKey: holder.keyPair.privateKey,
+    ucanAud: aud,
+    method,
+    path: request.path,
+    rawQuery: request.rawQuery ?? '',
+    body,
+  })
+  const headers: Record<string, string> = {
+    Authorization: ucanAuthorization.startsWith('UCAN ')
+      ? ucanAuthorization
+      : `UCAN ${ucanAuthorization}`,
+    [POP_HEADER_NAME]: pop,
+  }
+  // Body-bearing methods must present Content-Length so the middleware's size
+  // guard is a real ceiling (returns 411 otherwise). `app.request` in Bun/Hono
+  // does not auto-set it when the body option is a plain string, so we compute
+  // it here from the body we already signed.
+  const bodyBearing = method !== 'GET' && method !== 'DELETE' && method !== 'HEAD'
+  if (bodyBearing) {
+    headers['Content-Length'] = String(new TextEncoder().encode(body).length)
+  }
+  return headers
 }
 
 // --- Server Identity (for federation tests) ---

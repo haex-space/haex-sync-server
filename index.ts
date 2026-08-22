@@ -113,4 +113,10 @@ export default {
   port,
   fetch: app.fetch,
   websocket,
+  // Two-layer body-size enforcement paired with the middleware Content-Length
+  // check (see MAX_UCAN_ROUTE_BODY_BYTES in src/middleware/ucanAuth.ts): the
+  // header check is a fast reject for honest clients; this runtime cap aborts
+  // the connection when actual bytes exceed the limit regardless of what the
+  // header claimed. Kept in sync deliberately — one place, one number.
+  maxRequestBodySize: 100 * 1024 * 1024,
 }
