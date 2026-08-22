@@ -248,6 +248,33 @@ describe('ucanAuthMiddleware — X-UCAN-PoP required', () => {
     expect(body.error).toBe(POP_ERROR_MESSAGES.REQUEST_MISMATCH)
   })
 
+  test('4b. PoP request-hash mismatch on raw query → 401 PoP request mismatch', async () => {
+    const holder = await makeIdentity()
+    const ucan = await selfIssuedUcan(holder)
+
+    // Path unchanged; sign one raw query, request a different one. Pins that
+    // the middleware forwards `rawQuery` into `verifyUcanPop` so a regression
+    // that drops query-string binding cannot ship silently.
+    const popHeader = await createUcanPopHeader({
+      privateKey: holder.privateKey,
+      ucanAud: holder.did,
+      method: 'GET',
+      path: '/read',
+      rawQuery: 'action=read',
+      body: '',
+    })
+
+    const res = await createApp().request('/read?action=write', {
+      headers: {
+        Authorization: `UCAN ${ucan}`,
+        [POP_HEADER_NAME]: popHeader,
+      },
+    })
+    expect(res.status).toBe(401)
+    const body = await res.json() as { error: string }
+    expect(body.error).toBe(POP_ERROR_MESSAGES.REQUEST_MISMATCH)
+  })
+
   test('5. PoP replay of same jti within window → first 200, second 401 PoP replay detected', async () => {
     const holder = await makeIdentity()
     const ucan = await selfIssuedUcan(holder)
@@ -345,6 +372,33 @@ describe('ucanAuthMiddleware — X-UCAN-PoP required', () => {
       return
     }
     expect(res.status).toBe(411)
+  })
+
+  test('7b. Malformed Content-Length (non-integer) → 400 before buffering', async () => {
+    const holder = await makeIdentity()
+    const ucan = await selfIssuedUcan(holder)
+
+    // `Number("invalid")` is NaN, which trivially fails both `> MAX` and the
+    // `bodyBearingMethod && !hasContentLengthHeader` guards. Without an
+    // explicit safe-integer check, a body-bearing request could reach body
+    // buffering with a lying declared length.
+    const req = new Request('http://x/write', {
+      method: 'POST',
+      headers: {
+        Authorization: `UCAN ${ucan}`,
+        'Content-Type': 'application/json',
+        'Content-Length': 'not-a-number',
+      },
+      body: '{"name":"x"}',
+    })
+    // Fetch's Request constructor normalizes Content-Length on string bodies;
+    // force the malformed value back onto the headers before dispatch.
+    req.headers.set('Content-Length', 'not-a-number')
+
+    const res = await createApp().fetch(req)
+    expect(res.status).toBe(400)
+    const body = await res.json() as { error: string }
+    expect(body.error).toBe('Invalid Content-Length header')
   })
 
   test('8. zod-validator downstream reads the buffered body (Hono cache)', async () => {

@@ -75,10 +75,17 @@ export const ucanAuthMiddleware = async (c: Context, next: Next) => {
 
   // Body-size enforcement — reject BEFORE buffering the body.
   const method = c.req.method
-  const hasContentLengthHeader = c.req.header('Content-Length') !== undefined
-  const contentLength = Number(c.req.header('Content-Length') ?? 0)
+  const contentLengthHeader = c.req.header('Content-Length')
+  const hasContentLengthHeader = contentLengthHeader !== undefined
+  const contentLength = hasContentLengthHeader ? Number(contentLengthHeader) : 0
   const bodyBearingMethod = method !== 'GET' && method !== 'DELETE' && method !== 'HEAD'
 
+  // A present Content-Length must parse to a non-negative safe integer, else
+  // both size guards below trivially pass on NaN and a body-bearing request
+  // could reach buffering with a lying declared length.
+  if (hasContentLengthHeader && (!Number.isSafeInteger(contentLength) || contentLength < 0)) {
+    return c.json({ error: 'Invalid Content-Length header' }, 400)
+  }
   if (contentLength > MAX_UCAN_ROUTE_BODY_BYTES) {
     return c.json({ error: 'Request body exceeds size limit' }, 413)
   }
