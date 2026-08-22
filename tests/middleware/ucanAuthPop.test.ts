@@ -151,6 +151,39 @@ afterAll(() => {
 // §B.3 tests
 // ============================================
 
+describe('ucanAuthMiddleware — idempotency across router mount duplication', () => {
+  test('running the middleware twice on the same request must not flag the PoP as replay', async () => {
+    // Regression: `spacesRouter` and `mlsRouter` both mount at `/spaces` and
+    // both `.use('/*', authDispatcher)`. Every `/spaces/**` request therefore
+    // enters `ucanAuthMiddleware` twice. Before this fix the second call
+    // re-added the same `jti` to the seen-cache, saw it as duplicate and
+    // 401'd every request with "PoP replay detected".
+    const identity = await makeIdentity()
+    const ucan = await selfIssuedUcan(identity)
+    const popHeader = await createUcanPopHeader({
+      privateKey: identity.privateKey,
+      ucanAud: identity.did,
+      method: 'GET',
+      path: '/read',
+      rawQuery: '',
+      body: '',
+    })
+
+    const app = new Hono()
+    app.use('*', ucanAuthMiddleware)
+    app.use('*', ucanAuthMiddleware) // second mount — the whole point of this test
+    app.get('/read', (c) => c.json({ ok: true }))
+
+    const res = await app.request('/read', {
+      headers: {
+        Authorization: `UCAN ${ucan}`,
+        [POP_HEADER_NAME]: popHeader,
+      },
+    })
+    expect(res.status).toBe(200)
+  })
+})
+
 describe('ucanAuthMiddleware — X-UCAN-PoP required', () => {
   test('1. X-UCAN-PoP absent on a UCAN-authed request → 401 with PoP-required reason', async () => {
     const identity = await makeIdentity()
