@@ -1,10 +1,13 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test'
+import { describe, test, expect, mock, beforeEach, afterAll } from 'bun:test'
 import { Hono } from 'hono'
 import {
   createUcan,
   createWebCryptoSigner,
   spaceCapabilitySet,
   spaceResource,
+  createUcanPopHeader,
+  decodeUcan,
+  POP_HEADER_NAME,
   type Capabilities,
   type SignFn,
 } from '@haex-space/ucan'
@@ -34,6 +37,7 @@ mock.module('../../src/db', () => ({
 }))
 
 import { ucanAuthMiddleware, requireCapability } from '../../src/middleware/ucanAuth'
+import { destroyPopJtiCache } from '../../src/middleware/popJtiCache'
 
 // ============================================
 // Test Helpers
@@ -66,6 +70,7 @@ function base58btcEncode(bytes: Uint8Array): string {
 interface Identity {
   did: string
   sign: SignFn
+  privateKey: CryptoKey
 }
 
 async function makeIdentity(): Promise<Identity> {
@@ -88,7 +93,55 @@ async function makeIdentity(): Promise<Identity> {
   return {
     did,
     sign: createWebCryptoSigner(keyPair.privateKey),
+    privateKey: keyPair.privateKey,
   }
+}
+
+/**
+ * Build the `X-UCAN-PoP` header value for a request under `holder`'s UCAN.
+ * The audience is decoded from the UCAN token directly, so the helper works
+ * for delegated and self-issued tokens without extra threading.
+ */
+async function makePopHeader(
+  holder: Identity,
+  ucanToken: string,
+  method: string,
+  path: string,
+  rawQuery: string = '',
+  body: string = '',
+): Promise<string> {
+  const aud = decodeUcan(ucanToken).payload.aud
+  return createUcanPopHeader({
+    privateKey: holder.privateKey,
+    ucanAud: aud,
+    method,
+    path,
+    rawQuery,
+    body,
+  })
+}
+
+/**
+ * Convenience: dispatch a request through `app` with both `Authorization: UCAN`
+ * and a matching `X-UCAN-PoP` header. Existing tests that expect the request
+ * to be accepted (or rejected for reasons unrelated to PoP) all pass the same
+ * shape and just care about downstream behaviour.
+ */
+async function requestWithUcanAndPop(
+  app: ReturnType<typeof createApp>,
+  holder: Identity,
+  ucanToken: string,
+  method: 'GET' | 'POST' | 'DELETE' = 'GET',
+  path: string = '/test',
+) {
+  const popHeader = await makePopHeader(holder, ucanToken, method, path)
+  return app.request(path, {
+    method,
+    headers: {
+      Authorization: `UCAN ${ucanToken}`,
+      [POP_HEADER_NAME]: popHeader,
+    },
+  })
 }
 
 async function makeToken(
@@ -114,8 +167,15 @@ async function makeToken(
 // Defence in depth, not a correctness dependency: identities are freshly
 // generated per test, so a leaked owner can only ever be a stale unrelated
 // DID, which is fail-closed. Resetting keeps each test's setup self-evident.
+// The jti cache also carries state across tests — drop it so replay-defence
+// state from one test can never bleed into another.
 beforeEach(() => {
   mockSpaceOwnerDid = UNRELATED_OWNER
+  destroyPopJtiCache()
+})
+
+afterAll(() => {
+  destroyPopJtiCache()
 })
 
 function createApp() {
@@ -159,17 +219,18 @@ describe('ucanAuthMiddleware', () => {
   })
 
   test('accepts valid UCAN and sets context', async () => {
+    // The audience is a foreign DID here — the middleware still admits the
+    // UCAN, but the PoP header must be signed by the foreign audience's key.
+    // Model that as an audience Identity we own end-to-end.
     const issuer = await makeIdentity()
-    const audience = 'did:key:zServer123'
+    const audienceIdentity = await makeIdentity()
     const spaceId = crypto.randomUUID()
-    const token = await makeToken(issuer, audience, {
+    const token = await makeToken(issuer, audienceIdentity.did, {
       [spaceResource(spaceId)]: spaceCapabilitySet().admin(true).build(),
     })
 
     const app = createApp()
-    const res = await app.request('/test', {
-      headers: { Authorization: `UCAN ${token}` },
-    })
+    const res = await requestWithUcanAndPop(app, audienceIdentity, token)
     expect(res.status).toBe(200)
     const body = await res.json() as any
     expect(body.issuerDid).toBe(issuer.did)
@@ -193,9 +254,9 @@ describe('ucanAuthMiddleware', () => {
     }, { proofs: [rootUcan] })
 
     const app = createApp()
-    const res = await app.request('/test', {
-      headers: { Authorization: `UCAN ${delegated}` },
-    })
+    // The delegated token's aud is `member`, so the PoP must be signed by
+    // member's key — exactly the property PoP is meant to enforce.
+    const res = await requestWithUcanAndPop(app, member, delegated)
     expect(res.status).toBe(200)
     const body = await res.json() as any
     expect(body.audienceDid).toBe(member.did)
@@ -217,9 +278,7 @@ describe('ucanAuthMiddleware', () => {
     })
 
     const app = createApp()
-    const res = await app.request('/test', {
-      headers: { Authorization: `UCAN ${rootUcan}` },
-    })
+    const res = await requestWithUcanAndPop(app, owner, rootUcan)
     expect(res.status).toBe(200)
     const body = await res.json() as any
     expect(body.audienceDid).toBe(owner.did)
@@ -267,9 +326,7 @@ describe('ucanAuthMiddleware - attack scenarios', () => {
     // admits it — verifyUcan skips the delegation-chain check entirely when
     // there are no proofs. requireCapability is what rejects it, because the
     // forest roots in the attacker rather than in the space owner.
-    const res = await app.request(`/space/${spaceId}`, {
-      headers: { Authorization: `UCAN ${token}` },
-    })
+    const res = await requestWithUcanAndPop(app, attacker, token, 'GET', `/space/${spaceId}`)
     expect(res.status).toBe(403)
   })
 
@@ -311,6 +368,8 @@ describe('ucanAuthMiddleware - attack scenarios', () => {
       return c.json({ ok: true })
     })
 
+    // The escalation attempt fails at UCAN verify, which runs BEFORE PoP —
+    // sending no PoP is fine because the request never reaches the PoP step.
     const res = await app.request(`/space/${spaceId}`, {
       headers: { Authorization: `UCAN ${escalatedToken}` },
     })
@@ -352,9 +411,7 @@ describe('ucanAuthMiddleware - attack scenarios', () => {
     mockSpaceOwnerDid = admin.did
 
     const app = createApp()
-    const res = await app.request(`/space/${spaceId}`, {
-      headers: { Authorization: `UCAN ${memberToken}` },
-    })
+    const res = await requestWithUcanAndPop(app, member, memberToken, 'GET', `/space/${spaceId}`)
     // The outer token is valid, but the proof chain has an expired token
     // The UCAN library may or may not check proof expiry — this test documents behavior
     // Either way, the Vault (Phase 4) is the final authority
@@ -378,6 +435,7 @@ describe('ucanAuthMiddleware - attack scenarios', () => {
     const tamperedToken = `${parts[0]}.${tamperedPayload}.${parts[2]}`
 
     const app = createApp()
+    // Tampered token fails UCAN verify before the PoP step; no PoP needed.
     const res = await app.request(`/space/${spaceId}`, {
       headers: { Authorization: `UCAN ${tamperedToken}` },
     })
@@ -396,9 +454,7 @@ describe('ucanAuthMiddleware - attack scenarios', () => {
     })
 
     const app = createApp()
-    const res = await app.request(`/space/${targetSpaceId}`, {
-      headers: { Authorization: `UCAN ${token}` },
-    })
+    const res = await requestWithUcanAndPop(app, issuer, token, 'GET', `/space/${targetSpaceId}`)
     expect(res.status).toBe(403)
   })
 
@@ -421,9 +477,9 @@ describe('ucanAuthMiddleware - attack scenarios', () => {
 describe('requireCapability', () => {
   test('returns 403 when capability is missing', async () => {
     const issuer = await makeIdentity()
-    const audience = 'did:key:zServer123'
+    const audienceIdentity = await makeIdentity()
     const spaceId = crypto.randomUUID()
-    const token = await makeToken(issuer, audience, {
+    const token = await makeToken(issuer, audienceIdentity.did, {
       [spaceResource(spaceId)]: spaceCapabilitySet().read(true).build(),
     })
 
@@ -433,9 +489,7 @@ describe('requireCapability', () => {
 
     const app = createApp()
     // Route expects space/write, but token only has space/read
-    const res = await app.request(`/space/${spaceId}`, {
-      headers: { Authorization: `UCAN ${token}` },
-    })
+    const res = await requestWithUcanAndPop(app, audienceIdentity, token, 'GET', `/space/${spaceId}`)
     expect(res.status).toBe(403)
     const body = await res.json() as any
     expect(body.error).toContain('Insufficient capability')
@@ -443,9 +497,9 @@ describe('requireCapability', () => {
 
   test('passes when capability is sufficient', async () => {
     const issuer = await makeIdentity()
-    const audience = 'did:key:zServer123'
+    const audienceIdentity = await makeIdentity()
     const spaceId = crypto.randomUUID()
-    const token = await makeToken(issuer, audience, {
+    const token = await makeToken(issuer, audienceIdentity.did, {
       [spaceResource(spaceId)]: spaceCapabilitySet().admin(true).write(true).build(),
     })
 
@@ -453,9 +507,7 @@ describe('requireCapability', () => {
 
     const app = createApp()
     // Route expects space/write, token declares write explicitly
-    const res = await app.request(`/space/${spaceId}`, {
-      headers: { Authorization: `UCAN ${token}` },
-    })
+    const res = await requestWithUcanAndPop(app, audienceIdentity, token, 'GET', `/space/${spaceId}`)
     expect(res.status).toBe(200)
     const body = await res.json() as any
     expect(body.ok).toBe(true)
@@ -464,7 +516,7 @@ describe('requireCapability', () => {
   test('supports delegated UCANs', async () => {
     const admin = await makeIdentity()
     const member = await makeIdentity()
-    const audience = 'did:key:zServer123'
+    const audience = await makeIdentity()
     const spaceId = crypto.randomUUID()
 
     // Admin creates a UCAN granting space/write to member
@@ -483,7 +535,7 @@ describe('requireCapability', () => {
     const memberToken = await createUcan(
       {
         issuer: member.did,
-        audience,
+        audience: audience.did,
         capabilities: { [spaceResource(spaceId)]: spaceCapabilitySet().write(true).build() },
         expiration: Math.floor(Date.now() / 1000) + 3600,
         proofs: [delegationToken],
@@ -496,9 +548,8 @@ describe('requireCapability', () => {
     mockSpaceOwnerDid = admin.did
 
     const app = createApp()
-    const res = await app.request(`/space/${spaceId}`, {
-      headers: { Authorization: `UCAN ${memberToken}` },
-    })
+    // The outer token's aud is `audience`, so PoP must be signed by their key.
+    const res = await requestWithUcanAndPop(app, audience, memberToken, 'GET', `/space/${spaceId}`)
     expect(res.status).toBe(200)
     const body = await res.json() as any
     expect(body.ok).toBe(true)

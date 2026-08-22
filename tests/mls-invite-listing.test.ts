@@ -12,7 +12,7 @@
 import { describe, test, expect, mock, beforeAll } from 'bun:test'
 import { createUcan, spaceCapabilitySet, spaceResource } from '@haex-space/ucan'
 import { buildDbMock, emptyChain } from './helpers/db-mock'
-import { makeIdentity, type Identity } from './integration/helpers'
+import { makeIdentity, ucanRequestHeaders, type Identity } from './integration/helpers'
 
 const SPACE_ID = '99999999-9999-4999-8999-999999999999'
 const ADMIN_INVITE_UCAN = 'eyJhbGciOiJFZERTQSJ9.ADMIN_INVITE_UCAN_SECRET.sig'
@@ -140,8 +140,10 @@ async function memberHeader(): Promise<string> {
 
 async function listInvites() {
   unprojectedCalls = 0
-  const res = await mlsRouter.request(`/${SPACE_ID}/invites`, {
-    headers: { Authorization: await memberHeader() },
+  const header = await memberHeader()
+  const path = `/${SPACE_ID}/invites`
+  const res = await mlsRouter.request(path, {
+    headers: await ucanRequestHeaders(member, header, { method: 'GET', path }),
   })
   return { res, body: (await res.json()) as any }
 }

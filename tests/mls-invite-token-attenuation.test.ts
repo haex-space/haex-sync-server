@@ -15,7 +15,12 @@
 import { describe, test, expect, mock, beforeAll } from 'bun:test'
 import { createUcan, spaceCapabilitySet, spaceResource } from '@haex-space/ucan'
 import { buildDbMock } from './helpers/db-mock'
-import { makeIdentity, createDidAuthHeader, type Identity } from './integration/helpers'
+import {
+  makeIdentity,
+  createDidAuthHeader,
+  ucanRequestHeaders,
+  type Identity,
+} from './integration/helpers'
 
 const SPACE_ID = '44444444-4444-4444-8444-444444444444'
 const TOKEN_ID = '55555555-5555-4555-8555-555555555555'
@@ -106,12 +111,17 @@ function tokenBody(capability: string) {
   return JSON.stringify({ capability, expiresInSeconds: 3600, maxUses: 1 })
 }
 
-async function createToken(header: string, capability: string) {
+async function createToken(header: string, capability: string, holder?: Identity) {
   insertedToken = null
-  const res = await mlsRouter.request(`/${SPACE_ID}/invite-tokens`, {
+  const path = `/${SPACE_ID}/invite-tokens`
+  const body = tokenBody(capability)
+  const authHeaders: Record<string, string> = holder
+    ? await ucanRequestHeaders(holder, header, { method: 'POST', path, body })
+    : { Authorization: header }
+  const res = await mlsRouter.request(path, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: header },
-    body: tokenBody(capability),
+    headers: { 'Content-Type': 'application/json', ...authHeaders },
+    body,
   })
   return res
 }
@@ -127,7 +137,7 @@ async function ownerHeader(capability: string) {
 
 describe('POST /:spaceId/invite-tokens — grant attenuation', () => {
   test('rejects an invite-only caller minting an admin-granting token', async () => {
-    const res = await createToken(await inviterHeader(), 'space/admin')
+    const res = await createToken(await inviterHeader(), 'space/admin', inviter)
 
     expect(res.status).toBe(403)
     const json = (await res.json()) as any
@@ -138,7 +148,7 @@ describe('POST /:spaceId/invite-tokens — grant attenuation', () => {
   })
 
   test('rejects an invite-only caller minting a write-granting token', async () => {
-    const res = await createToken(await inviterHeader(), 'space/write')
+    const res = await createToken(await inviterHeader(), 'space/write', inviter)
 
     expect(res.status).toBe(403)
     const json = (await res.json()) as any
@@ -149,7 +159,7 @@ describe('POST /:spaceId/invite-tokens — grant attenuation', () => {
   // The point of the inviter preset holding read(delegatable:true): an inviter
   // must still be able to invite readers, or the invite cap does nothing.
   test('allows an invite-only caller to mint a read-granting token', async () => {
-    const res = await createToken(await inviterHeader(), 'space/read')
+    const res = await createToken(await inviterHeader(), 'space/read', inviter)
 
     expect(res.status).toBe(201)
     expect(insertedToken).not.toBeNull()
@@ -182,7 +192,7 @@ describe('POST /:spaceId/invite-tokens — grant attenuation', () => {
       inviter.sign,
     )
 
-    const res = await createToken(`UCAN ${selfSigned}`, 'space/read')
+    const res = await createToken(`UCAN ${selfSigned}`, 'space/read', inviter)
 
     expect(res.status).toBe(403)
     const json = (await res.json()) as any
@@ -193,7 +203,7 @@ describe('POST /:spaceId/invite-tokens — grant attenuation', () => {
   // presetForLegacyTier throws on unknown input; the zod enum must make that
   // unreachable, so an unknown tier is a 400 from validation, never a 500.
   test('rejects an unknown capability tier at validation, not with a 500', async () => {
-    const res = await createToken(await inviterHeader(), 'space/superuser')
+    const res = await createToken(await inviterHeader(), 'space/superuser', inviter)
 
     expect(res.status).toBe(400)
     expect(insertedToken).toBeNull()

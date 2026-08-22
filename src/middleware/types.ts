@@ -13,6 +13,12 @@ import type { VerifiedFederatedAuth } from '@haex-space/federation-sdk'
 export type UcanContext = LibUcanContext & {
   /** Audience DID from the verified UCAN — this is the caller. */
   audienceDid: string
+  /**
+   * Marker that the accompanying `X-UCAN-PoP` header verified against
+   * `audienceDid` and the request line + body. Set unconditionally after
+   * middleware admission — routes never see a UcanContext without it.
+   */
+  popVerified: true
 }
 
 export interface DidContext {

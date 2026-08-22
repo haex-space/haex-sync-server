@@ -30,6 +30,7 @@ import {
   createDidAuthHeader,
   createUcanHeader,
   base64urlEncode,
+  ucanRequestHeaders,
 } from './helpers'
 
 // ============================================
@@ -125,11 +126,16 @@ describe('Space creation requires DID-Auth', () => {
     const id = await makeIdentity()
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/admin')
+    const path = '/spaces'
+    const body = JSON.stringify({ name: 'my-space' })
 
-    const res = await app.request('/spaces', {
+    const res = await app.request(path, {
       method: 'POST',
-      headers: { Authorization: header, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'my-space' }),
+      headers: {
+        'Content-Type': 'application/json',
+        ...(await ucanRequestHeaders(id, header, { method: 'POST', path, body })),
+      },
+      body,
     })
     // Route handler checks c.get('didAuth') which is null for UCAN auth
     expect(res.status).toBe(401)
@@ -149,10 +155,11 @@ describe('Space operations require UCAN with correct capability', () => {
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/read')
     mockSpaceOwnerDid = id.did
+    const path = `/spaces/${spaceId}`
 
-    const res = await app.request(`/spaces/${spaceId}`, {
+    const res = await app.request(path, {
       method: 'PUT',
-      headers: { Authorization: header },
+      headers: await ucanRequestHeaders(id, header, { method: 'PUT', path, body: '' }),
     })
     expect(res.status).toBe(403)
   })
@@ -163,10 +170,11 @@ describe('Space operations require UCAN with correct capability', () => {
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/write')
     mockSpaceOwnerDid = id.did
+    const path = `/spaces/${spaceId}`
 
-    const res = await app.request(`/spaces/${spaceId}`, {
+    const res = await app.request(path, {
       method: 'PUT',
-      headers: { Authorization: header },
+      headers: await ucanRequestHeaders(id, header, { method: 'PUT', path, body: '' }),
     })
     expect(res.status).toBe(200)
     const json = (await res.json()) as any
@@ -179,10 +187,11 @@ describe('Space operations require UCAN with correct capability', () => {
     const ownedSpace = crypto.randomUUID()
     const targetSpace = crypto.randomUUID()
     const header = await createUcanHeader(id, ownedSpace, 'space/admin')
+    const path = `/spaces/${targetSpace}`
 
-    const res = await app.request(`/spaces/${targetSpace}`, {
+    const res = await app.request(path, {
       method: 'GET',
-      headers: { Authorization: header },
+      headers: await ucanRequestHeaders(id, header, { method: 'GET', path }),
     })
     expect(res.status).toBe(403)
   })
@@ -213,9 +222,10 @@ describe('Mixed auth dispatching', () => {
     const id = await makeIdentity()
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/read')
+    const path = '/mixed'
 
-    const res = await app.request('/mixed', {
-      headers: { Authorization: header },
+    const res = await app.request(path, {
+      headers: await ucanRequestHeaders(id, header, { method: 'GET', path }),
     })
     expect(res.status).toBe(200)
     const json = (await res.json()) as any
@@ -266,11 +276,12 @@ describe('Attack: cross-space UCAN', () => {
     const spaceB = crypto.randomUUID()
 
     const header = await createUcanHeader(id, spaceA, 'space/admin')
+    const path = `/spaces/${spaceB}`
 
     // Try to read space B with space A's token
-    const res = await app.request(`/spaces/${spaceB}`, {
+    const res = await app.request(path, {
       method: 'GET',
-      headers: { Authorization: header },
+      headers: await ucanRequestHeaders(id, header, { method: 'GET', path }),
     })
     expect(res.status).toBe(403)
     const json = (await res.json()) as any
@@ -284,10 +295,11 @@ describe('Attack: cross-space UCAN', () => {
     const spaceB = crypto.randomUUID()
 
     const header = await createUcanHeader(id, spaceA, 'space/admin')
+    const path = `/spaces/${spaceB}`
 
-    const res = await app.request(`/spaces/${spaceB}`, {
+    const res = await app.request(path, {
       method: 'PUT',
-      headers: { Authorization: header },
+      headers: await ucanRequestHeaders(id, header, { method: 'PUT', path, body: '' }),
     })
     expect(res.status).toBe(403)
   })
@@ -299,10 +311,11 @@ describe('Attack: cross-space UCAN', () => {
     const spaceB = crypto.randomUUID()
 
     const header = await createUcanHeader(id, spaceA, 'space/admin')
+    const path = `/spaces/${spaceB}`
 
-    const res = await app.request(`/spaces/${spaceB}`, {
+    const res = await app.request(path, {
       method: 'DELETE',
-      headers: { Authorization: header },
+      headers: await ucanRequestHeaders(id, header, { method: 'DELETE', path }),
     })
     expect(res.status).toBe(403)
   })
@@ -426,10 +439,11 @@ describe('Orthogonal capabilities', () => {
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/admin')
     mockSpaceOwnerDid = id.did
+    const path = `/spaces/${spaceId}`
 
-    const res = await app.request(`/spaces/${spaceId}`, {
+    const res = await app.request(path, {
       method: 'PUT',
-      headers: { Authorization: header },
+      headers: await ucanRequestHeaders(id, header, { method: 'PUT', path, body: '' }),
     })
     expect(res.status).toBe(403)
   })
@@ -440,10 +454,11 @@ describe('Orthogonal capabilities', () => {
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/admin')
     mockSpaceOwnerDid = id.did
+    const path = `/spaces/${spaceId}`
 
-    const res = await app.request(`/spaces/${spaceId}`, {
+    const res = await app.request(path, {
       method: 'GET',
-      headers: { Authorization: header },
+      headers: await ucanRequestHeaders(id, header, { method: 'GET', path }),
     })
     expect(res.status).toBe(403)
   })
@@ -454,10 +469,11 @@ describe('Orthogonal capabilities', () => {
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/admin')
     mockSpaceOwnerDid = id.did
+    const path = `/spaces/${spaceId}/invite`
 
-    const res = await app.request(`/spaces/${spaceId}/invite`, {
+    const res = await app.request(path, {
       method: 'POST',
-      headers: { Authorization: header },
+      headers: await ucanRequestHeaders(id, header, { method: 'POST', path, body: '' }),
     })
     expect(res.status).toBe(403)
   })
@@ -468,10 +484,11 @@ describe('Orthogonal capabilities', () => {
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/admin')
     mockSpaceOwnerDid = id.did
+    const path = `/spaces/${spaceId}`
 
-    const res = await app.request(`/spaces/${spaceId}`, {
+    const res = await app.request(path, {
       method: 'DELETE',
-      headers: { Authorization: header },
+      headers: await ucanRequestHeaders(id, header, { method: 'DELETE', path }),
     })
     expect(res.status).toBe(200)
   })
@@ -482,10 +499,11 @@ describe('Orthogonal capabilities', () => {
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/write')
     mockSpaceOwnerDid = id.did
+    const path = `/spaces/${spaceId}`
 
-    const res = await app.request(`/spaces/${spaceId}`, {
+    const res = await app.request(path, {
       method: 'GET',
-      headers: { Authorization: header },
+      headers: await ucanRequestHeaders(id, header, { method: 'GET', path }),
     })
     expect(res.status).toBe(403)
   })
@@ -496,10 +514,11 @@ describe('Orthogonal capabilities', () => {
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/write')
     mockSpaceOwnerDid = id.did
+    const path = `/spaces/${spaceId}/invite`
 
-    const res = await app.request(`/spaces/${spaceId}/invite`, {
+    const res = await app.request(path, {
       method: 'POST',
-      headers: { Authorization: header },
+      headers: await ucanRequestHeaders(id, header, { method: 'POST', path, body: '' }),
     })
     expect(res.status).toBe(403)
   })
@@ -510,10 +529,11 @@ describe('Orthogonal capabilities', () => {
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/write')
     mockSpaceOwnerDid = id.did
+    const path = `/spaces/${spaceId}`
 
-    const res = await app.request(`/spaces/${spaceId}`, {
+    const res = await app.request(path, {
       method: 'DELETE',
-      headers: { Authorization: header },
+      headers: await ucanRequestHeaders(id, header, { method: 'DELETE', path }),
     })
     expect(res.status).toBe(403)
   })
@@ -524,10 +544,11 @@ describe('Orthogonal capabilities', () => {
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/read')
     mockSpaceOwnerDid = id.did
+    const path = `/spaces/${spaceId}`
 
-    const res = await app.request(`/spaces/${spaceId}`, {
+    const res = await app.request(path, {
       method: 'PUT',
-      headers: { Authorization: header },
+      headers: await ucanRequestHeaders(id, header, { method: 'PUT', path, body: '' }),
     })
     expect(res.status).toBe(403)
   })
@@ -538,10 +559,11 @@ describe('Orthogonal capabilities', () => {
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/read')
     mockSpaceOwnerDid = id.did
+    const path = `/spaces/${spaceId}/invite`
 
-    const res = await app.request(`/spaces/${spaceId}/invite`, {
+    const res = await app.request(path, {
       method: 'POST',
-      headers: { Authorization: header },
+      headers: await ucanRequestHeaders(id, header, { method: 'POST', path, body: '' }),
     })
     expect(res.status).toBe(403)
   })
@@ -552,10 +574,11 @@ describe('Orthogonal capabilities', () => {
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/read')
     mockSpaceOwnerDid = id.did
+    const path = `/spaces/${spaceId}`
 
-    const res = await app.request(`/spaces/${spaceId}`, {
+    const res = await app.request(path, {
       method: 'DELETE',
-      headers: { Authorization: header },
+      headers: await ucanRequestHeaders(id, header, { method: 'DELETE', path }),
     })
     expect(res.status).toBe(403)
   })
@@ -566,10 +589,11 @@ describe('Orthogonal capabilities', () => {
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/invite')
     mockSpaceOwnerDid = id.did
+    const path = `/spaces/${spaceId}`
 
-    const res = await app.request(`/spaces/${spaceId}`, {
+    const res = await app.request(path, {
       method: 'PUT',
-      headers: { Authorization: header },
+      headers: await ucanRequestHeaders(id, header, { method: 'PUT', path, body: '' }),
     })
     expect(res.status).toBe(403)
   })
@@ -580,10 +604,11 @@ describe('Orthogonal capabilities', () => {
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/invite')
     mockSpaceOwnerDid = id.did
+    const path = `/spaces/${spaceId}`
 
-    const res = await app.request(`/spaces/${spaceId}`, {
+    const res = await app.request(path, {
       method: 'GET',
-      headers: { Authorization: header },
+      headers: await ucanRequestHeaders(id, header, { method: 'GET', path }),
     })
     expect(res.status).toBe(403)
   })
@@ -594,10 +619,11 @@ describe('Orthogonal capabilities', () => {
     const spaceId = crypto.randomUUID()
     const header = await createUcanHeader(id, spaceId, 'space/invite')
     mockSpaceOwnerDid = id.did
+    const path = `/spaces/${spaceId}`
 
-    const res = await app.request(`/spaces/${spaceId}`, {
+    const res = await app.request(path, {
       method: 'DELETE',
-      headers: { Authorization: header },
+      headers: await ucanRequestHeaders(id, header, { method: 'DELETE', path }),
     })
     expect(res.status).toBe(403)
   })
