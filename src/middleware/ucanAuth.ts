@@ -44,6 +44,20 @@ const POP_MAX_LIFETIME_MS = 60_000
  * replay class (`requestHash` covers method + path + query + body).
  */
 export const ucanAuthMiddleware = async (c: Context, next: Next) => {
+  // Idempotency: two routers (`spacesRouter` and `mlsRouter`) share the
+  // `/spaces` mount prefix. Every request under `/spaces/*` therefore enters
+  // this middleware TWICE — first via `spacesRouter.use('/*', authDispatcher)`,
+  // then via `mlsRouter.use('/*', authDispatcher)` when the request falls
+  // through to the second router. The second invocation would re-add the PoP
+  // `jti` to the seen-cache, see it as a duplicate, and 401 the request as a
+  // replay. Detect the prior admission via the `popVerified` marker on
+  // `UcanContext` and pass through untouched.
+  const existing = c.get('ucan') as UcanContext | null | undefined
+  if (existing?.popVerified) {
+    await next()
+    return
+  }
+
   const authHeader = c.req.header('Authorization')
 
   if (!authHeader || !authHeader.startsWith('UCAN ')) {
