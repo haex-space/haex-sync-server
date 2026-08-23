@@ -72,6 +72,14 @@ export async function verifyDidAuthHeader(
  * inherited from `@haex-space/ucan`.
  */
 export const didAuthMiddleware = async (c: Context, next: Next) => {
+  // `/spaces/*` is mounted through both `spacesRouter` and `mlsRouter`.
+  // Let the second internal pass reuse the already verified request instead
+  // of treating its own proof as an external replay.
+  if (c.get('didAuth')) {
+    await next()
+    return
+  }
+
   const authHeader = c.req.header('Authorization')
 
   if (!authHeader) return c.json({ error: 'Missing Authorization header' }, 401)
