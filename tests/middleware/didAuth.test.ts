@@ -94,9 +94,35 @@ function createTestApp() {
   return app
 }
 
+function createDoublePassApp() {
+  const app = new Hono()
+  app.use('/double/*', didAuthMiddleware)
+  app.use('/double/*', didAuthMiddleware)
+  app.post('/double/test', (c) => c.json({ ok: true, didAuth: c.get('didAuth') }))
+  return app
+}
+
 // --- Tests ---
 
 describe('DID-Auth Middleware', () => {
+  test('allows a second internal middleware pass without disabling replay protection', async () => {
+    const app = createDoublePassApp()
+    const { keyPair, did } = await generateEd25519Keypair()
+    const body = JSON.stringify({ inviteeDid: 'did:key:recipient' })
+    const authHeader = await createDidAuthHeader(keyPair.privateKey, did, 'invite', body, {
+      path: '/double/test',
+    })
+
+    const res = await app.request('/double/test', {
+      method: 'POST',
+      headers: { Authorization: authHeader, 'Content-Type': 'application/json' },
+      body,
+    })
+
+    expect(res.status).toBe(200)
+    expect((await res.json() as { didAuth: { did: string } }).didAuth.did).toBe(did)
+  })
+
   test('rejects missing Authorization header', async () => {
     const app = createTestApp()
     const res = await app.request('/test', { method: 'POST', body: '' })
