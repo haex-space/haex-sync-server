@@ -82,7 +82,9 @@ beforeEach(() => {
 })
 
 async function ownerHeader(): Promise<string> {
-  return createDidAuthHeader(owner.keyPair.privateKey, owner.did, 'mls-write', '')
+  return createDidAuthHeader(owner.keyPair.privateKey, owner.did, {
+    method: 'DELETE', path: `/${SPACE_ID}/invite-tokens/${TOKEN_ID}`,
+  })
 }
 
 /**

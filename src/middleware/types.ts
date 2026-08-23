@@ -26,7 +26,6 @@ export interface DidContext {
   publicKey: string
   userId: string
   tier: string
-  action: string
 }
 
 export interface FederationContext {

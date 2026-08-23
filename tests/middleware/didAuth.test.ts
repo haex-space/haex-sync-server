@@ -1,5 +1,6 @@
 import { describe, test, expect } from 'bun:test'
 import { Hono } from 'hono'
+import { createSignedAuthHeader } from '@haex-space/ucan'
 import { didAuthMiddleware } from '../../src/middleware/didAuth'
 
 // --- Test Helpers ---
@@ -61,26 +62,20 @@ async function generateEd25519Keypair() {
 async function createDidAuthHeader(
   privateKey: CryptoKey,
   did: string,
-  action: string,
-  body?: string
+  _action: string,
+  body = '',
+  options: { method?: string; now?: number; path?: string; rawQuery?: string } = {},
 ): Promise<string> {
-  const bodyBytes = new TextEncoder().encode(body ?? '')
-  const bodyHashBuffer = await crypto.subtle.digest('SHA-256', bodyBytes)
-  const bodyHash = base64urlEncode(new Uint8Array(bodyHashBuffer))
-
-  const payload = JSON.stringify({
+  const headerValue = await createSignedAuthHeader({
+    privateKey,
     did,
-    action,
-    timestamp: Date.now(),
-    bodyHash,
+    method: options.method ?? 'POST',
+    path: options.path ?? '/test',
+    rawQuery: options.rawQuery ?? '',
+    body,
+    now: options.now,
   })
-
-  const payloadEncoded = base64urlEncode(payload)
-  const payloadBytes = new TextEncoder().encode(payloadEncoded)
-  const signature = new Uint8Array(await crypto.subtle.sign('Ed25519', privateKey, payloadBytes))
-  const signatureEncoded = base64urlEncode(signature)
-
-  return `DID ${payloadEncoded}.${signatureEncoded}`
+  return `DID ${headerValue}`
 }
 
 function createTestApp() {
@@ -94,6 +89,8 @@ function createTestApp() {
     const didAuth = c.get('didAuth')
     return c.json({ ok: true, didAuth })
   })
+  app.post('/target-a', (c) => c.json({ ok: true, didAuth: c.get('didAuth') }))
+  app.post('/target-b', (c) => c.json({ ok: true, didAuth: c.get('didAuth') }))
   return app
 }
 
@@ -124,34 +121,18 @@ describe('DID-Auth Middleware', () => {
     const app = createTestApp()
     const { keyPair, did } = await generateEd25519Keypair()
     const body = ''
-
-    // Build an auth header with a stale timestamp
-    const bodyBytes = new TextEncoder().encode(body)
-    const bodyHashBuffer = await crypto.subtle.digest('SHA-256', bodyBytes)
-    const bodyHash = base64urlEncode(new Uint8Array(bodyHashBuffer))
-
-    const payload = JSON.stringify({
-      did,
-      action: 'test',
-      timestamp: Date.now() - 60_000, // 60 seconds ago
-      bodyHash,
+    const authHeader = await createDidAuthHeader(keyPair.privateKey, did, 'test', body, {
+      now: Date.now() - 60_001,
     })
-
-    const payloadEncoded = base64urlEncode(payload)
-    const payloadBytes = new TextEncoder().encode(payloadEncoded)
-    const signature = new Uint8Array(
-      await crypto.subtle.sign('Ed25519', keyPair.privateKey, payloadBytes)
-    )
-    const signatureEncoded = base64urlEncode(signature)
 
     const res = await app.request('/test', {
       method: 'POST',
-      headers: { Authorization: `DID ${payloadEncoded}.${signatureEncoded}` },
+      headers: { Authorization: authHeader },
       body,
     })
     expect(res.status).toBe(401)
     const json = await res.json() as any
-    expect(json.error).toContain('expired')
+    expect(json.error).toContain('Expired')
   })
 
   test('rejects invalid signature (signed with wrong key)', async () => {
@@ -197,7 +178,7 @@ describe('DID-Auth Middleware', () => {
     })
     expect(res.status).toBe(401)
     const json = await res.json() as any
-    expect(json.error).toContain('body')
+    expect(json.error).toContain('request mismatch')
   })
 
   test('accepts valid DID-signed request', async () => {
@@ -225,7 +206,6 @@ describe('DID-Auth Middleware', () => {
     expect(json.ok).toBe(true)
     expect(json.didAuth).toBeTruthy()
     expect(json.didAuth.did).toBe(did)
-    expect(json.didAuth.action).toBe('sync')
     expect(json.didAuth.userId).toBe('')
     expect(json.didAuth.tier).toBe('')
 
@@ -253,7 +233,25 @@ describe('DID-Auth Middleware', () => {
     })
     expect(res.status).toBe(401)
     const json = await res.json() as any
-    expect(json.error).toContain('body')
+    expect(json.error).toContain('request mismatch')
+  })
+
+  test('attack: URL-target swap with a valid body signature is rejected', async () => {
+    const app = createTestApp()
+    const { keyPair, did } = await generateEd25519Keypair()
+    const body = JSON.stringify({ target: 'safe' })
+    const authHeader = await createDidAuthHeader(keyPair.privateKey, did, 'write', body, {
+      path: '/target-a',
+    })
+
+    const res = await app.request('/target-b', {
+      method: 'POST',
+      headers: { Authorization: authHeader },
+      body,
+    })
+
+    expect(res.status).toBe(401)
+    expect((await res.json() as { error: string }).error).toBe('PoP request mismatch')
   })
 
   test('attack: DID spoofing (claim different identity)', async () => {
@@ -278,25 +276,13 @@ describe('DID-Auth Middleware', () => {
     const { keyPair, did } = await generateEd25519Keypair()
     const body = '{}'
 
-    const bodyBytes = new TextEncoder().encode(body)
-    const bodyHashBuffer = await crypto.subtle.digest('SHA-256', bodyBytes)
-    const bodyHash = base64urlEncode(new Uint8Array(bodyHashBuffer))
-
-    // Simulate a request from 45 seconds ago (outside 30s window)
-    const payload = JSON.stringify({
-      did,
-      action: 'create-space',
-      timestamp: Date.now() - 45_000,
-      bodyHash,
+    const authHeader = await createDidAuthHeader(keyPair.privateKey, did, 'create-space', body, {
+      now: Date.now() - 60_001,
     })
-
-    const payloadEncoded = base64urlEncode(payload)
-    const payloadBytes = new TextEncoder().encode(payloadEncoded)
-    const signature = new Uint8Array(await crypto.subtle.sign('Ed25519', keyPair.privateKey, payloadBytes))
 
     const res = await app.request('/test', {
       method: 'POST',
-      headers: { Authorization: `DID ${payloadEncoded}.${base64urlEncode(signature)}` },
+      headers: { Authorization: authHeader },
       body,
     })
     expect(res.status).toBe(401)
@@ -307,25 +293,13 @@ describe('DID-Auth Middleware', () => {
     const { keyPair, did } = await generateEd25519Keypair()
     const body = '{}'
 
-    const bodyBytes = new TextEncoder().encode(body)
-    const bodyHashBuffer = await crypto.subtle.digest('SHA-256', bodyBytes)
-    const bodyHash = base64urlEncode(new Uint8Array(bodyHashBuffer))
-
-    // Request with timestamp 45 seconds in the future
-    const payload = JSON.stringify({
-      did,
-      action: 'create-space',
-      timestamp: Date.now() + 45_000,
-      bodyHash,
+    const authHeader = await createDidAuthHeader(keyPair.privateKey, did, 'create-space', body, {
+      now: Date.now() + 45_000,
     })
-
-    const payloadEncoded = base64urlEncode(payload)
-    const payloadBytes = new TextEncoder().encode(payloadEncoded)
-    const signature = new Uint8Array(await crypto.subtle.sign('Ed25519', keyPair.privateKey, payloadBytes))
 
     const res = await app.request('/test', {
       method: 'POST',
-      headers: { Authorization: `DID ${payloadEncoded}.${base64urlEncode(signature)}` },
+      headers: { Authorization: authHeader },
       body,
     })
     expect(res.status).toBe(401)
@@ -416,7 +390,8 @@ describe('DID-Auth Middleware', () => {
       keyPair.privateKey,
       did,
       'read',
-      undefined
+      '',
+      { method: 'GET' },
     )
 
     const res = await app.request('/test', {
@@ -426,6 +401,5 @@ describe('DID-Auth Middleware', () => {
     expect(res.status).toBe(200)
     const json = await res.json() as any
     expect(json.didAuth.did).toBe(did)
-    expect(json.didAuth.action).toBe('read')
   })
 })

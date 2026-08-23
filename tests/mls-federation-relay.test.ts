@@ -92,8 +92,8 @@ beforeAll(async () => {
   mlsRouter = (await import('../src/routes/mls')).default
 })
 
-async function didHeader(action: string, body: string) {
-  return createDidAuthHeader(caller.keyPair.privateKey, caller.did, action, body)
+async function didHeader(method: string, path: string, body = '') {
+  return createDidAuthHeader(caller.keyPair.privateKey, caller.did, { method, path, body })
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
@@ -102,7 +102,7 @@ describe('mlsRouter — federation relay on decline (fix 5.2)', () => {
   test('POST /invites/:inviteId/decline on federated space is relayed to origin', async () => {
     proxyCalls = []
     federationEnabled = true
-    const header = await didHeader('mls-decline', '')
+    const header = await didHeader('POST', `/${VALID_SPACE_ID}/invites/${VALID_INVITE_ID}/decline`)
 
     const res = await mlsRouter.request(`/${VALID_SPACE_ID}/invites/${VALID_INVITE_ID}/decline`, {
       method: 'POST',
@@ -122,7 +122,7 @@ describe('mlsRouter — federation relay on decline (fix 5.2)', () => {
   test('POST decline on non-federated space is NOT relayed', async () => {
     proxyCalls = []
     federationEnabled = false
-    const header = await didHeader('mls-decline', '')
+    const header = await didHeader('POST', `/${VALID_SPACE_ID}/invites/${VALID_INVITE_ID}/decline`)
 
     await mlsRouter.request(`/${VALID_SPACE_ID}/invites/${VALID_INVITE_ID}/decline`, {
       method: 'POST',
@@ -148,7 +148,7 @@ describe('mlsRouter — federation relay on withdraw/DELETE invite (fix 5.2)', (
   test('DELETE /invites/:inviteId on federated space is relayed', async () => {
     proxyCalls = []
     federationEnabled = true
-    const header = await didHeader('mls-withdraw', '')
+    const header = await didHeader('DELETE', `/${VALID_SPACE_ID}/invites/${VALID_INVITE_ID}`)
 
     const res = await mlsRouter.request(`/${VALID_SPACE_ID}/invites/${VALID_INVITE_ID}`, {
       method: 'DELETE',
@@ -165,7 +165,7 @@ describe('mlsRouter — federation relay on withdraw/DELETE invite (fix 5.2)', (
   test('DELETE on non-federated space is NOT relayed', async () => {
     proxyCalls = []
     federationEnabled = false
-    const header = await didHeader('mls-withdraw', '')
+    const header = await didHeader('DELETE', `/${VALID_SPACE_ID}/invites/${VALID_INVITE_ID}`)
 
     await mlsRouter.request(`/${VALID_SPACE_ID}/invites/${VALID_INVITE_ID}`, {
       method: 'DELETE',
@@ -209,7 +209,7 @@ describe('mlsRouter — regression: pre-existing relays still fire', () => {
     test(`${ep.name} relays when federated`, async () => {
       proxyCalls = []
       federationEnabled = true
-      const header = await didHeader('mls-regress', ep.body)
+      const header = await didHeader(ep.method, `/${VALID_SPACE_ID}${ep.pathSuffix}`, ep.body)
 
       const init: any = {
         method: ep.method,

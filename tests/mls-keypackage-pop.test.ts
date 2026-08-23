@@ -33,10 +33,12 @@ describe('mlsRouter — pops array must match keyPackages length', () => {
   // authDispatcher (src/routes/mls.ts) runs globally before zValidator and
   // rejects any request without an Authorization header (401) before the
   // request ever reaches Zod. So these requests need a real signed DID-Auth
-  // header — matching the bodyHash — to actually exercise the schema.
+  // header — matching the request hash — to actually exercise the schema.
   async function signedRequest(bodyObj: unknown) {
     const body = JSON.stringify(bodyObj)
-    const header = await createDidAuthHeader(caller.keyPair.privateKey, caller.did, 'mls-write', body)
+    const header = await createDidAuthHeader(caller.keyPair.privateKey, caller.did, {
+      method: 'POST', path: `/${VALID_UUID}/mls/key-packages`, body,
+    })
     return mlsRouter.request(`/${VALID_UUID}/mls/key-packages`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: header },
@@ -102,7 +104,9 @@ describe('mlsRouter — upload stores pop alongside keyPackage', () => {
     const { default: router } = await import('../src/routes/mls')
 
     const body = JSON.stringify({ keyPackages: ['a2V5'], pops: ['cG9w'] })
-    const header = await createDidAuthHeader(identityCaller.keyPair.privateKey, identityCaller.did, 'mls-write', body)
+    const header = await createDidAuthHeader(identityCaller.keyPair.privateKey, identityCaller.did, {
+      method: 'POST', path: `/${VALID_UUID}/mls/key-packages`, body,
+    })
     const res = await router.request(`/${VALID_UUID}/mls/key-packages`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: header },
@@ -151,7 +155,9 @@ describe('mlsRouter — upload stores pop alongside keyPackage', () => {
     const { default: router } = await import('../src/routes/mls')
 
     const body = JSON.stringify({ keyPackages: ['a2V5'], pops: ['cG9w'] })
-    const header = await createDidAuthHeader(identityCaller.keyPair.privateKey, identityCaller.did, 'mls-write', body)
+    const header = await createDidAuthHeader(identityCaller.keyPair.privateKey, identityCaller.did, {
+      method: 'POST', path: `/${VALID_UUID}/invites/${INVITE_ID}/accept`, body,
+    })
     const res = await router.request(`/${VALID_UUID}/invites/${INVITE_ID}/accept`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: header },
@@ -216,7 +222,9 @@ describe('mlsRouter — upload stores pop alongside keyPackage', () => {
     const { default: router } = await import('../src/routes/mls')
 
     const body = JSON.stringify({ keyPackages: ['a2V5'], pops: ['cG9w'] })
-    const header = await createDidAuthHeader(identityCaller.keyPair.privateKey, identityCaller.did, 'mls-write', body)
+    const header = await createDidAuthHeader(identityCaller.keyPair.privateKey, identityCaller.did, {
+      method: 'POST', path: `/${VALID_UUID}/invite-tokens/${TOKEN_ID}/claim`, body,
+    })
     const res = await router.request(`/${VALID_UUID}/invite-tokens/${TOKEN_ID}/claim`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: header },
@@ -337,7 +345,9 @@ describe('mlsRouter — fetch key package returns pop and skips legacy rows', ()
     mockHappyPathWithKeyPackageRow({ id: 42, keyPackage: keyPackageBytes, pop: popBytes })
 
     const { default: router } = await import('../src/routes/mls')
-    const header = await createDidAuthHeader(owner.keyPair.privateKey, owner.did, 'mls-read', '')
+    const header = await createDidAuthHeader(owner.keyPair.privateKey, owner.did, {
+      path: `/${VALID_UUID}/mls/key-packages/${encodeURIComponent(TARGET_DID)}`,
+    })
     const res = await router.request(`/${VALID_UUID}/mls/key-packages/${encodeURIComponent(TARGET_DID)}`, {
       method: 'GET',
       headers: { Authorization: header },
@@ -353,7 +363,9 @@ describe('mlsRouter — fetch key package returns pop and skips legacy rows', ()
     mockHappyPathWithKeyPackageRow({ id: 43, keyPackage: Buffer.from([1]), pop: null })
 
     const { default: router } = await import('../src/routes/mls')
-    const header = await createDidAuthHeader(owner.keyPair.privateKey, owner.did, 'mls-read', '')
+    const header = await createDidAuthHeader(owner.keyPair.privateKey, owner.did, {
+      path: `/${VALID_UUID}/mls/key-packages/${encodeURIComponent(TARGET_DID)}`,
+    })
     const res = await router.request(`/${VALID_UUID}/mls/key-packages/${encodeURIComponent(TARGET_DID)}`, {
       method: 'GET',
       headers: { Authorization: header },

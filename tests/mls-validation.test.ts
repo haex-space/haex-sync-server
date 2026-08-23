@@ -115,7 +115,9 @@ describe('mlsRouter — UUID guard rejects malformed path params', () => {
 
 describe('mlsRouter — GET /:spaceId/mls/messages query validation', () => {
   async function signedRequest(query: string) {
-    const header = await createDidAuthHeader(caller.keyPair.privateKey, caller.did, 'mls-read', '')
+    const header = await createDidAuthHeader(caller.keyPair.privateKey, caller.did, {
+      path: `/${VALID_UUID}/mls/messages`, rawQuery: query.slice(1),
+    })
     return mlsRouter.request(`/${VALID_UUID}/mls/messages${query}`, {
       method: 'GET',
       headers: { Authorization: header },

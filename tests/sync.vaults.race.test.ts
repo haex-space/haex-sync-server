@@ -204,7 +204,9 @@ async function postVaultKey(spaceId: string) {
     vaultNameNonce: 'n2',
     vaultNameSalt: 'ns',
   })
-  const header = await createDidAuthHeader(caller.keyPair.privateKey, caller.did, 'vault-create', body)
+  const header = await createDidAuthHeader(caller.keyPair.privateKey, caller.did, {
+    method: 'POST', path: '/vault-key', body,
+  })
   return syncRouter.request('/vault-key', {
     method: 'POST',
     headers: { Authorization: header, 'Content-Type': 'application/json' },
@@ -236,7 +238,9 @@ async function postVaultKeyWrapped(spaceId: string) {
     vaultNameNonce: 'n2',
     vaultNameSalt: 'ns',
   })
-  const header = await createDidAuthHeader(caller.keyPair.privateKey, caller.did, 'vault-create', body)
+  const header = await createDidAuthHeader(caller.keyPair.privateKey, caller.did, {
+    method: 'POST', path: '/vault-key', body,
+  })
   return wrappedSyncRouter.request('/vault-key', {
     method: 'POST',
     headers: { Authorization: header, 'Content-Type': 'application/json' },

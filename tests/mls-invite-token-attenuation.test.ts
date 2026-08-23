@@ -128,7 +128,9 @@ async function createToken(header: string, capability: string, holder?: Identity
 
 /** DID-Auth header for the space owner, who is the root authority. */
 async function ownerHeader(capability: string) {
-  return createDidAuthHeader(owner.keyPair.privateKey, owner.did, 'mls-write', tokenBody(capability))
+  return createDidAuthHeader(owner.keyPair.privateKey, owner.did, {
+    method: 'POST', path: `/${SPACE_ID}/invite-tokens`, body: tokenBody(capability),
+  })
 }
 
 // ============================================
