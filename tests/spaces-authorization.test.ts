@@ -338,8 +338,7 @@ describe('POST /:spaceId/members — grant attenuation', () => {
     const header = await createDidAuthHeader(
       owner.keyPair.privateKey,
       owner.did,
-      'space-write',
-      body,
+      { method: 'POST', path: `/${SPACE_ID}/members`, body },
     )
     insertedMember = null
 
@@ -365,7 +364,9 @@ async function deleteMyAdminSpaces(caller: Identity) {
   // The owner owns two spaces; the inviter owns none. Both tests share this,
   // so which spaces get deleted depends on the query, not on the fixture.
   spacesByOwner = { [owner.did]: [{ id: OWNED_A }, { id: OWNED_B }] }
-  const header = await createDidAuthHeader(caller.keyPair.privateKey, caller.did, 'space-delete', '')
+  const header = await createDidAuthHeader(caller.keyPair.privateKey, caller.did, {
+    method: 'DELETE', path: '/my-admin-spaces',
+  })
   return spacesRouter.request('/my-admin-spaces', {
     method: 'DELETE',
     headers: { Authorization: header },
@@ -478,8 +479,7 @@ describe('POST /:spaceId/transfer-ownership — rejects UCAN auth', () => {
     const header = await createDidAuthHeader(
       owner.keyPair.privateKey,
       owner.did,
-      'space-write',
-      body,
+      { method: 'POST', path: `/${SPACE_ID}/transfer-ownership`, body },
     )
 
     const res = await spacesRouter.request(`/${SPACE_ID}/transfer-ownership`, {

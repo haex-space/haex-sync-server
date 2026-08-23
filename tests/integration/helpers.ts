@@ -1,6 +1,7 @@
 import {
   createUcan,
   createUcanPopHeader,
+  createSignedAuthHeader,
   createWebCryptoSigner,
   decodeUcan,
   spaceResource,
@@ -94,28 +95,17 @@ export async function makeIdentity(): Promise<Identity> {
 export async function createDidAuthHeader(
   privateKey: CryptoKey,
   did: string,
-  action: string,
-  body?: string,
+  request: { method?: string; path: string; rawQuery?: string; body?: string },
 ): Promise<string> {
-  const bodyBytes = new TextEncoder().encode(body ?? '')
-  const bodyHashBuffer = await crypto.subtle.digest('SHA-256', bodyBytes)
-  const bodyHash = base64urlEncode(new Uint8Array(bodyHashBuffer))
-
-  const payload = JSON.stringify({
+  const headerValue = await createSignedAuthHeader({
+    privateKey,
     did,
-    action,
-    timestamp: Date.now(),
-    bodyHash,
+    method: request.method ?? 'GET',
+    path: request.path,
+    rawQuery: request.rawQuery ?? '',
+    body: request.body ?? '',
   })
-
-  const payloadEncoded = base64urlEncode(payload)
-  const payloadBytes = new TextEncoder().encode(payloadEncoded)
-  const signature = new Uint8Array(
-    await crypto.subtle.sign('Ed25519', privateKey, payloadBytes),
-  )
-  const signatureEncoded = base64urlEncode(signature)
-
-  return `DID ${payloadEncoded}.${signatureEncoded}`
+  return `DID ${headerValue}`
 }
 
 // --- UCAN Header ---

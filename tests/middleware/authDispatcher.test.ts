@@ -3,6 +3,7 @@ import { Hono } from 'hono'
 import {
   createUcan,
   createUcanPopHeader,
+  createSignedAuthHeader,
   createWebCryptoSigner,
   spaceCapabilitySet,
   spaceResource,
@@ -44,14 +45,16 @@ async function makeIdentity() {
   return { keyPair, did, sign: createWebCryptoSigner(keyPair.privateKey) }
 }
 
-async function createDidAuthHeader(privateKey: CryptoKey, did: string, action: string, body: string) {
-  const bodyHash = base64urlEncode(new Uint8Array(
-    await crypto.subtle.digest('SHA-256', new TextEncoder().encode(body)),
-  ))
-  const payload = JSON.stringify({ did, action, timestamp: Date.now(), bodyHash })
-  const payloadEncoded = base64urlEncode(payload)
-  const sig = new Uint8Array(await crypto.subtle.sign('Ed25519', privateKey, new TextEncoder().encode(payloadEncoded)))
-  return `DID ${payloadEncoded}.${base64urlEncode(sig)}`
+async function createDidAuthHeader(privateKey: CryptoKey, did: string, _action: string, body: string) {
+  const headerValue = await createSignedAuthHeader({
+    privateKey,
+    did,
+    method: 'POST',
+    path: '/test',
+    rawQuery: '',
+    body,
+  })
+  return `DID ${headerValue}`
 }
 
 function createApp() {

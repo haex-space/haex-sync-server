@@ -108,7 +108,9 @@ describe('Space creation requires DID-Auth', () => {
     const app = createDispatcherApp()
     const id = await makeIdentity()
     const body = JSON.stringify({ name: 'my-space' })
-    const header = await createDidAuthHeader(id.keyPair.privateKey, id.did, 'create-space', body)
+    const header = await createDidAuthHeader(id.keyPair.privateKey, id.did, {
+      method: 'POST', path: '/spaces', body,
+    })
 
     const res = await app.request('/spaces', {
       method: 'POST',
@@ -205,7 +207,7 @@ describe('Mixed auth dispatching', () => {
   test('DID request populates didAuth context', async () => {
     const app = createDispatcherApp()
     const id = await makeIdentity()
-    const header = await createDidAuthHeader(id.keyPair.privateKey, id.did, 'read')
+    const header = await createDidAuthHeader(id.keyPair.privateKey, id.did, { path: '/mixed' })
 
     const res = await app.request('/mixed', {
       headers: { Authorization: header },
@@ -336,8 +338,7 @@ describe('Attack: DID-Auth body tampering', () => {
     const header = await createDidAuthHeader(
       id.keyPair.privateKey,
       id.did,
-      'create-space',
-      originalBody,
+      { method: 'POST', path: '/spaces', body: originalBody },
     )
 
     const res = await app.request('/spaces', {
@@ -347,14 +348,14 @@ describe('Attack: DID-Auth body tampering', () => {
     })
     expect(res.status).toBe(401)
     const json = (await res.json()) as any
-    expect(json.error).toContain('body')
+    expect(json.error).toContain('mismatch')
   })
 
   test('empty body signed, non-empty body sent is rejected', async () => {
     const app = createDispatcherApp()
     const id = await makeIdentity()
 
-    const header = await createDidAuthHeader(id.keyPair.privateKey, id.did, 'create-space', '')
+    const header = await createDidAuthHeader(id.keyPair.privateKey, id.did, { method: 'POST', path: '/spaces' })
 
     const res = await app.request('/spaces', {
       method: 'POST',

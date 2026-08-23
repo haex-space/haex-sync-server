@@ -74,8 +74,11 @@ describe('mlsRouter — mount-prefix aware UUID guard', () => {
     const header = await createDidAuthHeader(
       caller.keyPair.privateKey,
       caller.did,
-      'space-create',
-      JSON.stringify({ capability: 'space/read', expiresInSeconds: 3600 }),
+      {
+        method: 'POST',
+        path: `/spaces/${VALID_UUID}/invite-tokens`,
+        body: JSON.stringify({ capability: 'space/read', expiresInSeconds: 3600 }),
+      },
     )
 
     const res = await app.request(`/spaces/${VALID_UUID}/invite-tokens`, {

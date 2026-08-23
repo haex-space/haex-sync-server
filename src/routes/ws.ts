@@ -1,31 +1,16 @@
 import { Hono } from 'hono'
 import { createBunWebSocket } from 'hono/bun'
 import type { WSContext } from 'hono/ws'
-import { didToPublicKey } from '@haex-space/ucan'
 import { eq } from 'drizzle-orm'
 import { db } from '../db'
 import { identities, spaceMembers } from '../db/schema'
+import { verifyDidAuthHeader } from '../middleware/didAuth'
 
 const { upgradeWebSocket, websocket } = createBunWebSocket()
 
 const wsApp = new Hono()
 
 // ── Helpers ────────────────────────────────────────────────────────
-
-const TIMESTAMP_TOLERANCE_MS = 30_000
-
-function base64urlDecode(str: string): Uint8Array {
-  let base64 = str.replace(/-/g, '+').replace(/_/g, '/')
-  while (base64.length % 4 !== 0) {
-    base64 += '='
-  }
-  const binary = atob(base64)
-  const bytes = new Uint8Array(binary.length)
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i)
-  }
-  return bytes
-}
 
 // ── Connection state ───────────────────────────────────────────────
 
@@ -37,78 +22,27 @@ const membershipCache = new Map<string, Set<string>>()
 
 // ── Auth verification ──────────────────────────────────────────────
 
-interface WsAuthPayload {
-  did: string
-  action: string
-  timestamp: number
-  bodyHash: string
-}
-
 async function verifyWsToken(token: string): Promise<string | null> {
-  const dotIndex = token.indexOf('.')
-  if (dotIndex === -1) return null
-
-  const payloadEncoded = token.slice(0, dotIndex)
-  const signatureEncoded = token.slice(dotIndex + 1)
-
-  // Decode and parse payload
-  let payload: WsAuthPayload
-  try {
-    const payloadBytes = base64urlDecode(payloadEncoded)
-    const payloadJson = new TextDecoder().decode(payloadBytes)
-    payload = JSON.parse(payloadJson)
-  } catch {
-    return null
-  }
-
-  // Validate fields
-  if (!payload.did || payload.action !== 'ws-connect' || !payload.timestamp || !payload.bodyHash) {
-    return null
-  }
-
-  // Check timestamp
-  const diff = Math.abs(Date.now() - payload.timestamp)
-  if (diff > TIMESTAMP_TOLERANCE_MS) {
-    return null
-  }
-
-  // Extract public key from DID
-  let publicKeyBytes: Uint8Array
-  try {
-    publicKeyBytes = didToPublicKey(payload.did)
-  } catch {
-    return null
-  }
-
-  // Import and verify Ed25519 signature
-  try {
-    const publicKey = await crypto.subtle.importKey(
-      'raw',
-      publicKeyBytes,
-      { name: 'Ed25519' },
-      false,
-      ['verify'],
-    )
-
-    const payloadBytes = new TextEncoder().encode(payloadEncoded)
-    const signatureBytes = base64urlDecode(signatureEncoded)
-
-    const valid = await crypto.subtle.verify('Ed25519', publicKey, signatureBytes, payloadBytes)
-    if (!valid) return null
-  } catch {
-    return null
-  }
+  const verified = await verifyDidAuthHeader(token, {
+    method: 'GET',
+    path: '/ws',
+    // `token` itself is query data, so including it would make the signature
+    // self-referential. The route is nevertheless bound by this fixed target.
+    rawQuery: '',
+    body: '',
+  })
+  if (!verified.ok) return null
 
   // Check identity exists in DB
   const [identity] = await db
     .select({ id: identities.id })
     .from(identities)
-    .where(eq(identities.did, payload.did))
+    .where(eq(identities.did, verified.did))
     .limit(1)
 
   if (!identity) return null
 
-  return payload.did
+  return verified.did
 }
 
 async function loadMemberships(did: string): Promise<Set<string>> {

@@ -167,7 +167,8 @@ spacesRouter.delete('/my-admin-spaces', async (c) => {
   // issued it, not who presented it. A member's credential is the owner's
   // delegation to them, so presenting it verbatim would make getCallerDid()
   // report the owner and delete every space the owner has. DID-Auth is a fresh
-  // signature over {did, action, timestamp, bodyHash}, so it cannot be lifted.
+  // signature over the DID, expiry, nonce, and complete request target, so it
+  // cannot be lifted.
   const didAuth = c.get('didAuth')
   if (!didAuth) {
     return c.json({ error: 'Bulk space deletion requires DID-Auth' }, 401)
