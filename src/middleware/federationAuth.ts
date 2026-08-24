@@ -7,6 +7,8 @@ import {
   findRootIssuer,
   parseSpaceResource,
   didToPublicKey,
+  parseSignedAuthHeaderPayload,
+  verifySignedAuthHeaderWithKey,
 } from '@haex-space/ucan'
 import { verifyFederatedAuth } from '@haex-space/federation-sdk'
 import { eq, and } from 'drizzle-orm'
@@ -15,26 +17,6 @@ import { getServerIdentity } from '../services/serverIdentity'
 import type { FederationContext } from './types'
 
 const verify = createWebCryptoVerifier()
-
-function base64urlDecode(str: string): Uint8Array {
-  let base64 = str.replace(/-/g, '+').replace(/_/g, '/')
-  while (base64.length % 4 !== 0) {
-    base64 += '='
-  }
-  const binary = atob(base64)
-  const bytes = new Uint8Array(binary.length)
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i)
-  }
-  return bytes
-}
-
-function base64urlEncode(bytes: Uint8Array): string {
-  return btoa(String.fromCharCode(...bytes))
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/, '')
-}
 
 /**
  * Resolve a did:web DID to its public key by fetching /.well-known/did.json
@@ -77,10 +59,10 @@ async function resolveDidWebPublicKey(did: string): Promise<Uint8Array> {
  * Verifies server-to-server requests using the Authorization header format:
  *   Authorization: FEDERATION <base64url(json-payload)>.<base64url(ed25519-signature)>
  *
- * Payload JSON: { did, action, timestamp, bodyHash, ucan }
+ * Payload JSON: shared PoP fields plus { ucan, userAuthorization? }.
  *
  * Verification:
- * 1. Ed25519 signature proves server identity (did:web)
+ * 1. Shared PoP verification proves server identity (did:web)
  * 2. UCAN proves a space member delegated server/relay to this server
  * 3. UCAN audience must match the signing server's DID
  */
@@ -92,35 +74,9 @@ export const federationAuthMiddleware = async (c: Context, next: Next) => {
   }
 
   const token = authHeader.slice(11) // Remove "FEDERATION "
-  const dotIndex = token.indexOf('.')
-  if (dotIndex === -1) {
-    return c.json({ error: 'Malformed federation auth token' }, 401)
-  }
-
-  const payloadEncoded = token.slice(0, dotIndex)
-  const signatureEncoded = token.slice(dotIndex + 1)
-
-  // Decode and parse payload
-  let payload: {
-    did: string
-    action: string
-    timestamp: number
-    expiresAt: number
-    bodyHash: string
-    ucan: string
-    userAuthorization?: string
-  }
-  try {
-    const payloadBytes = base64urlDecode(payloadEncoded)
-    const payloadJson = new TextDecoder().decode(payloadBytes)
-    payload = JSON.parse(payloadJson)
-  } catch {
-    return c.json({ error: 'Invalid payload encoding' }, 401)
-  }
-
-  // Validate required fields
-  if (!payload.did || !payload.action || !payload.timestamp || !payload.expiresAt || !payload.bodyHash || !payload.ucan) {
-    return c.json({ error: 'Missing required payload fields (did, action, timestamp, expiresAt, bodyHash, ucan)' }, 401)
+  const payload = parseFederationPayload(parseSignedAuthHeaderPayload(token))
+  if (!payload) {
+    return c.json({ error: 'Missing or invalid federation auth claims' }, 401)
   }
 
   // Must be a did:web
@@ -128,21 +84,7 @@ export const federationAuthMiddleware = async (c: Context, next: Next) => {
     return c.json({ error: 'Federation requires did:web server identity' }, 401)
   }
 
-  // Check expiry
-  const now = Date.now()
-  if (now > payload.expiresAt) {
-    return c.json({ error: 'Federation request expired' }, 401)
-  }
-
-  // Verify body hash
   const body = await c.req.text()
-  const bodyBytes = new TextEncoder().encode(body)
-  const bodyHashBuffer = await crypto.subtle.digest('SHA-256', bodyBytes)
-  const bodyHash = base64urlEncode(new Uint8Array(bodyHashBuffer))
-
-  if (bodyHash !== payload.bodyHash) {
-    return c.json({ error: 'Invalid body hash — request body was tampered' }, 401)
-  }
 
   // Resolve server public key from did:web
   let publicKeyBytes: Uint8Array
@@ -153,33 +95,22 @@ export const federationAuthMiddleware = async (c: Context, next: Next) => {
     return c.json({ error: `Failed to resolve server DID: ${payload.did}` }, 401)
   }
 
-  // Import the public key for Ed25519 verification
-  let publicKey: CryptoKey
-  try {
-    publicKey = await crypto.subtle.importKey(
-      'raw',
-      publicKeyBytes,
-      { name: 'Ed25519' },
-      false,
-      ['verify'],
-    )
-  } catch {
-    return c.json({ error: 'Failed to import server public key' }, 401)
-  }
-
-  // Verify signature over the raw base64url-encoded payload bytes
-  const payloadBytes = new TextEncoder().encode(payloadEncoded)
-  const signatureBytes = base64urlDecode(signatureEncoded)
-
-  let valid: boolean
-  try {
-    valid = await crypto.subtle.verify('Ed25519', publicKey, signatureBytes, payloadBytes)
-  } catch {
-    return c.json({ error: 'Signature verification failed' }, 401)
-  }
-
-  if (!valid) {
-    return c.json({ error: 'Invalid signature — server authentication failed' }, 401)
+  const requestQuery = new URL(c.req.url).search.slice(1)
+  const signedAuth = await verifySignedAuthHeaderWithKey({
+    headerValue: token,
+    expectedDid: payload.did,
+    publicKey: publicKeyBytes,
+    method: c.req.method,
+    path: c.req.path,
+    rawQuery: requestQuery,
+    body,
+  })
+  if (!signedAuth.ok) {
+    return c.json({
+      error: signedAuth.reason === 'Expired PoP'
+        ? 'Federation request expired'
+        : `Invalid federation request: ${signedAuth.reason}`,
+    }, 401)
   }
 
   // Verify the UCAN token
@@ -189,7 +120,7 @@ export const federationAuthMiddleware = async (c: Context, next: Next) => {
     ucanPayload = decoded.payload
 
     // Check expiry
-    const nowSeconds = Math.floor(now / 1000)
+    const nowSeconds = Math.floor(Date.now() / 1000)
     if (ucanPayload.exp <= nowSeconds) {
       return c.json({ error: 'UCAN token expired' }, 401)
     }
@@ -255,7 +186,6 @@ export const federationAuthMiddleware = async (c: Context, next: Next) => {
     issuerDid: ucanPayload.iss,
     ucanToken: payload.ucan,
     ucanCapabilities: ucanPayload.cap,
-    action: payload.action,
     userAuth: null,
   }
 
@@ -266,16 +196,13 @@ export const federationAuthMiddleware = async (c: Context, next: Next) => {
       return c.json({ error: 'Server identity not configured' }, 500)
     }
 
-    const requestQuery = new URL(c.req.url).search.slice(1)
     const userResult = await verifyFederatedAuth({
       authHeader: payload.userAuthorization,
-      verify: async (publicKey, signature, data) => {
-        const key = await crypto.subtle.importKey('raw', publicKey, { name: 'Ed25519' }, false, ['verify'])
-        return crypto.subtle.verify('Ed25519', key, signature, data)
-      },
       didToPublicKey,
-      requestBody: body,
-      requestQueryString: requestQuery,
+      method: c.req.method,
+      path: c.req.path,
+      rawQuery: requestQuery,
+      body,
     })
 
     if ('error' in userResult) {
@@ -307,6 +234,31 @@ export const federationAuthMiddleware = async (c: Context, next: Next) => {
   c.set('federation', federationContext)
 
   await next()
+}
+
+type FederationPayload = {
+  did: string
+  timestamp: number
+  exp: number
+  jti: string
+  requestHash: string
+  ucan: string
+  userAuthorization?: string
+}
+
+function parseFederationPayload(payload: Record<string, unknown> | null): FederationPayload | null {
+  if (!payload
+    || typeof payload.did !== 'string'
+    || typeof payload.timestamp !== 'number'
+    || typeof payload.exp !== 'number'
+    || typeof payload.jti !== 'string'
+    || typeof payload.requestHash !== 'string'
+    || typeof payload.ucan !== 'string'
+    || (payload.userAuthorization !== undefined && typeof payload.userAuthorization !== 'string')
+    || 'action' in payload) {
+    return null
+  }
+  return payload as FederationPayload
 }
 
 /**

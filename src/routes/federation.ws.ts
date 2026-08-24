@@ -17,28 +17,19 @@ import type { WSContext } from 'hono/ws'
 import { eq } from 'drizzle-orm'
 import { db, federationServers, federationLinks } from '../db'
 import { isFederationEnabled } from '../services/serverIdentity'
-import { verifyUcan, createWebCryptoVerifier, decodeUcan } from '@haex-space/ucan'
+import {
+  verifyUcan,
+  createWebCryptoVerifier,
+  decodeUcan,
+  parseSignedAuthHeaderPayload,
+  verifySignedAuthHeaderWithKey,
+} from '@haex-space/ucan'
 
 const { upgradeWebSocket, websocket: federationWebsocket } = createBunWebSocket()
 
 const federationWsApp = new Hono()
 
 // ── Helpers ────────────────────────────────────────────────────────
-
-const TIMESTAMP_TOLERANCE_MS = 30_000
-
-function base64urlDecode(str: string): Uint8Array {
-  let base64 = str.replace(/-/g, '+').replace(/_/g, '/')
-  while (base64.length % 4 !== 0) {
-    base64 += '='
-  }
-  const binary = atob(base64)
-  const bytes = new Uint8Array(binary.length)
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i)
-  }
-  return bytes
-}
 
 const ucanVerify = createWebCryptoVerifier()
 
@@ -55,46 +46,19 @@ const federatedSpacesCache = new Map<string, Set<string>>()
 /**
  * Verify a federation WebSocket token.
  *
- * Token format: <base64url(payload)>.<base64url(signature)>
- * Payload: { did, action: "federation-ws-connect", timestamp, bodyHash, ucan }
+ * Token format: shared `<base64url(payload)>.<base64url(signature)>` envelope
+ * with an `ucan` federation claim.
  *
  * Returns the server DID on success, null on failure.
  */
 async function verifyFederationWsToken(token: string): Promise<string | null> {
-  const dotIndex = token.indexOf('.')
-  if (dotIndex === -1) return null
-
-  const payloadEncoded = token.slice(0, dotIndex)
-  const signatureEncoded = token.slice(dotIndex + 1)
-
-  let payload: {
-    did: string
-    action: string
-    timestamp: number
-    bodyHash: string
-    ucan: string
-  }
-  try {
-    const payloadBytes = base64urlDecode(payloadEncoded)
-    const payloadJson = new TextDecoder().decode(payloadBytes)
-    payload = JSON.parse(payloadJson)
-  } catch {
-    return null
-  }
-
-  // Validate fields
-  if (!payload.did || payload.action !== 'federation-ws-connect' || !payload.timestamp || !payload.ucan) {
+  const payload = parseFederationWsPayload(parseSignedAuthHeaderPayload(token))
+  if (!payload) {
     return null
   }
 
   // Must be did:web
   if (!payload.did.startsWith('did:web:')) {
-    return null
-  }
-
-  // Check timestamp
-  const diff = Math.abs(Date.now() - payload.timestamp)
-  if (diff > TIMESTAMP_TOLERANCE_MS) {
     return null
   }
 
@@ -115,21 +79,16 @@ async function verifyFederationWsToken(token: string): Promise<string | null> {
     server.publicKey.match(/.{2}/g)!.map(byte => parseInt(byte, 16))
   )
 
-  try {
-    const publicKey = await crypto.subtle.importKey(
-      'raw',
-      publicKeyBytes,
-      { name: 'Ed25519' },
-      false,
-      ['verify'],
-    )
-
-    const payloadBytes = new TextEncoder().encode(payloadEncoded)
-    const signatureBytes = base64urlDecode(signatureEncoded)
-
-    const valid = await crypto.subtle.verify('Ed25519', publicKey, signatureBytes, payloadBytes)
-    if (!valid) return null
-  } catch {
+  const signedAuth = await verifySignedAuthHeaderWithKey({
+    headerValue: token,
+    expectedDid: payload.did,
+    publicKey: publicKeyBytes,
+    method: 'GET',
+    path: '/federation/ws',
+    rawQuery: '',
+    body: '',
+  })
+  if (!signedAuth.ok) {
     return null
   }
 
@@ -177,7 +136,8 @@ federationWsApp.get(
       }
     }
 
-    const token = c.req.query('token')
+    const protocols = c.req.header('Sec-WebSocket-Protocol')?.split(',').map(protocol => protocol.trim())
+    const token = protocols?.[0] === 'federation' ? protocols[1] : undefined
     const serverDid = token ? await verifyFederationWsToken(token) : null
 
     return {
@@ -262,6 +222,29 @@ export function updateFederatedSpacesCache(serverDid: string, spaceId: string, a
   } else {
     spaceIds.delete(spaceId)
   }
+}
+
+type FederationWsPayload = {
+  did: string
+  timestamp: number
+  exp: number
+  jti: string
+  requestHash: string
+  ucan: string
+}
+
+function parseFederationWsPayload(payload: Record<string, unknown> | null): FederationWsPayload | null {
+  if (!payload
+    || typeof payload.did !== 'string'
+    || typeof payload.timestamp !== 'number'
+    || typeof payload.exp !== 'number'
+    || typeof payload.jti !== 'string'
+    || typeof payload.requestHash !== 'string'
+    || typeof payload.ucan !== 'string'
+    || 'action' in payload) {
+    return null
+  }
+  return payload as FederationWsPayload
 }
 
 export { federationWsApp, federationWebsocket }

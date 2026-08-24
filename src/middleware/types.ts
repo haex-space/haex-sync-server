@@ -34,7 +34,6 @@ export interface FederationContext {
   issuerDid: string
   ucanToken: string
   ucanCapabilities: Capabilities
-  action: string
   userAuth: VerifiedFederatedAuth | null
 }
 

@@ -299,7 +299,14 @@ federation.post('/federation/setup', authDispatcher, async (c) => {
 
     // Forward the original user's Authorization header through the federation chain
     const userAuth = c.req.header('Authorization') ?? ''
-    const authHeader = await buildFederationAuthHeader('federation-establish', establishBody, body.relayUcan, userAuth)
+    const authHeader = await buildFederationAuthHeader(
+      'POST',
+      '/federation/establish',
+      '',
+      establishBody,
+      body.relayUcan,
+      userAuth,
+    )
 
     const establishResponse = await fetch(`${body.originServerUrl}/federation/establish`, {
       method: 'POST',

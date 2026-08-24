@@ -102,7 +102,6 @@ describe('federation DID-Web resolver — HTTPS-only (fix 1.3)', () => {
     const app = buildApp()
     const header = await buildFederationHeader({
       server: relay,
-      action: 'test',
       body: '',
       ucanToken: validRelayUcan,
     })
@@ -139,7 +138,6 @@ describe('federation DID-Web resolver — HTTPS-only (fix 1.3)', () => {
     const app = buildApp()
     const header = await buildFederationHeader({
       server: relay,
-      action: 'test',
       body: '',
       ucanToken: validRelayUcan,
     })
@@ -161,7 +159,6 @@ describe('federation DID-Web resolver — HTTPS-only (fix 1.3)', () => {
     const app = buildApp()
     const header = await buildFederationHeader({
       server: relay,
-      action: 'test',
       body: '',
       ucanToken: validRelayUcan,
     })
@@ -182,7 +179,6 @@ describe('federation DID-Web resolver — HTTPS-only (fix 1.3)', () => {
     const app = buildApp()
     const header = await buildFederationHeader({
       server: relay,
-      action: 'test',
       body: '',
       ucanToken: validRelayUcan,
     })

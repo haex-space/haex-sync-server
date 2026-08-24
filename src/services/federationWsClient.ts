@@ -8,16 +8,10 @@
  * Counterpart to federation.ws.ts which handles the origin server (accepting) side.
  */
 
-import { getServerIdentity, signWithServerKeyAsync } from './serverIdentity'
+import { getServerIdentity } from './serverIdentity'
 import { getAllFederationLinks } from './federationClient'
 import { broadcastToSpace } from '../routes/ws'
-
-function base64urlEncode(bytes: Uint8Array): string {
-  return btoa(String.fromCharCode(...bytes))
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/, '')
-}
+import { buildFederationAuthHeader } from '@haex-space/federation-sdk'
 
 // ── Connection State ──────────────────────────────────────────────
 
@@ -38,8 +32,9 @@ const MAX_RECONNECT_DELAY_MS = 60_000
 /**
  * Build a federation WS auth token.
  *
- * Format: <base64url(payload)>.<base64url(signature)>
- * Payload: { did, action: "federation-ws-connect", timestamp, bodyHash, ucan }
+ * The token is the shared signed-auth envelope, bound to `GET /federation/ws`.
+ * It is carried as a WebSocket subprotocol so the request's raw query remains
+ * part of the canonical (empty-query) request target.
  */
 async function buildFederationWsToken(ucanToken: string): Promise<string> {
   const identity = getServerIdentity()
@@ -47,26 +42,16 @@ async function buildFederationWsToken(ucanToken: string): Promise<string> {
     throw new Error('Server identity not initialized')
   }
 
-  // SHA-256 of empty string (no body for WS connect)
-  const emptyHash = await crypto.subtle.digest('SHA-256', new Uint8Array(0))
-  const bodyHash = base64urlEncode(new Uint8Array(emptyHash))
-
-  const payload = {
-    did: identity.did,
-    action: 'federation-ws-connect',
-    timestamp: Date.now(),
-    bodyHash,
-    ucan: ucanToken,
-  }
-
-  const payloadJson = JSON.stringify(payload)
-  const payloadEncoded = base64urlEncode(new TextEncoder().encode(payloadJson))
-
-  const payloadBytes = new TextEncoder().encode(payloadEncoded)
-  const signature = await signWithServerKeyAsync(payloadBytes)
-  const signatureEncoded = base64urlEncode(signature)
-
-  return `${payloadEncoded}.${signatureEncoded}`
+  const header = await buildFederationAuthHeader({
+    serverDid: identity.did,
+    privateKeyPkcs8Base64: identity.privateKeyPkcs8Base64,
+    method: 'GET',
+    path: '/federation/ws',
+    rawQuery: '',
+    body: '',
+    ucanToken,
+  })
+  return header.slice('FEDERATION '.length)
 }
 
 // ── Connect / Disconnect ──────────────────────────────────────────
@@ -93,9 +78,9 @@ export async function connectToOriginFederationWs(originServerUrl: string, ucanT
     .replace(/^https:\/\//, 'wss://')
     .replace(/^http:\/\//, 'ws://')
 
-  const url = `${wsUrl}/federation/ws?token=${encodeURIComponent(token)}`
+  const url = `${wsUrl}/federation/ws`
 
-  const ws = new WebSocket(url)
+  const ws = new WebSocket(url, ['federation', token])
 
   ws.onopen = () => {
     console.log(`[Federation WS Client] Connected to ${originServerUrl}`)
