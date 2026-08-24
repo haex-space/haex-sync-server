@@ -121,14 +121,13 @@ describe('Federation Auth — FEDERATION layer', () => {
     })
     expect(res.status).toBe(401)
     const json = await res.json() as any
-    expect(json.error).toContain('Malformed')
+    expect(json.error).toContain('invalid federation auth claims')
   })
 
   test('rejects expired request', async () => {
     const app = setupTest()
     const header = await buildFederationHeader({
       server: relay,
-      action: 'test',
       body: '',
       ucanToken: validRelayUcan,
       expiresInMs: -1000,
@@ -148,7 +147,6 @@ describe('Federation Auth — FEDERATION layer', () => {
     const app = setupTest()
     const header = await buildFederationHeader({
       server: relay,
-      action: 'test',
       body: '{"original":true}',
       ucanToken: validRelayUcan,
     })
@@ -160,7 +158,28 @@ describe('Federation Auth — FEDERATION layer', () => {
     })
     expect(res.status).toBe(401)
     const json = await res.json() as any
-    expect(json.error).toContain('tampered')
+    expect(json.error).toContain('request mismatch')
+  })
+
+  test('rejects a valid signature replayed to a different URL target', async () => {
+    const app = setupTest()
+    const header = await buildFederationHeader({
+      server: relay,
+      method: 'POST',
+      path: '/other-target',
+      rawQuery: 'scope=origin',
+      body: '',
+      ucanToken: validRelayUcan,
+    })
+
+    const res = await app.request('/test?scope=origin', {
+      method: 'POST',
+      headers: { Authorization: header },
+      body: '',
+    })
+    expect(res.status).toBe(401)
+    const json = await res.json() as any
+    expect(json.error).toContain('request mismatch')
   })
 
   test('rejects signature from wrong server key', async () => {
@@ -168,7 +187,6 @@ describe('Federation Auth — FEDERATION layer', () => {
     const app = setupTest()
     const header = await buildFederationHeader({
       server: evil,
-      action: 'test',
       body: '',
       ucanToken: validRelayUcan,
     })
@@ -187,7 +205,6 @@ describe('Federation Auth — FEDERATION layer', () => {
     const app = setupTest()
     const header = await buildFederationHeader({
       server: { ...relay, did: user.did },
-      action: 'test',
       body: '',
       ucanToken: validRelayUcan,
     })
@@ -213,7 +230,6 @@ describe('Federation Auth — FEDERATION layer', () => {
 
     const header = await buildFederationHeader({
       server: relay,
-      action: 'test',
       body: '',
       ucanToken: wrongAudienceUcan,
     })
@@ -239,7 +255,6 @@ describe('Federation Auth — FEDERATION layer', () => {
 
     const header = await buildFederationHeader({
       server: relay,
-      action: 'test',
       body: '',
       ucanToken: wrongCapUcan,
     })
@@ -258,7 +273,6 @@ describe('Federation Auth — FEDERATION layer', () => {
     const app = setupTest({ memberDids: [] })
     const header = await buildFederationHeader({
       server: relay,
-      action: 'test',
       body: '',
       ucanToken: validRelayUcan,
     })
@@ -278,7 +292,6 @@ describe('Federation Auth — FEDERATION layer', () => {
     const body = '{"test":true}'
     const header = await buildFederationHeader({
       server: relay,
-      action: 'test-action',
       body,
       ucanToken: validRelayUcan,
     })
@@ -305,12 +318,12 @@ describe('Federation Auth — embedded user auth', () => {
     const userAuth = await createFederatedAuthHeader({
       did: user.did,
       privateKeyBase64: userPrivateKeyBase64,
-      action: 'test',
       federation: { spaceId: TEST_SPACE_ID, serverDid: 'did:web:evil.com', relayDid: relay.did },
+      method: 'POST', path: '/test', rawQuery: '',
       body,
     })
     const header = await buildFederationHeader({
-      server: relay, action: 'test', body, ucanToken: validRelayUcan, userAuthorization: userAuth,
+      server: relay, body, ucanToken: validRelayUcan, userAuthorization: userAuth,
     })
 
     const res = await app.request('/test', { method: 'POST', headers: { Authorization: header }, body })
@@ -324,13 +337,13 @@ describe('Federation Auth — embedded user auth', () => {
     const userAuth = await createFederatedAuthHeader({
       did: user.did,
       privateKeyBase64: userPrivateKeyBase64,
-      action: 'test',
       federation: { spaceId: TEST_SPACE_ID, serverDid: origin.did, relayDid: relay.did },
+      method: 'POST', path: '/test', rawQuery: '',
       body: '{"original":true}',
     })
     const tamperedBody = '{"tampered":true}'
     const header = await buildFederationHeader({
-      server: relay, action: 'test', body: tamperedBody, ucanToken: validRelayUcan, userAuthorization: userAuth,
+      server: relay, body: tamperedBody, ucanToken: validRelayUcan, userAuthorization: userAuth,
     })
 
     const res = await app.request('/test', {
@@ -351,12 +364,12 @@ describe('Federation Auth — embedded user auth', () => {
     const userAuth = await createFederatedAuthHeader({
       did: user.did,
       privateKeyBase64: eveKey,
-      action: 'test',
       federation: { spaceId: TEST_SPACE_ID, serverDid: origin.did, relayDid: relay.did },
+      method: 'POST', path: '/test', rawQuery: '',
       body,
     })
     const header = await buildFederationHeader({
-      server: relay, action: 'test', body, ucanToken: validRelayUcan, userAuthorization: userAuth,
+      server: relay, body, ucanToken: validRelayUcan, userAuthorization: userAuth,
     })
 
     const res = await app.request('/test', { method: 'POST', headers: { Authorization: header }, body })
@@ -371,14 +384,14 @@ describe('Federation Auth — embedded user auth', () => {
     const userAuth = await createFederatedAuthHeader({
       did: user.did,
       privateKeyBase64: userPrivateKeyBase64,
-      action: 'test',
       federation: { spaceId: TEST_SPACE_ID, serverDid: origin.did, relayDid: relay.did },
+      method: 'POST', path: '/test', rawQuery: '',
       body,
       expiresInMs: 1,
     })
     await new Promise(r => setTimeout(r, 10))
     const header = await buildFederationHeader({
-      server: relay, action: 'test', body, ucanToken: validRelayUcan, userAuthorization: userAuth,
+      server: relay, body, ucanToken: validRelayUcan, userAuthorization: userAuth,
     })
 
     const res = await app.request('/test', { method: 'POST', headers: { Authorization: header }, body })
@@ -395,12 +408,12 @@ describe('Federation Auth — embedded user auth', () => {
     const userAuth = await createFederatedAuthHeader({
       did: stranger.did,
       privateKeyBase64: strangerKey,
-      action: 'test',
       federation: { spaceId: TEST_SPACE_ID, serverDid: origin.did, relayDid: relay.did },
+      method: 'POST', path: '/test', rawQuery: '',
       body,
     })
     const header = await buildFederationHeader({
-      server: relay, action: 'test', body, ucanToken: validRelayUcan, userAuthorization: userAuth,
+      server: relay, body, ucanToken: validRelayUcan, userAuthorization: userAuth,
     })
 
     const res = await app.request('/test', { method: 'POST', headers: { Authorization: header }, body })
@@ -415,12 +428,12 @@ describe('Federation Auth — embedded user auth', () => {
     const userAuth = await createFederatedAuthHeader({
       did: user.did,
       privateKeyBase64: userPrivateKeyBase64,
-      action: 'sync-push',
       federation: { spaceId: TEST_SPACE_ID, serverDid: origin.did, relayDid: relay.did },
+      method: 'POST', path: '/test', rawQuery: '',
       body,
     })
     const header = await buildFederationHeader({
-      server: relay, action: 'federation-proxy-post', body, ucanToken: validRelayUcan, userAuthorization: userAuth,
+      server: relay, body, ucanToken: validRelayUcan, userAuthorization: userAuth,
     })
 
     const res = await app.request('/test', {

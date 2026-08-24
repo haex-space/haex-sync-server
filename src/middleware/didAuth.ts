@@ -10,7 +10,7 @@ import { db } from '../db'
 import { identities } from '../db/schema'
 import type { DidContext } from './types'
 
-const didAuthJtiCache = createJtiTtlCache({ ttlMs: 60_000 })
+const didAuthJtiCache = createJtiTtlCache()
 
 export interface DidAuthRequestTarget {
   method: string

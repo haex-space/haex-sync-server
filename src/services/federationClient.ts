@@ -84,7 +84,9 @@ export function getAllFederationLinks(): Map<string, FederationLink> {
  * Delegates to @haex-space/federation-sdk.
  */
 export async function buildFederationAuthHeader(
-  action: string,
+  method: string,
+  path: string,
+  rawQuery: string,
   body: string,
   ucanToken: string,
   userAuthorization: string,
@@ -97,7 +99,9 @@ export async function buildFederationAuthHeader(
   return sdkBuildFederationAuthHeader({
     serverDid: identity.did,
     privateKeyPkcs8Base64: identity.privateKeyPkcs8Base64,
-    action,
+    method,
+    path,
+    rawQuery,
     body,
     ucanToken,
     userAuthorization,
@@ -117,9 +121,14 @@ export async function federatedProxyAsync(
   query?: string,
 ): Promise<{ ok: boolean; status: number; data: unknown }> {
   const url = `${link.originServerUrl}${path}${query ? `?${query}` : ''}`
-  const action = `federation-proxy-${method.toLowerCase()}`
-
-  const authHeader = await buildFederationAuthHeader(action, body ?? '', link.ucanToken, userAuthorization)
+  const authHeader = await buildFederationAuthHeader(
+    method,
+    path,
+    query ?? '',
+    body ?? '',
+    link.ucanToken,
+    userAuthorization,
+  )
 
   const response = await fetch(url, {
     method,
@@ -147,7 +156,7 @@ export async function federatedPushAsync(
 ): Promise<{ ok: boolean; status: number; data: unknown }> {
   const body = JSON.stringify({ spaceId, changes })
 
-  const authHeader = await buildFederationAuthHeader('federation-push', body, link.ucanToken, userAuthorization)
+  const authHeader = await buildFederationAuthHeader('POST', '/federation/push', '', body, link.ucanToken, userAuthorization)
 
   const response = await fetch(`${link.originServerUrl}/federation/push`, {
     method: 'POST',
@@ -177,7 +186,7 @@ export async function federatedPullAsync(
   const url = `${link.originServerUrl}/federation/pull?${queryString}`
 
   // For GET requests, body is empty
-  const authHeader = await buildFederationAuthHeader('federation-pull', '', link.ucanToken, userAuthorization)
+  const authHeader = await buildFederationAuthHeader('GET', '/federation/pull', queryString, '', link.ucanToken, userAuthorization)
 
   const response = await fetch(url, {
     method: 'GET',

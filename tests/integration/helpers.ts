@@ -238,16 +238,20 @@ export function buildDidDocument(server: ServerIdentity) {
 
 export async function buildFederationHeader(options: {
   server: ServerIdentity
-  action: string
   body: string
   ucanToken: string
   userAuthorization?: string
   expiresInMs?: number
+  method?: string
+  path?: string
+  rawQuery?: string
 }): Promise<string> {
   return sdkBuildFederationAuthHeader({
     serverDid: options.server.did,
     privateKeyPkcs8Base64: options.server.privateKeyPkcs8Base64,
-    action: options.action,
+    method: options.method ?? 'POST',
+    path: options.path ?? '/test',
+    rawQuery: options.rawQuery ?? '',
     body: options.body,
     ucanToken: options.ucanToken,
     userAuthorization: options.userAuthorization,

@@ -5,8 +5,8 @@
     "": {
       "name": "haex-sync-server",
       "dependencies": {
-        "@haex-space/federation-sdk": "0.2.2",
-        "@haex-space/ucan": "0.4.0",
+        "@haex-space/federation-sdk": "^0.3.5",
+        "@haex-space/ucan": "^0.5.0",
         "@haex-space/vault-sdk": "2.8.0",
         "@hono/zod-validator": "^0.7.4",
         "@supabase/supabase-js": "^2.79.0",
@@ -84,9 +84,9 @@
 
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.25.12", "", { "os": "win32", "cpu": "x64" }, "sha512-alJC0uCZpTFrSL0CCDjcgleBXPnCrEAhTBILpeAp7M/OFgoqtAetfBzX0xM00MUsVVPpVjlPuMbREqnZCXaTnA=="],
 
-    "@haex-space/federation-sdk": ["@haex-space/federation-sdk@0.2.2", "", {}, "sha512-g4cxbWDH1vCF70my4b9mxxCoS6jxiQVItNoErNxLz1Ktb67TUXXcEjY8PrI08lTVrgpefUgfiMJgpITnY2W4Mg=="],
+    "@haex-space/federation-sdk": ["@haex-space/federation-sdk@0.3.5", "", { "dependencies": { "@haex-space/ucan": "^0.5.0" } }, "sha512-+8n+tPpvnt2rDb7amfnXotnGS1YITBNjOzNzneXV0ZE9oQjbsSbkAfmplO23+/JGGZEpi6iFZTk7vNYkCrfqTg=="],
 
-    "@haex-space/ucan": ["@haex-space/ucan@0.4.0", "", {}, "sha512-RO2NWMzYKmL20ATmMzFzZD36t0yPso88V5mKmtO/6TLmEStk0Rr2Irdv8YqDdA1zWMfvofuapaKSn2gxGwr3+w=="],
+    "@haex-space/ucan": ["@haex-space/ucan@0.5.0", "", {}, "sha512-n+bM89RDlSwj8/XthyPGuNK243EK2bL15gWNKJ27qZDziyRZNuwiiFxUzkXJnavI+GTp6VWQ8C/v3h6mzzxxLA=="],
 
     "@haex-space/vault-sdk": ["@haex-space/vault-sdk@2.8.0", "", { "dependencies": { "archiver": "7.0.1", "commander": "14.0.3", "drizzle-orm": "0.45.1", "jszip": "3.10.1" }, "bin": { "haex": "dist/cli/index.js" } }, "sha512-kDcnqTA79TnJ/WxPRnDy5XcMtkmxYnCk3mNZt1S/9hPSeiO4gSx1rzXYDCg1ivr8M6oCJpYl9VsNrPR0b5hO4A=="],
 
